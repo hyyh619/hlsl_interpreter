@@ -1,0 +1,172 @@
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+
+# Folder config file
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# =========================
+# Operating System Files
+# =========================
+
+# OSX
+# =========================
+
+.DS_Store
+.AppleDouble
+.LSOverride
+source/Irrlicht/MacOSX/MacOSX.xcodeproj/project.xcworkspace/
+source/Irrlicht/MacOSX/build/XCBuildData
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+*.hmap
+
+*.o
+
+*.d
+
+*.dia
+
+build/MacOSX.build/Debug/libIrrlicht.a.build/dgph
+
+build/MacOSX.build/Debug/libIrrlicht.a.build/dgph~
+
+bin/MacOSX/HelloWorld_dbg.app/Contents/MacOS/HelloWorld_dbg
+
+bin/MacOSX/HelloWorld_dbg.app/Contents/Info.plist
+
+bin/MacOSX/HelloWorld_dbg.app/Contents/PkgInfo
+
+bin/MacOSX/HelloWorld_dbg.app/Contents/Resources/MainMenu.nib
+
+build/Debug/HelloWorld_dbg.app
+
+*.a
+
+build/MacOSX.build/Debug/01.HelloWorld.build/dgph~
+
+build/MacOSX.build/Debug/01.HelloWorld.build/dgph
+
+build/MacOSX.build/Debug/01.HelloWorld.build/Objects-normal/x86_64/HelloWorld_dbg_dependency_info.dat
+
+build/MacOSX.build/Debug/01.HelloWorld.build/Objects-normal/x86_64/HelloWorld_dbg.LinkFileList
+
+build/MacOSX.build/Debug/libIrrlicht.a.build/Objects-normal/x86_64/Irrlicht.LinkFileList
+
+source/Irrlicht/MacOSX/build/MacOSX.build/Debug/02.Quake3Map.build/dgph
+
+source/Irrlicht/MacOSX/build/MacOSX.build/Debug/02.Quake3Map.build/Objects-normal/x86_64/Quake3Map_dbg.LinkFileList
+
+source/Irrlicht/MacOSX/MacOSX.xcodeproj/project.xcworkspace/xcuserdata/yinghuang.xcuserdatad/UserInterfaceState.xcuserstate
+
+source/Irrlicht/MacOSX/MacOSX.xcodeproj/project.xcworkspace/xcuserdata/yinghuang.xcuserdatad/UserInterfaceState.xcuserstate
+
+source/Irrlicht/MacOSX/MacOSX.xcodeproj/project.xcworkspace/xcuserdata/yinghuang.xcuserdatad/UserInterfaceState.xcuserstate
+
+bin/MacOSX/Movement_dbg.app/Contents/Info.plist
+
+bin/MacOSX/Movement_dbg.app/Contents/PkgInfo
+
+bin/MacOSX/Movement_dbg.app/Contents/Resources/MainMenu.nib
+
+bin/MacOSX/Quake3Map_dbg.app/Contents/Info.plist
+
+bin/MacOSX/Quake3Map_dbg.app/Contents/MacOS/Quake3Map_dbg
+
+bin/MacOSX/Quake3Map_dbg.app/Contents/PkgInfo
+
+bin/MacOSX/Quake3Map_dbg.app/Contents/Resources/MainMenu.nib
+
+*.app
+
+build/MacOSX.build/Debug/02.Quake3Map.build/dgph
+
+build/MacOSX.build/Debug/02.Quake3Map.build/dgph~
+
+*.dat
+
+*.LinkFileList
+
+build/MacOSX.build/Release/01.HelloWorld.build/dgph
+
+build/MacOSX.build/Release/01.HelloWorld.build/dgph~
+
+build/MacOSX.build/Release/libIrrlicht.a.build/dgph
+
+build/MacOSX.build/Release/libIrrlicht.a.build/dgph~
+bin
+examples/01.HelloWorld/Debug
+*.user
+examples/02.Quake3Map/Debug
+examples/.vs
+source/Irrlicht/obj
+source/Irrlicht/.vs
+lib/Win32-visualstudio
+lib/Win64-visualstudio
+bin/Win64-VisualStudio
+Debug
+Debug_dx11_conform
+
+# ignore vim file
+*~
+*.swp
+
+*.exe
+*.dll
+*.lib
+*.exp
+*.sdf
+*.suo
+
+v16
+*.xml
+
+.agents
+.opencode/node_modules
+.opencode/skills/*
+!.opencode/skills/irrlicht-conform-test/
+*.log
+
+source/Irrlicht/html
+source/Irrlicht/latex
+*.pyc
+*.pyd
+*.pyo
+Scripts/BiliBiliDownloader/bilibili_ocr_test.png
+Scripts/BiliBiliDownloader/ocr_debug*.png
+screenshot.bmp
+
+draw_*.jpg
+dump_*
+*.bak
+*.zip
+Cases
