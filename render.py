@@ -194,7 +194,17 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     ps_sig_csv = os.path.join(data_folder, 'PS_input_output_signature.csv')
     ia_vertex_csv = os.path.join(data_folder, 'ia_vertex_data.csv')
     pipeline_state_csv = os.path.join(data_folder, 'pipeline_state.csv')
+    # Golden VS output: 3Dmigoto/RenderDoc dumps name this file either
+    # 'MeshOut_vs_mesh.csv' or '<capture-prefix>_vs_mesh.csv'. Prefer the
+    # canonical name, otherwise pick up any '*_vs_mesh.csv' in the folder so
+    # the VS-vs-golden comparison is not silently skipped.
     golden_vs_csv = os.path.join(data_folder, 'MeshOut_vs_mesh.csv')
+    if not os.path.exists(golden_vs_csv):
+        mesh_candidates = sorted(
+            f for f in os.listdir(data_folder) if f.lower().endswith('_vs_mesh.csv')
+        )
+        if mesh_candidates:
+            golden_vs_csv = os.path.join(data_folder, mesh_candidates[0])
 
     total_start = time.time()
 

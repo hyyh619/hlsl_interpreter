@@ -253,10 +253,27 @@ zip workflow没有加载相应的纹理图片导致PS执行阶段的纹理采样
 1. 请加载zip压缩包中的纹理文件。
 2. 纹理文件加载时需要做y flip。
 
-## Git commit: 
+## Git commit:
+Fix no texture image setting by claude code.
 
 ## Claude Code Session
+Summary
+The zip workflow parsed the PS texture/sampler bindings but never loaded the actual BMP texel data, so Texture2D.Sample(...) matched a binding with no texture_desc/sampler and returned None. Fixed in two parts:
 
+1. Load zip textures — render.py
+
+Added _discover_zip_textures() which scans the extracted folder for 3Dmigoto's shader-resource dumps (PS_slot_<slot>_res_<id>_mip<m>_arr<a>.bmp), groups them by register slot, uses the mip0/arr0 BMP as each texture's source, and builds register-indexed texture_desc_list / sampler_list (each slot gets a default linear/wrap Sampler).
+Wired it into the PS section of _execute_pipeline: textures are loaded and bound via set_texture_and_sampler(...) before _parse_texture_and_sampler_bindings, so t0 → DiffuseTexture resolves to real data.
+2. Y-flip on load — texture.py:326-330
+
+BMP scanlines are stored bottom-up (positive height). Added pixels.reverse() in _parse_bmp after reading, so texture row 0 (v=0) maps to the top of the image — matching D3D's top-left UV origin that the sampler assumes.
+Verified output for slot t0:
+
+
+texture slot t0: PS_slot_0_res_126_mip0_arr0.bmp
+Loaded 1 PS texture(s) from zip
+[METHOD] DiffuseTexture.Sample(..., (0.3932, 0.1905)) = ['0.0733', '0.0362', '0.0401', '1.0000']
+Note: only mip0 is loaded (the interpreter regenerates its own mip chain); since Sample(s, v2.xy) uses a 2D coord (LOD 0), only the base level is consulted — so this is sufficient for correct texel results here. The injected 3Dmigoto resources t120/t125 have no BMP dumps and aren't sampled, so they're correctly ignored.
 
 
 # 8
