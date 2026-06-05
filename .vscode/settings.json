@@ -1,0 +1,4 @@
+{
+    "cmake.configureOnOpen": false,
+    "python-envs.defaultPackageManager": "ms-python.python:conda"
+}
