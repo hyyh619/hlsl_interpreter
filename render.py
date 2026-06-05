@@ -153,6 +153,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # ============================================================
     vs_interp = _make_interpreter(config, d3d.SHADER_STAGE_VS, log_file_path, primitive_topology)
 
+    if mesh_view_enabled:
+        vs_interp.enable_mesh_view(True)
+
     if not os.path.exists(vs_hlsl):
         print(f"Error: VS shader not found: {vs_hlsl}")
         return
@@ -241,6 +244,14 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         if 'primitive_topology' not in config and topo_from_csv is not None:
             primitive_topology = topo_from_csv
 
+    # Mesh view: display input + VS output meshes (topology now finalized)
+    if mesh_view_enabled and vs_interp._mesh_view:
+        vs_interp.primitive_topology = primitive_topology
+        vs_interp.log_output("Displaying input/output mesh...")
+        # Align input mesh to the executed vertex count (execute_count may be < total IA buffer)
+        vs_interp.show_input_mesh_from_params(vs_input_params, vertex_data[:len(vs_results)])
+        vs_interp.show_result_mesh_from_params(vs_results)
+
     vs_interp.log_output(f"\nRasterizing {len(vs_results)} vertices (topology={primitive_topology})...")
     rast_start = time.time()
     pixels = rast.rasterize(vs_results, primitive_topology)
@@ -304,6 +315,26 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     vs_interp.log_output(f"  VS:          {len(vs_results)} vertices in {vs_time:.4f}s")
     vs_interp.log_output(f"  Rasterizer:  {len(rast.get_pixels())} pixels in {rast_time:.4f}s")
     vs_interp.log_output(f"  Total:       {total_time:.4f}s")
+
+    # ============================================================
+    # Mesh view: feed rasterizer/PS/output-merger pixels and stay open
+    # ============================================================
+    if mesh_view_enabled and vs_interp._mesh_view:
+        if pixels:
+            vs_interp._mesh_view.set_rasterizer_pixels(pixels)
+            vs_interp._mesh_view.set_output_merger_pixels(pixels)
+            vs_interp._mesh_view._draw_rasterizer_pixels()
+            vs_interp._mesh_view._draw_pixel_shader_pixels()
+            vs_interp._mesh_view._draw_output_merger_pixels()
+        vs_interp._mesh_view.show(blocking=False)
+
+        while True:
+            user_input = input("\nEnter 'x' to exit, 'o' to open MeshView: ").strip().lower()
+            if user_input == 'x':
+                vs_interp._mesh_view.close()
+                break
+            elif user_input == 'o':
+                vs_interp._mesh_view.show(blocking=False)
 
 
 def _run_legacy_workflow(config: dict, config_path: str):

@@ -499,6 +499,109 @@ class HLSLInterpreter:
         else:
             self.log_output("No position data found in results")
 
+    def show_input_mesh_from_params(self, input_params: List[Dict[str, Any]],
+                                    vertex_data: List[Dict[str, Any]], row_index: int = None):
+        """
+        显示参数式(void main)工作流的输入mesh数据。
+
+        与struct式的show_input_mesh不同，这里直接从VS输入参数(按语义)和vertex_data
+        构建网格，不依赖struct定义或vertex_pool（参数式工作流不填充vertex_pool）。
+        input_params: parse_main_params_with_semantics得到的inputs列表
+        vertex_data:  load_ia_vertex_data得到的列表，每项是{param_name: value}
+        row_index:    指定行索引，None表示显示所有顶点
+        """
+        if not self._mesh_view_enabled or not MESHVIEW_AVAILABLE or not self._mesh_view:
+            return
+
+        positions, normals, colors, texcoords, texcoords2 = [], [], [], [], []
+        for vtx in vertex_data:
+            pos = norm = col = tc = tc2 = None
+            for param in input_params:
+                sem = param.get('semantic_base', '').upper()
+                sem_idx = param.get('semantic_index', 0)
+                val = vtx.get(param['name'])
+                if not isinstance(val, list):
+                    continue
+                if sem == 'POSITION' and len(val) >= 3:
+                    pos = val[:3]
+                elif sem == 'NORMAL' and len(val) >= 3:
+                    norm = val[:3]
+                elif sem == 'COLOR':
+                    if len(val) >= 4:
+                        col = val[:4]
+                    elif len(val) >= 3:
+                        col = val[:3] + [1.0]
+                elif sem == 'TEXCOORD' and len(val) >= 2:
+                    if sem_idx == 1:
+                        tc2 = val[:2]
+                    else:
+                        tc = val[:2]
+            if pos is None:
+                continue
+            positions.append(pos)
+            normals.append(norm)
+            colors.append(col)
+            texcoords.append(tc)
+            texcoords2.append(tc2)
+
+        if row_index is not None and 0 <= row_index < len(positions):
+            sl = slice(row_index, row_index + 1)
+            positions, normals = positions[sl], normals[sl]
+            colors, texcoords, texcoords2 = colors[sl], texcoords[sl], texcoords2[sl]
+
+        if not positions:
+            self.log_output("No input position data for mesh view")
+            return
+
+        self._mesh_view.clear()
+        self._mesh_view.set_primitive_topology(self.primitive_topology)
+        self._mesh_view.set_input_data(positions, normals, colors, texcoords, texcoords2)
+        self._mesh_view.show(blocking=False)
+        self.log_output(f"Input mesh displayed: {len(positions)} vertices")
+
+    def show_result_mesh_from_params(self, vs_results: List[Dict[str, Any]]):
+        """
+        显示参数式工作流的VS输出mesh数据。
+
+        vs_results是executeVS_with_params的返回值，已按canonical key组织
+        (sv_position / Normal / Color / TexCoord / TexCoord2)。沿用legacy
+        update_output的约定：输出位置取SV_POSITION的前3个分量。
+        """
+        if not self._mesh_view_enabled or not MESHVIEW_AVAILABLE or not self._mesh_view:
+            return
+
+        positions, normals, colors, texcoords, texcoords2 = [], [], [], [], []
+        for row in vs_results:
+            pos = row.get('sv_position')
+            if not (isinstance(pos, list) and len(pos) >= 3):
+                continue
+            positions.append(pos[:3])
+
+            norm = row.get('Normal')
+            normals.append(norm[:3] if isinstance(norm, list) and len(norm) >= 3 else None)
+
+            col = row.get('Color')
+            if isinstance(col, list) and len(col) >= 4:
+                colors.append(col[:4])
+            elif isinstance(col, list) and len(col) >= 3:
+                colors.append(col[:3] + [1.0])
+            else:
+                colors.append(None)
+
+            tc = row.get('TexCoord')
+            texcoords.append(tc[:2] if isinstance(tc, list) and len(tc) >= 2 else None)
+            tc2 = row.get('TexCoord2')
+            texcoords2.append(tc2[:2] if isinstance(tc2, list) and len(tc2) >= 2 else None)
+
+        if not positions:
+            self.log_output("No output position data for mesh view")
+            return
+
+        self._mesh_view.set_primitive_topology(self.primitive_topology)
+        self._mesh_view.set_output_data(positions, normals, colors, texcoords, texcoords2)
+        self._mesh_view.show(blocking=False)
+        self.log_output(f"Result mesh displayed: {len(positions)} vertices")
+
     def _flush_log_cache(self):
         """将缓存中的日志写入文件"""
         if self._log_cache and self._log_file:

@@ -183,12 +183,35 @@ This is exactly the 3Dmigoto trailing-float3 misalignment your earlier session (
 Why I'm stopping to ask
 The prompt says "the value should be [11.2829, -88.1203, -58.05407], fix the interpreter." But that target is the misaligned golden — and its third component is another vertex's value. I can't make the interpreter produce it without corrupting a computation that two other outputs prove is correct. So before I touch code, I need your call:
 
-# 5
+# 5 为zip工作流添加显示设置
 ## Prompts
+1. render.py提供了_run_legacy_workflow和_run_zip_workflow两种执行方式。
+2. _run_legacy_workflow执行方式提供了图形界面用于显示执行后的结果。请给_run_zip_workflow也添加相应的图形界面显示。
+3. _run_zip_workflow的图形界面是否启动可以通过输入的json文件配置
 
 ## Git commit: 
 
 ## Claude Code Session
+给 _run_zip_workflow 加上了和 legacy 工作流对等的图形界面显示，由 JSON 配置里的 mesh_view_enabled 控制开关（字段已存在，之前在 zip 路径里被读取但没用）。
+
+核心难点：legacy 的 show_input_mesh / show_result_mesh 依赖 struct 定义和 vertex_pool，而 zip 工作流是参数式（void main(...) + 语义）执行、且 executeVS_with_params 根本不填充 vertex_pool。所以现有方法在 zip 路径下用不了。
+
+改动：
+
+hlsl_interpreter.py — 新增两个参数式专用方法：
+
+show_input_mesh_from_params(...) —— 直接从 VS 输入参数（按 POSITION/NORMAL/COLOR/TEXCOORD 语义）和 vertex_data 构建网格
+show_result_mesh_from_params(...) —— 直接读 vs_results 的 canonical key（sv_position/Normal/Color/TexCoord/TexCoord2），位置取 SV_POSITION 前 3 分量（沿用 legacy update_output 的约定）
+render.py _execute_pipeline —— 三处接线，结构对齐 legacy：
+
+VS 解释器创建后 enable_mesh_view(True)
+拓扑确定后显示输入/输出网格（输入按 execute_count 对齐到输出顶点数）
+管线结束后喂入光栅化/PS/输出合并像素并绘制，最后进入 x 退出 / o 重开窗口的交互循环
+验证：
+
+headless（mesh_view_enabled: false）：管线完整跑通，无回归
+开启 mesh view：成功创建窗口、显示输入/输出网格（8/8 对齐）、绘制像素、x 退出，退出码 0；tkinter 不可用时 enable_mesh_view 会告警且 _mesh_view 保持 None，所有 if ... and vs_interp._mesh_view 守卫使其安全降级为 headless
+一点说明：legacy 的 r（重跑 VS）依赖 set_hlsl_interpreter 绑定 struct，参数式工作流没有 struct，所以 zip 路径的交互循环只保留了 x/o，没有照搬 r。如果你需要 zip 路径也支持重跑，我可以再做一版参数式的 re-execute 绑定。
 
 
 # 6
