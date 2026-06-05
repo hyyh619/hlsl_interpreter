@@ -94,6 +94,10 @@ class MeshView:
         self._hlsl_interpreter = None
         self._hlsl_main_func = "main"
         self._hlsl_input_struct = "VS_INPUT"
+        # Parameter-based (void main) re-execute support, used by the zip workflow
+        self._hlsl_param_mode = False
+        self._hlsl_input_params = None
+        self._hlsl_output_params = None
         self._re_execute_btn = None
         self._vertex_shader_log = []
         self._vertex_shader_log_text = None
@@ -1153,10 +1157,26 @@ class MeshView:
             self._vertex_info_panel.configure(scrollregion=bbox)
 
     def set_hlsl_interpreter(self, interpreter, main_func: str = "main", input_struct: str = "VS_INPUT"):
-        """设置HLSL解释器以支持重新执行顶点着色器"""
+        """设置HLSL解释器以支持重新执行顶点着色器（struct式工作流）"""
         self._hlsl_interpreter = interpreter
         self._hlsl_main_func = main_func
         self._hlsl_input_struct = input_struct
+        self._hlsl_param_mode = False
+        if self._re_execute_btn:
+            self._re_execute_btn.config(state=tk.NORMAL)
+
+    def set_hlsl_interpreter_params(self, interpreter, input_params, output_params, main_func: str = "main"):
+        """
+        设置HLSL解释器以支持重新执行顶点着色器（参数式void main工作流，zip路径）。
+
+        与struct式不同，这里保存VS的输入/输出参数列表（带语义），re-execute时
+        按语义把选中顶点的数据映射回参数名，并走_execute_void_main执行。
+        """
+        self._hlsl_interpreter = interpreter
+        self._hlsl_main_func = main_func
+        self._hlsl_input_params = input_params
+        self._hlsl_output_params = output_params
+        self._hlsl_param_mode = True
         if self._re_execute_btn:
             self._re_execute_btn.config(state=tk.NORMAL)
 
@@ -1188,25 +1208,49 @@ class MeshView:
         self._append_shader_log("=" * 50)
 
         v = self.input_vertices[input_idx]
-        input_struct = self._hlsl_interpreter.structs.get(self._hlsl_input_struct)
-        if not input_struct:
-            self._append_shader_log(f"Error: Cannot find input struct '{self._hlsl_input_struct}'")
-            return
 
-        input_data = {}
-        for field in input_struct.fields:
-            semantic_lower = field.semantic.lower() if field.semantic else ''
-            if 'pos' in semantic_lower or 'position' in semantic_lower or semantic_lower == 'sv_position':
-                input_data[field.name] = v.position
-            elif 'normal' in semantic_lower:
-                input_data[field.name] = v.normal if v.normal else [0, 0, 1]
-            elif 'color' in semantic_lower:
-                input_data[field.name] = v.color if v.color else [1, 1, 1, 1]
-            elif 'texcoord' in semantic_lower:
-                if 'texcoord2' in semantic_lower or 'texcoord1' in semantic_lower:
-                    input_data[field.name] = v.tex_coord2 if v.tex_coord2 else [0, 0]
-                else:
-                    input_data[field.name] = v.tex_coord if v.tex_coord else [0, 0]
+        if self._hlsl_param_mode:
+            # 参数式工作流：按语义把顶点数据映射到VS输入参数名
+            if not self._hlsl_input_params:
+                self._append_shader_log("Error: No VS input params set for re-execution")
+                return
+            input_data = {}
+            for param in self._hlsl_input_params:
+                sem = param.get('semantic_base', '').upper()
+                sem_idx = param.get('semantic_index', 0)
+                name = param['name']
+                if sem in ('POSITION', 'SV_POSITION'):
+                    input_data[name] = list(v.position)
+                elif sem == 'NORMAL':
+                    input_data[name] = list(v.normal) if v.normal else [0, 0, 1]
+                elif sem == 'COLOR':
+                    input_data[name] = list(v.color) if v.color else [1, 1, 1, 1]
+                elif sem == 'TEXCOORD':
+                    if sem_idx == 1:
+                        input_data[name] = list(v.tex_coord2) if v.tex_coord2 else [0, 0]
+                    else:
+                        input_data[name] = list(v.tex_coord) if v.tex_coord else [0, 0]
+                # 其它语义留空，由_execute_void_main按类型填默认值
+        else:
+            input_struct = self._hlsl_interpreter.structs.get(self._hlsl_input_struct)
+            if not input_struct:
+                self._append_shader_log(f"Error: Cannot find input struct '{self._hlsl_input_struct}'")
+                return
+
+            input_data = {}
+            for field in input_struct.fields:
+                semantic_lower = field.semantic.lower() if field.semantic else ''
+                if 'pos' in semantic_lower or 'position' in semantic_lower or semantic_lower == 'sv_position':
+                    input_data[field.name] = v.position
+                elif 'normal' in semantic_lower:
+                    input_data[field.name] = v.normal if v.normal else [0, 0, 1]
+                elif 'color' in semantic_lower:
+                    input_data[field.name] = v.color if v.color else [1, 1, 1, 1]
+                elif 'texcoord' in semantic_lower:
+                    if 'texcoord2' in semantic_lower or 'texcoord1' in semantic_lower:
+                        input_data[field.name] = v.tex_coord2 if v.tex_coord2 else [0, 0]
+                    else:
+                        input_data[field.name] = v.tex_coord if v.tex_coord else [0, 0]
 
         old_print_syntax_tree = self._hlsl_interpreter.printSyntaxTree
         old_print_sequence = self._hlsl_interpreter.print_sequence
@@ -1225,13 +1269,25 @@ class MeshView:
         self._hlsl_interpreter.log_output = capture_log
 
         try:
-            result = self._hlsl_interpreter.execute_main_function(
-                self._hlsl_interpreter.hlsl_code,
-                self._hlsl_main_func,
-                self._hlsl_input_struct,
-                input_idx,
-                input_data
-            )
+            if self._hlsl_param_mode:
+                result = self._hlsl_interpreter._execute_void_main(
+                    self._hlsl_interpreter.hlsl_code,
+                    self._hlsl_main_func,
+                    self._hlsl_input_params,
+                    self._hlsl_output_params,
+                    input_data,
+                    input_idx
+                )
+                # 复用slot共享参数解析（如TEXCOORD0/TEXCOORD1共享槽位）
+                self._hlsl_interpreter._resolve_slot_shared_params(self._hlsl_output_params, result)
+            else:
+                result = self._hlsl_interpreter.execute_main_function(
+                    self._hlsl_interpreter.hlsl_code,
+                    self._hlsl_main_func,
+                    self._hlsl_input_struct,
+                    input_idx,
+                    input_data
+                )
 
             for line in captured_log:
                 self._append_shader_log(line)

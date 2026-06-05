@@ -189,7 +189,8 @@ The prompt says "the value should be [11.2829, -88.1203, -58.05407], fix the int
 2. _run_legacy_workflow执行方式提供了图形界面用于显示执行后的结果。请给_run_zip_workflow也添加相应的图形界面显示。
 3. _run_zip_workflow的图形界面是否启动可以通过输入的json文件配置
 
-## Git commit: 
+## Git commit:
+Add MeshView for zip workflow by claude code.
 
 ## Claude Code Session
 给 _run_zip_workflow 加上了和 legacy 工作流对等的图形界面显示，由 JSON 配置里的 mesh_view_enabled 控制开关（字段已存在，之前在 zip 路径里被读取但没用）。
@@ -214,8 +215,11 @@ headless（mesh_view_enabled: false）：管线完整跑通，无回归
 一点说明：legacy 的 r（重跑 VS）依赖 set_hlsl_interpreter 绑定 struct，参数式工作流没有 struct，所以 zip 路径的交互循环只保留了 x/o，没有照搬 r。如果你需要 zip 路径也支持重跑，我可以再做一版参数式的 re-execute 绑定。
 
 
-# 6
+# 6 修复无法执行选中顶点的问题
 ## Prompts
+点击MeshView的Re-execute Vertex Shader，输出窗口显示
+Error: No HLSL Interpreter set. Call set_hlsl_interpreter() first.
+请修复该问题，可以重新执行选中顶点的VS
 
 ## Git commit: 
 

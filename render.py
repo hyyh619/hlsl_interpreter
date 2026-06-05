@@ -247,6 +247,10 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # Mesh view: display input + VS output meshes (topology now finalized)
     if mesh_view_enabled and vs_interp._mesh_view:
         vs_interp.primitive_topology = primitive_topology
+        # Enable "Re-execute Vertex Shader" for the selected vertex (param-based workflow)
+        vs_interp._mesh_view.set_hlsl_interpreter_params(
+            vs_interp, vs_input_params, vs_output_params, 'main'
+        )
         vs_interp.log_output("Displaying input/output mesh...")
         # Align input mesh to the executed vertex count (execute_count may be < total IA buffer)
         vs_interp.show_input_mesh_from_params(vs_input_params, vertex_data[:len(vs_results)])
