@@ -221,13 +221,37 @@ headless（mesh_view_enabled: false）：管线完整跑通，无回归
 Error: No HLSL Interpreter set. Call set_hlsl_interpreter() first.
 请修复该问题，可以重新执行选中顶点的VS
 
-## Git commit: 
+## Git commit:
+Fix MeshView cannot re-execute Vertex Shader with specified vertex data by claude code.
 
 ## Claude Code Session
+修复内容
+问题根因：MeshView 的 Re-execute Vertex Shader 按钮逻辑完全是 struct 式的 —— 它要求调用 set_hlsl_interpreter() 绑定解释器，并查找 VS_INPUT struct、走 execute_main_function。zip 工作流是参数式（void main + 语义）执行、没有 struct，也从没调用过那个绑定函数，所以点击就报 No HLSL Interpreter set。
+
+修复给 MeshView 增加了参数式 re-execute 模式，与原 struct 模式并存：
+
+mesh_view.py
+
+__init__ 新增 _hlsl_param_mode / _hlsl_input_params / _hlsl_output_params 状态
+新增 set_hlsl_interpreter_params(interpreter, input_params, output_params, main_func) —— 参数式绑定，保存带语义的输入/输出参数列表
+_on_re_execute_vertex 按模式分支：参数式下，把选中顶点的数据按语义（POSITION/NORMAL/COLOR/TEXCOORD0/1）映射回参数名，调用 _execute_void_main + _resolve_slot_shared_params；struct 式保持原逻辑不变
+render.py _execute_pipeline —— 显示网格时调用 set_hlsl_interpreter_params(...)，把 VS 解释器和输入/输出参数绑定上去，按钮即可用
+
+验证：
+
+三个文件语法 OK
+直接复刻按钮的完整逻辑路径跑真实 zip 数据：重跑选中顶点 [3] 的 VS，6 个输出（sv_position / Color / TexCoord / TexCoord2 / Normal / WorldPos）与批量 executeVS 的结果逐分量完全一致
+mesh 开启的完整管线烟雾测试退出码 0
+现在点击按钮会重新执行选中顶点的 VS，并在输出窗口打印逐语句的语法树执行过程和最终输出结果（printSyntaxTree 会临时打开以便观察）。
+
+一个说明：参数式 re-execute 显示的输出结果是按参数名（o0、o1…）列出的，而非 canonical 名（Color、WorldPos…），因为 _execute_void_main 返回的就是参数名键。如果你希望输出窗口里显示更友好的语义名，我可以再加一层映射。
 
 
-# 7
+# 7 修复zip workflow纹理采样
 ## Prompts
+zip workflow没有加载相应的纹理图片导致PS执行阶段的纹理采样没有采到正确的texel。
+1. 请加载zip压缩包中的纹理文件。
+2. 纹理文件加载时需要做y flip。
 
 ## Git commit: 
 

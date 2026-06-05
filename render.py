@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import json
@@ -84,6 +85,55 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
         texture_desc_list=texture_desc_list or [],
         sampler_list=sampler_list or [],
     )
+
+
+# 3Dmigoto dumps PS shader-resource textures as
+# PS_slot_<slot>_res_<resid>_mip<mip>_arr<arr>.bmp
+_TEXTURE_FILE_RE = re.compile(
+    r'^PS_slot_(\d+)_res_\d+_mip(\d+)_arr(\d+)\.bmp$', re.IGNORECASE
+)
+
+
+def _discover_zip_textures(data_folder: str, log=None):
+    """Discover PS shader-resource textures dumped inside the extracted zip.
+
+    Groups the per-mip/array BMP dumps by shader-resource slot, using the
+    mip0/arr0 BMP as each texture's source (the Texture sampler regenerates
+    its own mip chain). Builds register-indexed texture_desc_list and
+    sampler_list (index == texture register id) so PS Texture2D.Sample(...)
+    resolves to the right texel data.
+
+    Returns (texture_exec, texture_desc_list, sampler_list); (None, [], [])
+    when no shader-resource textures are present.
+    """
+    try:
+        from texture import TextureDesc, Sampler, Texture
+    except Exception:
+        return None, [], []
+
+    slot_files = {}  # slot -> mip0/arr0 BMP path
+    for name in os.listdir(data_folder):
+        m = _TEXTURE_FILE_RE.match(name)
+        if not m:
+            continue
+        slot, mip, arr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if mip != 0 or arr != 0:
+            continue
+        slot_files[slot] = os.path.join(data_folder, name)
+
+    if not slot_files:
+        return None, [], []
+
+    max_slot = max(slot_files)
+    texture_desc_list = [None] * (max_slot + 1)
+    sampler_list = [None] * (max_slot + 1)
+    for slot, path in sorted(slot_files.items()):
+        texture_desc_list[slot] = TextureDesc(DataPath=path)
+        sampler_list[slot] = Sampler()  # default linear/wrap sampler
+        if log:
+            log(f"  texture slot t{slot}: {os.path.basename(path)}")
+
+    return Texture(), texture_desc_list, sampler_list
 
 
 def _run_zip_workflow(config: dict, data_path: str, config_path: str):
@@ -280,6 +330,17 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             ps_code_raw = f.read()
         ps_code = ps_interp.preprocess_hlsl(ps_code_raw)
         ps_interp.hlsl_code = ps_code
+
+        # Load PS shader-resource textures dumped in the zip so Texture2D.Sample
+        # resolves to real texel data (otherwise sampling returns None).
+        tex_exec, tex_desc_list, samp_list = _discover_zip_textures(
+            data_folder, ps_interp.log_output
+        )
+        if tex_exec:
+            ps_interp.set_texture_and_sampler(tex_exec, tex_desc_list, samp_list)
+            ps_interp.log_output(
+                f"Loaded {sum(1 for t in tex_desc_list if t)} PS texture(s) from zip"
+            )
 
         ps_interp._parse_texture_and_sampler_bindings(ps_code)
         for cb_match in ps_interp.patterns['cbuffer_finditer'].finditer(ps_code):

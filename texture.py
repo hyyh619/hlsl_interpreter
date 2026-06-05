@@ -325,6 +325,11 @@ class Texture:
                     ])
                 pixels.append(row)
 
+            # BMP scanlines are stored bottom-up (positive height). Flip
+            # vertically so texture row 0 (v=0) maps to the top of the image,
+            # matching D3D's top-left UV origin used by the sampler.
+            pixels.reverse()
+
             mip_levels = [pixels]
             mip_levels.extend(self._generate_mipmaps(pixels))
         else:
