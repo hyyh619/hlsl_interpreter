@@ -276,22 +276,60 @@ Loaded 1 PS texture(s) from zip
 Note: only mip0 is loaded (the interpreter regenerates its own mip chain); since Sample(s, v2.xy) uses a 2D coord (LOD 0), only the base level is consulted — so this is sufficient for correct texel results here. The injected 3Dmigoto resources t120/t125 have no BMP dumps and aren't sampled, so they're correctly ignored.
 
 
-# 8
+# 8 执行zip csv的所有draw，修复遇到的error
 ## Prompts
+1. 挨个执行Cases/zip_files.csv里的所有zip file。
+2. 每次执行zip workflow，请检查输出的output.log。
+3. 如果output.log中有ERROR打印，请分析ERROR的原因并修复。
+4. 修复完成后再次运行这个zip workflow，确认问题修复。
+5. 确认修复完成就提交这次修复
+
+## Git commit:
+no commit
+
+## Claude Code Session
+Findings & fix
+I ran each of the 5 zips in Cases/zip_files.csv through the zip workflow and checked output.log each time.
+
+The real bug wasn't an Error: line — it was the absence of one. On the first pass all 5 zips produced zero Error: lines, but that was misleading: the VS-vs-golden comparison was being silently skipped. render.py:197 looked only for a hardcoded MeshOut_vs_mesh.csv, while these RenderDoc/3Dmigoto captures name the golden file Collision-fix-constant-buffer-and-RdotV-zero_vs_mesh.csv. With no golden file found, the comparison block (gated by if golden_vs_rows:) never executed — so the pipeline could never report a mismatch regardless of correctness.
+
+Fix: when the canonical name is absent, fall back to any *_vs_mesh.csv in the data folder.
+
+Verification (with comparison now active)
+Zip	Golden rows	Result
+event28	204	PASSED 204/204
+event351	315	PASSED 315/315
+event371	6	PASSED 6/6
+event399	696	PASSED 696/696
+event516	3	PASSED 3/3
+All five now load golden data, run the comparison, and pass within tolerance — zero Error: lines. The interpreter math was already correct; the validation just hadn't been running.
+
+Committed as a60b48f. Note: the commit also swept in the Prompts-file changes you had pre-staged before I started, and one further unstaged edit to that file remains uncommitted — left as-is since it wasn't part of this fix.
+
+
+# 9 添加texture descriptor和sampler descriptor
+## Prompts
+1. 读取zip文件中的sampler_params.csv和texture_params.csv创建shader stage阶段对应的sampler和texture descriptor
+2. 纹理采样函数的执行参数请根据sampler descriptor和texture descriptor的参数来配置
+3. 纹理采样请支持mipmap采样
+4. 纹理数据加载也需要加载多层mip的数据
 
 ## Git commit: 
 
 ## Claude Code Session
+Implemented all four requirements; all 5 zips still PASS (204/315/6/696/3) with zero `Error:` lines.
 
+**1. Descriptors from CSV (`render.py`).** Replaced the BMP-only `_discover_zip_textures` with a stage-aware `_load_stage_textures(data_folder, stage, log)` that reads `texture_params.csv` and `sampler_params.csv`:
+- `texture_params.csv` → one `TextureDesc` per texture (t) slot, honoring `ViewFirstMip`/`ViewNumMips`/`MipsNum`, `Width`/`Height`/`ArraySize`. Only SRV rows with a dumped BMP are kept (injected 3Dmigoto resources with no image are skipped).
+- `sampler_params.csv` → one `Sampler` per sampler (s) slot via the new `Sampler.from_params_row`.
+- `texture_desc_list` is indexed by **t-slot**, `sampler_list` by **s-slot** (previously both were indexed by texture slot, which broke when one sampler served several textures — e.g. event28 has t0+t1 but only s0).
+- Falls back to scanning dumped BMPs (`_discover_stage_textures_from_bmp`) when `texture_params.csv` is absent. Wired for **both** VS and PS stages.
 
+**2. Sampling configured from descriptors.** `Sampler.from_params_row` parses the 3Dmigoto formats: address names (`Wrap`/`Clamp`/`Mirror`/`Border`/`MirrorOnce`), the `"Min=Linear,Mag=Linear,Mip=Point"` filter string into explicit min/mag/mip modes, `MinLOD`/`MaxLOD`/`MipLODBias`, `MaxAnisotropy`, and `CompareFunc`. New explicit `MinFilter`/`MagFilter`/`MipFilter` fields on `Sampler` take precedence in `_get_filter_mode()` (legacy bit-packed `Filter` path untouched). The interpreter's `Sample` handlers (both function-call and method-call paths) now resolve the sampler from the **sampler argument variable** via new `_find_sampler_binding` + `_resolve_sampler` (s-register lookup, with fallback to texture register then slot 0 then a default `Sampler`).
 
-# 9
-## Prompts
+**3 & 4. Real multi-mip data + mipmap sampling.** `TextureDesc` gained `MipDataPaths` (ordered mip0..mipN). `Texture._get_mip_levels` now loads each captured mip BMP directly when more than one level is present (refactored `_parse_bmp` into `_parse_bmp_pixels`/`_load_bmp_pixels`/`_load_mip_levels`), instead of regenerating the chain from mip0; single-image textures keep the regenerate-from-base behaviour. Cache key changed from `DataPath` to the tuple of mip paths. The existing LOD/mip-filter blend in `Texture.sample` now consults this real chain. Verified e.g. event28 t0 loads 9 levels (256→1) and t1 loads 8 levels (128→1) from the dumped BMPs, with s0 = (min=linear, mag=linear, mip=point), Wrap.
 
-## Git commit: 
-
-## Claude Code Session
-
+Note: the per-stage descriptor-load lines print to stdout but not `output.log` — a pre-existing quirk of the dual VS/PS log handles, not introduced here. No commit made (none requested).
 
 
 # 10

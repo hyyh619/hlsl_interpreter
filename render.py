@@ -1,5 +1,6 @@
 import os
 import re
+import csv
 import sys
 import time
 import json
@@ -87,51 +88,181 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
     )
 
 
-# 3Dmigoto dumps PS shader-resource textures as
-# PS_slot_<slot>_res_<resid>_mip<mip>_arr<arr>.bmp
-_TEXTURE_FILE_RE = re.compile(
-    r'^PS_slot_(\d+)_res_\d+_mip(\d+)_arr(\d+)\.bmp$', re.IGNORECASE
-)
+# 3Dmigoto dumps shader-resource textures, one BMP per mip/array slice, as
+# <Stage>_slot_<slot>_res_<resid>_mip<mip>_arr<arr>.bmp
+def _texture_file_re(stage: str):
+    return re.compile(
+        r'^' + re.escape(stage) + r'_slot_(\d+)_res_(\d+)_mip(\d+)_arr(\d+)\.bmp$',
+        re.IGNORECASE,
+    )
 
 
-def _discover_zip_textures(data_folder: str, log=None):
-    """Discover PS shader-resource textures dumped inside the extracted zip.
+def _read_csv_rows(path: str):
+    """Read a CSV into a list of dict rows; [] if absent/unreadable."""
+    rows = []
+    try:
+        with open(path, 'r', encoding='utf-8', newline='') as f:
+            for row in csv.DictReader(f):
+                rows.append(row)
+    except Exception:
+        pass
+    return rows
 
-    Groups the per-mip/array BMP dumps by shader-resource slot, using the
-    mip0/arr0 BMP as each texture's source (the Texture sampler regenerates
-    its own mip chain). Builds register-indexed texture_desc_list and
-    sampler_list (index == texture register id) so PS Texture2D.Sample(...)
-    resolves to the right texel data.
 
-    Returns (texture_exec, texture_desc_list, sampler_list); (None, [], [])
-    when no shader-resource textures are present.
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
+    """Ordered BMP paths for a texture's view mip range (mip0, mip1, ...).
+
+    Stops at the first missing level so the chain never indexes past real
+    captured data."""
+    paths = []
+    for m in range(first_mip, first_mip + max(1, num_mips)):
+        name = f"{stage}_slot_{slot}_res_{resource_id}_mip{m}_arr0.bmp"
+        full = os.path.join(data_folder, name)
+        if os.path.exists(full):
+            paths.append(full)
+        else:
+            break
+    return paths
+
+
+def _discover_stage_textures_from_bmp(data_folder, stage, log=None):
+    """Fallback texture discovery: scan dumped BMPs directly when
+    texture_params.csv is absent. Groups every mip slice (arr0) per slot so
+    the real captured mip chain is loaded, and pairs each texture with a
+    default sampler at the same slot index."""
+    try:
+        from texture import TextureDesc, Sampler, Texture
+    except Exception:
+        return None, [], []
+
+    pattern = _texture_file_re(stage)
+    slot_mips = {}  # slot -> {mip: path}
+    slot_res = {}   # slot -> resource id
+    for name in os.listdir(data_folder):
+        m = pattern.match(name)
+        if not m:
+            continue
+        slot, resid, mip, arr = (int(m.group(1)), int(m.group(2)),
+                                 int(m.group(3)), int(m.group(4)))
+        if arr != 0:
+            continue
+        slot_mips.setdefault(slot, {})[mip] = os.path.join(data_folder, name)
+        slot_res[slot] = resid
+
+    if not slot_mips:
+        return None, [], []
+
+    max_slot = max(slot_mips)
+    texture_desc_list = [None] * (max_slot + 1)
+    sampler_list = [None] * (max_slot + 1)
+    for slot, mips in sorted(slot_mips.items()):
+        mip_paths = [mips[m] for m in sorted(mips)]
+        texture_desc_list[slot] = TextureDesc(
+            MipLevels=len(mip_paths), DataPath=mip_paths[0], MipDataPaths=mip_paths)
+        sampler_list[slot] = Sampler()  # default linear/wrap sampler
+        if log:
+            log(f"  {stage} texture t{slot}: res {slot_res[slot]}, "
+                f"{len(mip_paths)} mip level(s) ({os.path.basename(mip_paths[0])})")
+
+    return Texture(), texture_desc_list, sampler_list
+
+
+def _load_stage_textures(data_folder, stage, log=None):
+    """Build per-stage texture and sampler descriptors from the zip's
+    texture_params.csv and sampler_params.csv.
+
+    - texture_params.csv → TextureDesc per texture (t) slot, with the full
+      captured mip chain (ViewFirstMip .. ViewFirstMip+ViewNumMips-1).
+    - sampler_params.csv → Sampler per sampler (s) slot, configured with the
+      captured address modes, filter (Min/Mag/Mip), LOD range and bias.
+
+    texture_desc_list is indexed by texture register (t-slot); sampler_list
+    is indexed by sampler register (s-slot). Falls back to scanning dumped
+    BMPs when texture_params.csv is missing.
+
+    Returns (texture_exec, texture_desc_list, sampler_list) or (None, [], []).
     """
     try:
         from texture import TextureDesc, Sampler, Texture
     except Exception:
         return None, [], []
 
-    slot_files = {}  # slot -> mip0/arr0 BMP path
-    for name in os.listdir(data_folder):
-        m = _TEXTURE_FILE_RE.match(name)
-        if not m:
-            continue
-        slot, mip, arr = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if mip != 0 or arr != 0:
-            continue
-        slot_files[slot] = os.path.join(data_folder, name)
+    stage = stage.upper()
+    tex_csv = os.path.join(data_folder, 'texture_params.csv')
+    samp_csv = os.path.join(data_folder, 'sampler_params.csv')
 
-    if not slot_files:
-        return None, [], []
-
-    max_slot = max(slot_files)
-    texture_desc_list = [None] * (max_slot + 1)
-    sampler_list = [None] * (max_slot + 1)
-    for slot, path in sorted(slot_files.items()):
-        texture_desc_list[slot] = TextureDesc(DataPath=path)
-        sampler_list[slot] = Sampler()  # default linear/wrap sampler
+    texture_by_slot = {}
+    for row in _read_csv_rows(tex_csv):
+        if (row.get('Stage') or '').strip().upper() != stage:
+            continue
+        bind = (row.get('BindType') or '').strip().upper()
+        if bind and bind != 'SRV':
+            continue
+        if 'Slot' not in row or 'ResourceId' not in row:
+            continue
+        slot = _as_int(row.get('Slot'), -1)
+        resource_id = _as_int(row.get('ResourceId'), -1)
+        if slot < 0 or resource_id < 0:
+            continue
+        mips_num = _as_int(row.get('MipsNum'), 1)
+        first_mip = _as_int(row.get('ViewFirstMip'), 0)
+        view_mips = _as_int(row.get('ViewNumMips'), mips_num) or mips_num
+        mip_paths = _collect_mip_paths(
+            data_folder, stage, slot, resource_id, first_mip, view_mips)
+        if not mip_paths:
+            # SRV bound but no BMP dumped (e.g. injected 3Dmigoto resource) —
+            # nothing to sample, skip it.
+            continue
+        texture_by_slot[slot] = TextureDesc(
+            Width=_as_int(row.get('Width'), 512) or 512,
+            Height=_as_int(row.get('Height'), 512) or 512,
+            MipLevels=len(mip_paths),
+            ArraySize=_as_int(row.get('ArraySize'), 1) or 1,
+            DataPath=mip_paths[0],
+            MipDataPaths=mip_paths,
+        )
         if log:
-            log(f"  texture slot t{slot}: {os.path.basename(path)}")
+            log(f"  {stage} texture t{slot}: res {resource_id}, "
+                f"{len(mip_paths)} mip level(s) ({os.path.basename(mip_paths[0])})")
+
+    # No texture_params.csv usable — fall back to scanning dumped BMPs.
+    if not texture_by_slot:
+        return _discover_stage_textures_from_bmp(data_folder, stage, log)
+
+    sampler_by_slot = {}
+    for row in _read_csv_rows(samp_csv):
+        if (row.get('Stage') or '').strip().upper() != stage:
+            continue
+        if 'Slot' not in row:
+            continue
+        slot = _as_int(row.get('Slot'), -1)
+        if slot < 0:
+            continue
+        sampler_by_slot[slot] = Sampler.from_params_row(row)
+        if log:
+            log(f"  {stage} sampler s{slot}: Filter={row.get('Filter','')} "
+                f"Address={row.get('AddressU')}/{row.get('AddressV')}/{row.get('AddressW')}")
+
+    max_t = max(texture_by_slot)
+    texture_desc_list = [None] * (max_t + 1)
+    for slot, desc in texture_by_slot.items():
+        texture_desc_list[slot] = desc
+
+    if sampler_by_slot:
+        max_s = max(sampler_by_slot)
+        sampler_list = [None] * (max_s + 1)
+        for slot, samp in sampler_by_slot.items():
+            sampler_list[slot] = samp
+    else:
+        # No sampler params captured — default linear/wrap sampler at slot 0.
+        sampler_list = [Sampler()]
 
     return Texture(), texture_desc_list, sampler_list
 
@@ -224,6 +355,18 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         vs_code_raw = f.read()
     vs_code = vs_interp.preprocess_hlsl(vs_code_raw)
     vs_interp.hlsl_code = vs_code
+
+    # Load VS shader-resource textures + samplers (vertex texture fetch) from
+    # the zip's texture_params.csv / sampler_params.csv. No-op when the VS
+    # stage binds no textures.
+    vs_tex_exec, vs_tex_desc_list, vs_samp_list = _load_stage_textures(
+        data_folder, 'VS', vs_interp.log_output
+    )
+    if vs_tex_exec:
+        vs_interp.set_texture_and_sampler(vs_tex_exec, vs_tex_desc_list, vs_samp_list)
+        vs_interp.log_output(
+            f"Loaded {sum(1 for t in vs_tex_desc_list if t)} VS texture(s) from zip"
+        )
 
     # Parse cbuffers, texture/sampler bindings, and functions from VS code
     vs_interp._parse_texture_and_sampler_bindings(vs_code)
@@ -341,10 +484,11 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         ps_code = ps_interp.preprocess_hlsl(ps_code_raw)
         ps_interp.hlsl_code = ps_code
 
-        # Load PS shader-resource textures dumped in the zip so Texture2D.Sample
-        # resolves to real texel data (otherwise sampling returns None).
-        tex_exec, tex_desc_list, samp_list = _discover_zip_textures(
-            data_folder, ps_interp.log_output
+        # Load PS shader-resource textures + samplers from the zip's
+        # texture_params.csv / sampler_params.csv so Texture2D.Sample resolves
+        # to real texel data with the captured sampler state and mip chain.
+        tex_exec, tex_desc_list, samp_list = _load_stage_textures(
+            data_folder, 'PS', ps_interp.log_output
         )
         if tex_exec:
             ps_interp.set_texture_and_sampler(tex_exec, tex_desc_list, samp_list)

@@ -1632,19 +1632,22 @@ class HLSLInterpreter:
             texture_name = texture_node.value if texture_node and texture_node.node_type == 'value' else None
             if texture_name:
                 sampler_node = args[0] if isinstance(args[0], SyntaxTreeNode) else None
+                sampler_name = (sampler_node.value
+                                if sampler_node is not None and sampler_node.node_type == 'value'
+                                else None)
                 coords_node = args[1] if len(args) > 1 else None
                 coords = self.evaluate_syntax_tree(coords_node, local_vars) if coords_node else None
                 if coords and isinstance(coords, list) and len(coords) >= 2:
                     u, v = coords[0], coords[1]
                     w = coords[2] if len(coords) > 2 else 0.0
                     binding = self._find_texture_binding(texture_name)
-                    if binding and self._texture_exec and self._texture_desc_list and self._sampler_list:
+                    if binding and self._texture_exec and self._texture_desc_list:
                         reg_id = binding.register_id
-                        if reg_id < len(self._texture_desc_list) and reg_id < len(self._sampler_list):
+                        if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                             texture_desc = self._texture_desc_list[reg_id]
-                            sampler = self._sampler_list[reg_id]
+                            sampler = self._resolve_sampler(sampler_name, reg_id)
                             result = self._texture_exec.sample(u, v, w, texture_desc, sampler)
-                            self.debug_print(f"[FUNC] {texture_name}.Sample(..., ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
+                            self.debug_print(f"[FUNC] {texture_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                             return result
             return None
 
@@ -1667,18 +1670,22 @@ class HLSLInterpreter:
             obj_name = obj_node.value if obj_node.node_type == 'value' else None
             if obj_name is None:
                 return None
+            sampler_node = args[0]
+            sampler_name = (sampler_node.value
+                            if sampler_node is not None and sampler_node.node_type == 'value'
+                            else None)
             coords = self.evaluate_syntax_tree(args[1], local_vars)
             if coords and isinstance(coords, list) and len(coords) >= 2:
                 u, v = coords[0], coords[1]
                 w = coords[2] if len(coords) > 2 else 0.0
                 binding = self._find_texture_binding(obj_name)
-                if binding and self._texture_exec and self._texture_desc_list and self._sampler_list:
+                if binding and self._texture_exec and self._texture_desc_list:
                     reg_id = binding.register_id
-                    if reg_id < len(self._texture_desc_list) and reg_id < len(self._sampler_list):
+                    if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                         texture_desc = self._texture_desc_list[reg_id]
-                        sampler = self._sampler_list[reg_id]
+                        sampler = self._resolve_sampler(sampler_name, reg_id)
                         result = self._texture_exec.sample(u, v, w, texture_desc, sampler)
-                        self.debug_print(f"[METHOD] {obj_name}.Sample(..., ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
+                        self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                         return result
             return None
 
@@ -2474,6 +2481,37 @@ class HLSLInterpreter:
             if binding.variable_name == texture_name:
                 return binding
         return None
+
+    def _find_sampler_binding(self, sampler_name: str) -> Optional['SamplerBinding']:
+        """根据采样器变量名查找采样器绑定 (用于将 Sample 调用中的采样器实参解析到 s 寄存器)"""
+        for binding in self.sampler_bindings:
+            if binding.variable_name == sampler_name:
+                return binding
+        return None
+
+    def _resolve_sampler(self, sampler_name: Optional[str], texture_reg_id: int):
+        """解析纹理采样使用的 Sampler。
+
+        优先用 Sample(samplerVar, coord) 中的采样器实参变量名解析到 s 寄存器，
+        再以该寄存器索引 sampler_list；解析失败时回退到纹理寄存器索引 (兼容旧流程)，
+        仍失败则用 slot 0 或默认 Sampler。
+        """
+        sampler = None
+        if sampler_name:
+            sbinding = self._find_sampler_binding(sampler_name)
+            if sbinding is not None and 0 <= sbinding.register_id < len(self._sampler_list):
+                sampler = self._sampler_list[sbinding.register_id]
+        if sampler is None and 0 <= texture_reg_id < len(self._sampler_list):
+            sampler = self._sampler_list[texture_reg_id]
+        if sampler is None and self._sampler_list:
+            sampler = self._sampler_list[0]
+        if sampler is None:
+            try:
+                from texture import Sampler as _Sampler
+                sampler = _Sampler()
+            except Exception:
+                sampler = None
+        return sampler
 
     def load_struct_data_from_csv(self, struct_name: str, csv_path: str):
         """

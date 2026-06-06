@@ -37,6 +37,37 @@ ADDRESS_MAP = {
     "D3D11_TEXTURE_ADDRESS_MIRROR_ONCE": 5,
 }
 
+# Address-mode names as they appear in 3Dmigoto's sampler_params.csv
+# (e.g. AddressU="Wrap"). Maps to the D3D11_TEXTURE_ADDRESS_* constants.
+ADDRESS_NAME_MAP = {
+    "WRAP": D3D11_TEXTURE_ADDRESS_WRAP,
+    "MIRROR": D3D11_TEXTURE_ADDRESS_MIRROR,
+    "CLAMP": D3D11_TEXTURE_ADDRESS_CLAMP,
+    "BORDER": D3D11_TEXTURE_ADDRESS_BORDER,
+    "MIRRORONCE": D3D11_TEXTURE_ADDRESS_MIRROR_ONCE,
+    "MIRROR_ONCE": D3D11_TEXTURE_ADDRESS_MIRROR_ONCE,
+}
+
+# Filter component values used internally by Sampler._get_filter_mode:
+# 0 == point, 1 == linear.
+FILTER_POINT = 0
+FILTER_LINEAR = 1
+
+# Comparison-function names as they appear in sampler_params.csv (CompareFunc).
+COMPARISON_NAME_MAP = {
+    "NEVER": D3D11_COMPARISON_NEVER,
+    "LESS": D3D11_COMPARISON_LESS,
+    "EQUAL": D3D11_COMPARISON_EQUAL,
+    "LESSEQUAL": D3D11_COMPARISON_LESS_EQUAL,
+    "LESS_EQUAL": D3D11_COMPARISON_LESS_EQUAL,
+    "GREATER": D3D11_COMPARISON_GREATER,
+    "NOTEQUAL": D3D11_COMPARISON_NOT_EQUAL,
+    "NOT_EQUAL": D3D11_COMPARISON_NOT_EQUAL,
+    "GREATEREQUAL": D3D11_COMPARISON_GREATER_EQUAL,
+    "GREATER_EQUAL": D3D11_COMPARISON_GREATER_EQUAL,
+    "ALWAYS": D3D11_COMPARISON_ALWAYS,
+}
+
 COMPARISON_MAP = {
     "D3D11_COMPARISON_NEVER": 0,
     "D3D11_COMPARISON_LESS": 1,
@@ -112,6 +143,60 @@ def _convert_bindflags(val):
     return BINDFLAGS_MAP.get(val, 0x8)
 
 
+def _parse_address_name(val) -> int:
+    """Resolve a sampler_params.csv address string (e.g. "Wrap") to a
+    D3D11_TEXTURE_ADDRESS_* constant. Falls back to the existing converters
+    for D3D11_*-style names / raw ints, then defaults to WRAP."""
+    if isinstance(val, int):
+        return val
+    if val is None:
+        return D3D11_TEXTURE_ADDRESS_WRAP
+    key = str(val).strip().upper()
+    if key in ADDRESS_NAME_MAP:
+        return ADDRESS_NAME_MAP[key]
+    return ADDRESS_MAP.get(str(val), D3D11_TEXTURE_ADDRESS_WRAP)
+
+
+def _parse_filter_component(token: str) -> int:
+    """Map a filter component word ("Linear"/"Point"/"Anisotropic") to the
+    internal point(0)/linear(1) mode. Anisotropic degrades to linear."""
+    t = str(token).strip().upper()
+    if t == "POINT":
+        return FILTER_POINT
+    # Linear / Anisotropic / anything else -> linear filtering
+    return FILTER_LINEAR
+
+
+def _parse_filter_string(val) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Parse a 3Dmigoto Filter string like
+    "Min=Linear,Mag=Linear,Mip=Point" into explicit (min, mag, mip) filter
+    modes. Returns (None, None, None) when the value isn't a parseable string
+    (so the caller keeps the bit-packed Filter behaviour)."""
+    if not isinstance(val, str):
+        return None, None, None
+    min_f = mag_f = mip_f = None
+    for part in val.split(','):
+        if '=' not in part:
+            continue
+        key, _, value = part.partition('=')
+        key = key.strip().upper()
+        mode = _parse_filter_component(value)
+        if key == 'MIN':
+            min_f = mode
+        elif key == 'MAG':
+            mag_f = mode
+        elif key == 'MIP':
+            mip_f = mode
+    return min_f, mag_f, mip_f
+
+
+def _parse_lod(val, default: float) -> float:
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 class Sampler:
     def __init__(
         self,
@@ -124,7 +209,10 @@ class Sampler:
         ComparisonFunc: int = D3D11_COMPARISON_NEVER,
         BorderColor: Optional[List[float]] = None,
         MinLOD: float = -3.40282e38,
-        MaxLOD: float = 3.40282e38
+        MaxLOD: float = 3.40282e38,
+        MinFilter: Optional[int] = None,
+        MagFilter: Optional[int] = None,
+        MipFilter: Optional[int] = None
     ):
         self.Filter = Filter
         self.AddressU = AddressU
@@ -136,6 +224,38 @@ class Sampler:
         self.BorderColor = BorderColor if BorderColor is not None else [0.0, 0.0, 0.0, 0.0]
         self.MinLOD = MinLOD
         self.MaxLOD = MaxLOD
+        # Explicit per-stage filter modes (0=point, 1=linear). When set these
+        # take precedence over the bit-packed `Filter` field in
+        # _get_filter_mode — used when the sampler is built from a
+        # 3Dmigoto "Min=..,Mag=..,Mip=.." filter string.
+        self.MinFilter = MinFilter
+        self.MagFilter = MagFilter
+        self.MipFilter = MipFilter
+
+    @classmethod
+    def from_params_row(cls, row: Dict[str, str]) -> 'Sampler':
+        """Build a Sampler from one sampler_params.csv row (3Dmigoto dump).
+
+        Columns: AddressU, AddressV, AddressW, Filter
+        ("Min=Linear,Mag=Linear,Mip=Point"), MinLOD, MaxLOD, MipLODBias,
+        MaxAnisotropy, CompareFunc.
+        """
+        min_f, mag_f, mip_f = _parse_filter_string(row.get('Filter'))
+        return cls(
+            AddressU=_parse_address_name(row.get('AddressU', 'Wrap')),
+            AddressV=_parse_address_name(row.get('AddressV', 'Wrap')),
+            AddressW=_parse_address_name(row.get('AddressW', 'Wrap')),
+            MipLODBias=_parse_lod(row.get('MipLODBias', 0.0), 0.0),
+            MaxAnisotropy=int(_parse_lod(row.get('MaxAnisotropy', 1), 1)),
+            ComparisonFunc=COMPARISON_NAME_MAP.get(
+                str(row.get('CompareFunc', 'Never')).strip().upper(),
+                D3D11_COMPARISON_NEVER),
+            MinLOD=_parse_lod(row.get('MinLOD', -3.40282e38), -3.40282e38),
+            MaxLOD=_parse_lod(row.get('MaxLOD', 3.40282e38), 3.40282e38),
+            MinFilter=min_f,
+            MagFilter=mag_f,
+            MipFilter=mip_f,
+        )
 
     @classmethod
     def from_config(cls, config_path: str, sampler_id: int) -> 'Sampler':
@@ -156,6 +276,10 @@ class Sampler:
         )
 
     def _get_filter_mode(self) -> Tuple[int, int, int]:
+        # Explicit modes (parsed from a "Min=..,Mag=..,Mip=.." string) win
+        # over the bit-packed D3D11_FILTER value when present.
+        if self.MinFilter is not None and self.MagFilter is not None and self.MipFilter is not None:
+            return self.MinFilter, self.MagFilter, self.MipFilter
         min_filter = (self.Filter >> 0) & 0x03
         mag_filter = (self.Filter >> 4) & 0x03
         mip_filter = (self.Filter >> 8) & 0x03
@@ -225,7 +349,8 @@ class TextureDesc:
         BindFlags: int = 0x8,
         CPUAccessFlags: int = 0,
         MiscFlags: int = 0,
-        DataPath: str = ""
+        DataPath: str = "",
+        MipDataPaths: Optional[List[str]] = None
     ):
         self.Width = Width
         self.Height = Height
@@ -239,6 +364,17 @@ class TextureDesc:
         self.CPUAccessFlags = CPUAccessFlags
         self.MiscFlags = MiscFlags
         self.DataPath = DataPath
+        # Ordered list of BMP paths, one per mip level (mip0, mip1, ...). When
+        # provided (and longer than one entry) the real captured mip chain is
+        # loaded directly instead of being regenerated from mip0. Defaults to
+        # [DataPath] so single-image textures keep the regenerate-from-base
+        # behaviour.
+        if MipDataPaths:
+            self.MipDataPaths = list(MipDataPaths)
+        elif DataPath:
+            self.MipDataPaths = [DataPath]
+        else:
+            self.MipDataPaths = []
 
     @classmethod
     def from_config(cls, config_path: str, texture_id: int) -> 'TextureDesc':
@@ -263,79 +399,105 @@ class TextureDesc:
 
 class Texture:
     def __init__(self):
-        self._mip_levels_cache: Dict[str, List[List[List[List[float]]]]] = {}
+        self._mip_levels_cache: Dict[Tuple[str, ...], List[List[List[List[float]]]]] = {}
 
     def _get_mip_levels(self, texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
-        data_path = texture_desc.DataPath
-        if data_path in self._mip_levels_cache:
-            return self._mip_levels_cache[data_path]
+        mip_paths = texture_desc.MipDataPaths or (
+            [texture_desc.DataPath] if texture_desc.DataPath else [])
+        cache_key = tuple(mip_paths)
+        if cache_key in self._mip_levels_cache:
+            return self._mip_levels_cache[cache_key]
 
-        mip_levels = []
-        try:
-            with open(data_path, 'rb') as f:
-                data = f.read()
-            mip_levels = self._parse_bmp(data, texture_desc)
-        except Exception:
-            mip_levels = self._create_placeholder_texture(texture_desc)
-
-        self._mip_levels_cache[data_path] = mip_levels
+        mip_levels = self._load_mip_levels(mip_paths, texture_desc)
+        self._mip_levels_cache[cache_key] = mip_levels
         return mip_levels
 
-    def _parse_bmp(self, data: bytes, texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
-        mip_levels = []
-        if len(data) < 54:
+    def _load_mip_levels(self, mip_paths: List[str],
+                         texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
+        """Load the mip chain.
+
+        When more than one mip BMP was captured, load each level directly so
+        sampling reflects the real captured data. With a single image, parse
+        the base level and regenerate the rest (legacy behaviour)."""
+        if len(mip_paths) > 1:
+            levels = []
+            for path in mip_paths:
+                pixels = self._load_bmp_pixels(path)
+                if pixels is None:
+                    # A missing/invalid level truncates the chain; stop here so
+                    # we never index past a real captured level.
+                    break
+                levels.append(pixels)
+            if levels:
+                return levels
             return self._create_placeholder_texture(texture_desc)
 
-        if data[0:2] != b'BM':
+        # Single source image: parse base + regenerate mips.
+        base = self._load_bmp_pixels(mip_paths[0]) if mip_paths else None
+        if base is None:
             return self._create_placeholder_texture(texture_desc)
+        mip_levels = [base]
+        mip_levels.extend(self._generate_mipmaps(base))
+        return mip_levels
+
+    def _load_bmp_pixels(self, path: str) -> Optional[List[List[List[float]]]]:
+        """Read one BMP file and return its pixels as a single mip level, or
+        None on any failure (so callers can fall back)."""
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except Exception:
+            return None
+        return self._parse_bmp_pixels(data)
+
+    def _parse_bmp_pixels(self, data: bytes) -> Optional[List[List[List[float]]]]:
+        """Parse a 24/32-bit BMP into a top-left-origin pixel grid (one mip
+        level). Returns None when the data isn't a supported BMP."""
+        if len(data) < 54 or data[0:2] != b'BM':
+            return None
 
         offset = struct.unpack('<I', data[10:14])[0]
         header_size = struct.unpack('<I', data[14:18])[0]
+        if header_size != 40:
+            return None
 
-        if header_size == 40:
-            width = struct.unpack('<I', data[18:22])[0]
-            height = struct.unpack('<I', data[22:26])[0]
-            bits_per_pixel = struct.unpack('<H', data[28:30])[0]
+        width = struct.unpack('<I', data[18:22])[0]
+        height = struct.unpack('<I', data[22:26])[0]
+        bits_per_pixel = struct.unpack('<H', data[28:30])[0]
 
-            if bits_per_pixel != 24 and bits_per_pixel != 32:
-                return self._create_placeholder_texture(texture_desc)
+        if bits_per_pixel != 24 and bits_per_pixel != 32:
+            return None
 
-            bytes_per_pixel = bits_per_pixel // 8
-            row_size = ((bits_per_pixel * width + 31) // 32) * 4
+        bytes_per_pixel = bits_per_pixel // 8
+        row_size = ((bits_per_pixel * width + 31) // 32) * 4
 
-            pixels = []
-            for y in range(height):
-                row = []
-                for x in range(width):
-                    pos = offset + y * row_size + x * bytes_per_pixel
-                    if pos + bytes_per_pixel > len(data):
-                        row.append([0.0, 0.0, 0.0, 1.0])
-                        continue
+        pixels = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                pos = offset + y * row_size + x * bytes_per_pixel
+                if pos + bytes_per_pixel > len(data):
+                    row.append([0.0, 0.0, 0.0, 1.0])
+                    continue
 
-                    if bits_per_pixel == 24:
-                        b, g, r = data[pos], data[pos + 1], data[pos + 2]
-                    else:
-                        b, g, r, a = data[pos], data[pos + 1], data[pos + 2], data[pos + 3]
+                if bits_per_pixel == 24:
+                    b, g, r = data[pos], data[pos + 1], data[pos + 2]
+                else:
+                    b, g, r, a = data[pos], data[pos + 1], data[pos + 2], data[pos + 3]
 
-                    row.append([
-                        r / 255.0,
-                        g / 255.0,
-                        b / 255.0,
-                        a / 255.0 if bits_per_pixel == 32 else 1.0
-                    ])
-                pixels.append(row)
+                row.append([
+                    r / 255.0,
+                    g / 255.0,
+                    b / 255.0,
+                    a / 255.0 if bits_per_pixel == 32 else 1.0
+                ])
+            pixels.append(row)
 
-            # BMP scanlines are stored bottom-up (positive height). Flip
-            # vertically so texture row 0 (v=0) maps to the top of the image,
-            # matching D3D's top-left UV origin used by the sampler.
-            pixels.reverse()
-
-            mip_levels = [pixels]
-            mip_levels.extend(self._generate_mipmaps(pixels))
-        else:
-            return self._create_placeholder_texture(texture_desc)
-
-        return mip_levels
+        # BMP scanlines are stored bottom-up (positive height). Flip
+        # vertically so texture row 0 (v=0) maps to the top of the image,
+        # matching D3D's top-left UV origin used by the sampler.
+        pixels.reverse()
+        return pixels
 
     def _create_placeholder_texture(self, texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
         width = 4
