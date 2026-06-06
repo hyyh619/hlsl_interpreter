@@ -19,6 +19,12 @@ class Pixel:
     primitive_id: int                # ID of the primitive this pixel belongs to
     sample_index: int = 0            # Sample index for MSAA
     ps_output_color: Optional[List[float]] = None  # Output color from Pixel Shader
+    quad_lane: int = 0               # Position within the 2x2 quad: 0=TL,1=TR,2=BL,3=BR
+    quad_inputs: Optional[List[Dict[str, Any]]] = None
+    # quad_inputs: the 4 lanes' interpolated input-attribute dicts (canonical keys
+    # Color/TexCoord/TexCoord2/Normal/WorldPos + sv_position), in TL,TR,BL,BR order.
+    # Shared across the quad's covered pixels; used only for screen-space derivatives
+    # (ddx/ddy → texture LOD). None for non-triangle primitives (points/lines).
 
     def __post_init__(self):
         if self.attributes is None:

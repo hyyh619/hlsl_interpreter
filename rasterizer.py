@@ -408,37 +408,60 @@ class Rasterizer:
         if self._should_cull_triangle(screen_v0, screen_v1, screen_v2):
             return
 
-        for y in range(int(min_y), int(max_y) + 1):
-            for x in range(int(min_x), int(max_x) + 1):
-                if self.config.scissor_enable and not self._is_in_scissor(x, y):
+        min_depth = self.config.viewport.min_depth
+        max_depth = self.config.viewport.max_depth
+
+        def _shade_lane(x: int, y: int):
+            """Interpolate one lane unconditionally (helpers included so derivatives
+            stay valid at triangle edges). Returns (interpolated, depth, covered)."""
+            p = (x, y)
+            w0 = self._edge_function(screen_v1, screen_v2, p)
+            w1 = self._edge_function(screen_v2, screen_v0, p)
+            w2 = self._edge_function(screen_v0, screen_v1, p)
+
+            bary_x = w0 / area
+            bary_y = w1 / area
+            bary_z = w2 / area
+
+            interpolated = self._interpolate_with_barycentric(
+                triangle.v0, triangle.v1, triangle.v2,
+                bary_x, bary_y, bary_z,
+                clip_w0, clip_w1, clip_w2
+            )
+            depth = bary_x * v0_ndc[2] + bary_y * v1_ndc[2] + bary_z * v2_ndc[2]
+
+            inside = (area > 0 and w0 >= 0 and w1 >= 0 and w2 >= 0) or \
+                     (area < 0 and w0 <= 0 and w1 <= 0 and w2 <= 0)
+            covered = (
+                inside
+                and min_x <= x <= max_x and min_y <= y <= max_y
+                and min_depth <= depth <= max_depth
+                and (not self.config.scissor_enable or self._is_in_scissor(x, y))
+            )
+            return interpolated, depth, covered
+
+        # Quad-aligned traversal: walk 2x2 blocks snapped to even coords so each
+        # covered fragment carries the whole quad's interpolated inputs (lanes in
+        # TL,TR,BL,BR order). Helper lanes (not covered) feed derivatives only.
+        qy_start = int(min_y) & ~1
+        qx_start = int(min_x) & ~1
+        for qy in range(qy_start, int(max_y) + 1, 2):
+            for qx in range(qx_start, int(max_x) + 1, 2):
+                lane_coords = ((qx, qy), (qx + 1, qy), (qx, qy + 1), (qx + 1, qy + 1))
+                lanes = [_shade_lane(lx, ly) for (lx, ly) in lane_coords]
+
+                if not any(lane[2] for lane in lanes):
                     continue
 
-                p = (x, y)
-                w0 = self._edge_function(screen_v1, screen_v2, p)
-                w1 = self._edge_function(screen_v2, screen_v0, p)
-                w2 = self._edge_function(screen_v0, screen_v1, p)
-
-                if (area > 0 and w0 >= 0 and w1 >= 0 and w2 >= 0) or \
-                   (area < 0 and w0 <= 0 and w1 <= 0 and w2 <= 0):
-
-                    bary_x = w0 / area
-                    bary_y = w1 / area
-                    bary_z = w2 / area
-
-                    depth = bary_x * v0_ndc[2] + bary_y * v1_ndc[2] + bary_z * v2_ndc[2]
-
-                    if depth < self.config.viewport.min_depth or depth > self.config.viewport.max_depth:
+                quad_inputs = [lane[0] for lane in lanes]
+                for lane_idx, ((lx, ly), (interpolated, depth, covered)) in enumerate(
+                    zip(lane_coords, lanes)
+                ):
+                    if not covered:
                         continue
-
-                    interpolated = self._interpolate_with_barycentric(
-                        triangle.v0, triangle.v1, triangle.v2,
-                        bary_x, bary_y, bary_z,
-                        clip_w0, clip_w1, clip_w2
-                    )
-
                     pixel = Pixel(
-                        x=x,
-                        y=y,
+                        x=lx,
+                        y=ly,
                         depth=depth,
                         color=interpolated.get('Color'),
                         texcoord=interpolated.get('TexCoord'),
@@ -446,7 +469,9 @@ class Rasterizer:
                         normal=interpolated.get('Normal'),
                         worldPos=interpolated.get('WorldPos'),
                         attributes=interpolated.get('attributes', {}),
-                        primitive_id=triangle.primitive_id
+                        primitive_id=triangle.primitive_id,
+                        quad_lane=lane_idx,
+                        quad_inputs=quad_inputs
                     )
                     self._pixels.append(pixel)
 

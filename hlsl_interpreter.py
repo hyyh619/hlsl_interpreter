@@ -342,6 +342,19 @@ class HLSLInterpreter:
         self._texture_desc_list: List['TextureDesc'] = texture_desc_list if texture_desc_list else []
         self._sampler_list: List['Sampler'] = sampler_list if sampler_list else []
 
+        # 2x2 quad context for screen-space derivatives (ddx/ddy → texture LOD).
+        # Set per-pixel by the PS loop; None outside a quad-aware PS execution.
+        self._quad_inputs: Optional[List[Dict[str, Any]]] = None
+        self._quad_lane: int = 0
+        self._quad_lane_locals_cache: Dict[int, Optional[dict]] = {}
+        self._quad_inputs_id: Optional[int] = None   # identity of the cached quad
+        self._in_derivative_eval: bool = False   # reentrancy + log-suppression guard
+        # Stashed PS execution context so neighbor lanes can be re-executed.
+        self._ps_input_params: Optional[list] = None
+        self._ps_output_params: Optional[list] = None
+        self._ps_code: Optional[str] = None
+        self._ps_main_func: Optional[str] = None
+
         # 预编译的正则表达式模式字典
         type_pattern = '|'.join(DATA_TYPE_LIST)
         self.patterns: Dict[str, re.Pattern] = {
@@ -623,7 +636,7 @@ class HLSLInterpreter:
 
     def debug_print(self, msg: str):
         """调试打印"""
-        if self.debug and self._should_print:
+        if self.debug and self._should_print and not self._in_derivative_eval:
             self.log_output(msg)
 
     def _format_float(self, val):
@@ -1646,7 +1659,8 @@ class HLSLInterpreter:
                         if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                             texture_desc = self._texture_desc_list[reg_id]
                             sampler = self._resolve_sampler(sampler_name, reg_id)
-                            result = self._texture_exec.sample(u, v, w, texture_desc, sampler)
+                            ddx_uv, ddy_uv = self._compute_uv_derivatives(coords_node, local_vars)
+                            result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv)
                             self.debug_print(f"[FUNC] {texture_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                             return result
             return None
@@ -1684,7 +1698,8 @@ class HLSLInterpreter:
                     if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                         texture_desc = self._texture_desc_list[reg_id]
                         sampler = self._resolve_sampler(sampler_name, reg_id)
-                        result = self._texture_exec.sample(u, v, w, texture_desc, sampler)
+                        ddx_uv, ddy_uv = self._compute_uv_derivatives(args[1], local_vars)
+                        result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv)
                         self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                         return result
             return None
@@ -3215,10 +3230,13 @@ class HLSLInterpreter:
             self.load_cbuffer_data_from_csv(cb_name, csv_path)
 
     def _execute_void_main(self, code: str, main_func: str, input_params: list,
-                            output_params: list, input_data: dict, row_index: int) -> dict:
+                            output_params: list, input_data: dict, row_index: int,
+                            capture_locals: dict = None) -> dict:
         """
         Execute a void main(...) style HLSL function.
         Returns dict {output_param_name: value}.
+        If capture_locals is provided, the final local-variable environment is
+        copied into it (used by quad neighbor-lane re-execution for derivatives).
         """
         local_vars = {}
         # Set input params directly by name
@@ -3275,6 +3293,8 @@ class HLSLInterpreter:
         result = {}
         for param in output_params:
             result[param['name']] = local_vars.get(param['name'])
+        if capture_locals is not None:
+            capture_locals.update(local_vars)
         return result
 
     def _resolve_slot_shared_params(self, output_params: list, result_params: dict):
@@ -3353,11 +3373,102 @@ class HLSLInterpreter:
 
         return results
 
+    # Maps PS input semantic → the canonical attribute key produced by the
+    # rasterizer's barycentric interpolation (see rasterizer._interpolate_*).
+    _SEM_TO_CANONICAL = {
+        'SV_POSITION': 'sv_position',
+        'COLOR': 'Color', 'COLOR0': 'Color',
+        'TEXCOORD': 'TexCoord', 'TEXCOORD0': 'TexCoord',
+        'TEXCOORD1': 'TexCoord2',
+        'NORMAL': 'Normal', 'NORMAL0': 'Normal',
+        'WORLDPOS': 'WorldPos', 'WORLDPOS0': 'WorldPos',
+    }
+
+    def _lane_local_vars(self, lane_attrs: Dict[str, Any]) -> dict:
+        """Build a PS main() input_data dict (param name → value) from one quad
+        lane's interpolated attributes (canonical keys)."""
+        input_data = {}
+        for param in (self._ps_input_params or []):
+            sem_base = param['semantic_base'].upper()
+            sem_idx = param['semantic_index']
+            sem_full = f'{sem_base}{sem_idx}' if sem_idx > 0 else sem_base
+            key = self._SEM_TO_CANONICAL.get(sem_full, self._SEM_TO_CANONICAL.get(sem_base, ''))
+            val = lane_attrs.get(key) if key else None
+            if val is None:
+                val = self._default_value_for_type(param['type'])
+            comp = self._type_component_count(param['type'])
+            if isinstance(val, list):
+                val = (val + [0.0] * comp)[:comp]
+            input_data[param['name']] = val
+        return input_data
+
+    def _get_lane_locals(self, lane_idx: int) -> Optional[dict]:
+        """Re-execute PS main() for one quad lane and return its final local-var
+        environment (cached per current pixel). Used so a Sample coordinate that
+        depends on shader locals (e.g. `float2 uv = input.TexCoord;`) resolves for
+        neighbor lanes. Derivative eval is disabled during this run (reentrancy +
+        log suppression)."""
+        cache = self._quad_lane_locals_cache
+        if lane_idx in cache:
+            return cache[lane_idx]
+        if (self._quad_inputs is None or lane_idx >= len(self._quad_inputs)
+                or self._ps_code is None):
+            cache[lane_idx] = None
+            return None
+        input_data = self._lane_local_vars(self._quad_inputs[lane_idx])
+        captured: dict = {}
+        saved_counter = self._eval_counter
+        saved_print = self._should_print
+        self._in_derivative_eval = True
+        try:
+            self._execute_void_main(
+                self._ps_code, self._ps_main_func, self._ps_input_params,
+                self._ps_output_params, input_data, 0, capture_locals=captured
+            )
+        finally:
+            self._in_derivative_eval = False
+            self._eval_counter = saved_counter
+            self._should_print = saved_print
+        cache[lane_idx] = captured
+        return captured
+
+    def _compute_uv_derivatives(self, coords_node, local_vars):
+        """Compute the per-quad screen-space UV gradient (ddx, ddy) of the *actual*
+        sample-coordinate expression via 2x2 quad lockstep re-evaluation.
+        Returns (ddx_uv, ddy_uv) 2-comp lists, or (None, None) when no quad context
+        (non-triangle primitives, VS, or re-entrant neighbor execution)."""
+        if self._quad_inputs is None or coords_node is None or self._in_derivative_eval:
+            return None, None
+
+        def lane_uv(lane_idx):
+            env = local_vars if lane_idx == self._quad_lane else self._get_lane_locals(lane_idx)
+            if env is None:
+                return None
+            val = self.evaluate_syntax_tree(coords_node, env)
+            if isinstance(val, list) and len(val) >= 2:
+                return [float(val[0]), float(val[1])]
+            return None
+
+        # GPU gradient is constant across the quad: ddx = TR-TL, ddy = BL-TL.
+        uv_tl, uv_tr, uv_bl = lane_uv(0), lane_uv(1), lane_uv(2)
+        if uv_tl is None or uv_tr is None or uv_bl is None:
+            return None, None
+        ddx_uv = [uv_tr[0] - uv_tl[0], uv_tr[1] - uv_tl[1]]
+        ddy_uv = [uv_bl[0] - uv_tl[0], uv_bl[1] - uv_tl[1]]
+        return ddx_uv, ddy_uv
+
     def executePS_with_params(self, main_func: str, ps_input_params: list,
                                 ps_output_params: list, pixels: list, ps_code: str = None) -> list:
         """Execute pixel shader using parameter-based I/O."""
         self._eval_counter = 0
         code = ps_code or self.hlsl_code
+
+        # Stash PS execution context so quad neighbor lanes can be re-executed
+        # for screen-space derivatives (ddx/ddy → texture LOD).
+        self._ps_input_params = ps_input_params
+        self._ps_output_params = ps_output_params
+        self._ps_code = code
+        self._ps_main_func = main_func
 
         # Mapping from PS input semantic to pixel attribute name
         sem_to_pixel = {
@@ -3371,6 +3482,14 @@ class HLSLInterpreter:
 
         for pixel in pixels:
             pixel.ps_output_color = None
+            self._quad_inputs = pixel.quad_inputs
+            self._quad_lane = pixel.quad_lane
+            # Neighbor-lane locals are shared by all covered pixels of one quad
+            # (same quad_inputs object emitted consecutively by the rasterizer),
+            # so only reset the cache when we cross into a new quad.
+            if id(pixel.quad_inputs) != self._quad_inputs_id:
+                self._quad_lane_locals_cache = {}
+                self._quad_inputs_id = id(pixel.quad_inputs)
             input_data = {}
 
             for param in ps_input_params:
@@ -3405,6 +3524,16 @@ class HLSLInterpreter:
                     break
             if pixel.ps_output_color is None and result_params:
                 pixel.ps_output_color = next(iter(result_params.values()))
+
+        # Clear quad context so VS / non-quad paths don't see stale state.
+        self._quad_inputs = None
+        self._quad_lane = 0
+        self._quad_lane_locals_cache = {}
+        self._quad_inputs_id = None
+        self._ps_input_params = None
+        self._ps_output_params = None
+        self._ps_code = None
+        self._ps_main_func = None
 
         return pixels
 

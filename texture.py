@@ -413,7 +413,7 @@ class Texture:
         return mip_levels
 
     def _load_mip_levels(self, mip_paths: List[str],
-                         texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
+                        texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
         """Load the mip chain.
 
         When more than one mip BMP was captured, load each level directly so
@@ -603,17 +603,32 @@ class Texture:
     def _sample_mip_point(self, mip_level: List[List[List[float]]], u: float, v: float) -> List[float]:
         return self._sample_nearest(mip_level, u, v)
 
-    def sample(self, u: float, v: float, w: float, texture_desc: TextureDesc, sampler: Sampler) -> List[float]:
+    def sample(self, u: float, v: float, w: float, texture_desc: TextureDesc, sampler: Sampler,
+               ddx_uv: Optional[List[float]] = None, ddy_uv: Optional[List[float]] = None) -> List[float]:
         tu, tv, tw = sampler.transform_coordinates(u, v, w)
-
-        lod = tw + sampler.MipLODBias
-
-        lod = max(sampler.MinLOD, min(sampler.MaxLOD, lod))
 
         min_filter, mag_filter, mip_filter = sampler._get_filter_mode()
 
         mip_levels = self._get_mip_levels(texture_desc)
         level_count = len(mip_levels)
+
+        # LOD selection. When screen-space UV derivatives are supplied (the PS
+        # quad path), compute LOD the D3D11 way:
+        #   rho = max(|ddx_uv * texsize|, |ddy_uv * texsize|);  LOD = log2(rho)
+        # Otherwise fall back to treating the 3rd coordinate as an explicit LOD
+        # (SampleLevel-style / 3-component coords / points & lines).
+        if ddx_uv is not None and ddy_uv is not None:
+            tex_h = len(mip_levels[0])
+            tex_w = len(mip_levels[0][0]) if tex_h > 0 else 1
+            dx_u, dx_v = ddx_uv[0] * tex_w, ddx_uv[1] * tex_h
+            dy_u, dy_v = ddy_uv[0] * tex_w, ddy_uv[1] * tex_h
+            rho_sq = max(dx_u * dx_u + dx_v * dx_v, dy_u * dy_u + dy_v * dy_v)
+            lod = 0.5 * math.log2(rho_sq) if rho_sq > 1e-20 else 0.0
+        else:
+            lod = tw
+
+        lod = lod + sampler.MipLODBias
+        lod = max(sampler.MinLOD, min(sampler.MaxLOD, lod))
 
         if level_count == 1:
             if mag_filter == 0:
@@ -621,7 +636,7 @@ class Texture:
             else:
                 return self._sample_linear(mip_levels[0], tu, tv)
 
-        lod_level = min(lod, float(level_count - 1))
+        lod_level = max(0.0, min(lod, float(level_count - 1)))
         level0 = int(lod_level)
         level1 = min(level0 + 1, level_count - 1)
 

@@ -314,7 +314,8 @@ Committed as a60b48f. Note: the commit also swept in the Prompts-file changes yo
 3. 纹理采样请支持mipmap采样
 4. 纹理数据加载也需要加载多层mip的数据
 
-## Git commit: 
+## Git commit:
+Add texture descriptor and sampler descriptor by claude code.
 
 ## Claude Code Session
 Implemented all four requirements; all 5 zips still PASS (204/315/6/696/3) with zero `Error:` lines.
@@ -332,22 +333,142 @@ Implemented all four requirements; all 5 zips still PASS (204/315/6/696/3) with 
 Note: the per-stage descriptor-load lines print to stdout but not `output.log` — a pre-existing quirk of the dual VS/PS log handles, not introduced here. No commit made (none requested).
 
 
-# 10
+# 10 纹理采样的LOD是如何计算的
 ## Prompts
+纹理采样的LOD是如何计算的
 
 ## Git commit: 
 
-## Claude Code Session
+## Claude Code Session 
+LOD 的实际来路
+整条链路在 texture.py:606-628 和调用方 hlsl_interpreter.py:1640-1649：
+
+1. LOD 从纹理坐标的第三个分量来
+
+在 Sample 调用处：
 
 
+u, v = coords[0], coords[1]
+w = coords[2] if len(coords) > 2 else 0.0   # 第三个分量当 LOD，没有就是 0
+对于普通的 tex.Sample(samp, input.TexCoord)（2 分量 UV），w 永远是 0.0。
 
-# 11
+2. 在 sample() 里把 w 直接当 LOD
+
+texture.py:607-611：
+
+
+tu, tv, tw = sampler.transform_coordinates(u, v, w)
+lod = tw + sampler.MipLODBias              # LOD = 传入值 + MipLODBias
+lod = max(sampler.MinLOD, min(sampler.MaxLOD, lod))  # 钳到 [MinLOD, MaxLOD]
+3. 用 LOD 选 mip 层 + 三线性混合 texture.py:624-628：
+
+
+lod_level = min(lod, float(level_count - 1))
+level0 = int(lod_level)              # 下层 mip
+level1 = min(level0 + 1, ...)        # 上层 mip
+s = lod_level - level0               # 小数部分 → 两层之间的插值权重
+最后按 color0*(1-s) + color1*s 在相邻两个 mip 之间线性插值（texture.py:670-675）。
+
+关键点 / 与真实 GPU 的差异
+真实 D3D11	这个解释器
+LOD = log₂(max(|∂UV/∂x|, |∂UV/∂y|) × 纹理尺寸)，由光栅化 2×2 quad 的屏幕空间导数算出	不计算导数，LOD 直接取坐标第三分量，缺省 0.0
+Sample() 自动算 mip	行为更接近 SampleLevel(samp, uv, lod)——LOD 必须显式给
+也就是说，目前 Sample(samp, uv) 永远采样 mip 0（因为 w=0），除非：
+
+你传入 3 分量坐标显式指定 LOD，或
+MipLODBias / MinLOD 把它推到更高层。
+如果你想要"真实"的 LOD，需要在像素着色器执行时维护 2×2 像素 quad、对插值后的 UV 做 ddx/ddy，再 log2 ——目前 pixel.py / 光栅化路径里没有这一步。要我帮你确认光栅器是否按 quad 输出像素、或评估加上导数式 LOD 的改动量吗？
+
+
+# 11 光栅化按照quad输出，计算纹理LOD
 ## Prompts
+1. 光栅化按照quad输出像素
+2. 像素着色器执行时使用2x2像素quad，对插值后的UV做ddx/ddy
+3. 增加正确的纹理LOD计算
 
 ## Git commit: 
 
-## Claude Code Session
+## Claude Code Session Plan
+Plan: Quad-based rasterization + screen-space derivatives + correct texture LOD
+Context
+Today the interpreter has no real LOD. Texture2D.Sample(samp, uv) takes the third coordinate component as an explicit LOD (texture.py:609); a normal 2-component Sample(s, input.TexCoord) always passes w = 0.0 (hlsl_interpreter.py:1642, :1680), so it always samples mip 0. Real D3D11 derives LOD from the screen-space derivatives of the sampled UV across a 2×2 pixel quad: LOD = log2(max(|∂uv/∂x|·W, |∂uv/∂y|·H)).
 
+This change makes the pixel pipeline quad-based and computes LOD the way hardware does:
+
+Rasterizer emits pixels organized into 2×2 quads (with edge helper lanes so derivatives are valid at triangle edges).
+The PS runs per quad, keeping all 4 lanes' interpolated inputs; at a Sample call it re-evaluates the actual coordinate expression for the neighbor lanes and finite-differences them (quad lockstep re-eval — correct even when the shader transforms UV, e.g. uv*2+ofs).
+texture.sample computes LOD from those UV derivatives instead of the explicit-w hack.
+Outcome: textures sampled at a distance correctly select/blend higher mip levels; minified surfaces stop aliasing. VS golden comparison is untouched (this only affects the PS path; there is no PS golden check).
+
+Design decision (confirmed with user)
+Quad lockstep re-eval. Rasterizer groups covered pixels into quads and attaches each quad's 4 interpolated-input dicts (helpers included). The PS, at each Sample, rebuilds neighbor lanes' local_vars from those dicts, re-evaluates the coordinate AST per lane, and differences the results. This is faithful to HW and also lays the groundwork for HLSL ddx()/ddy() intrinsics.
+
+Changes
+1. pixel.py — quad metadata on Pixel
+Add fields (all defaulted, so existing constructions keep working):
+
+quad_lane: int = 0 — position in quad: 0=TL, 1=TR, 2=BL, 3=BR.
+quad_inputs: Optional[List[Dict]] = None — the 4 lanes' interpolated input-attribute dicts (canonical keys: Color/TexCoord/TexCoord2/Normal/WorldPos, plus sv_position), in TL,TR,BL,BR order. Used only to compute derivatives; None for non-triangle primitives.
+Note: to_dict/from_dict already reference a nonexistent self.position (pre-existing bug, lines pixel.py:52-53, :68) — leave as-is, out of scope.
+2. rasterizer.py — _rasterize_triangle emits quads
+Replace the per-pixel scanline loop (rasterizer.py:411-451) with a quad-aligned loop: iterate qy in range(min_y&~1 .. max_y, step 2), qx likewise. For each 2×2 block, the 4 lane pixel centers are (qx,qy),(qx+1,qy),(qx,qy+1),(qx+1,qy+1).
+
+For every lane compute barycentrics via the existing _edge_function and interpolate inputs via the existing _interpolate_with_barycentric (rasterizer.py:482) — unconditionally, so helper lanes (outside the triangle / negative bary, i.e. extrapolated) still get UV values for differencing.
+A lane is covered if: inside-edge test passes (existing area-sign test, lines :421-422) AND in viewport bbox AND passes scissor AND depth ∈ [min_depth, max_depth].
+If ≥1 lane covered: build the quad_inputs list (4 interpolated dicts), then emit a Pixel only for covered lanes (helpers are not added to self._pixels), each carrying quad_lane and a shared reference to quad_inputs. Pixel fields (color/texcoord/…) come from that lane's interpolated dict exactly as today.
+Net effect: self._pixels still contains only covered fragments (same count, same downstream behavior for depth/mesh-view/output-merger). Quads are the unit of derivative context only.
+Points/lines paths unchanged → their pixels have quad_inputs=None → PS falls back to explicit-LOD.
+3. hlsl_interpreter.py — lockstep derivative context + LOD wiring
+a. PS loop (:3372-3408). Keep the current per-pixel loop, but before calling _execute_void_main, stash quad context on self:
+
+self._ps_input_params = ps_input_params (needed to map canonical attr keys → param names per lane).
+self._quad_inputs = pixel.quad_inputs, self._quad_lane = pixel.quad_lane. Clear them after (so VS / non-quad paths see None).
+b. New helper _compute_uv_derivatives(coords_node, local_vars) in the interpreter:
+
+If self._quad_inputs is None → return (None, None) (no quad context → caller keeps old behavior).
+Build neighbor local_vars for the TL/TR/BL/BR lanes by mapping each lane's quad_inputs dict (canonical keys) onto the PS input param names — reuse the same sem_to_pixel/canonical mapping logic the PS loop already uses (:3363-3395); factor that mapping into a small _lane_local_vars(lane_attrs) so it's not duplicated.
+Re-evaluate coords_node via the existing evaluate_syntax_tree for the relevant lanes: uv_TL, uv_TR, uv_BL. Derivative ddx = uv_TR - uv_TL, ddy = uv_BL - uv_TL (component-wise, first 2 comps). Whichever lane is "current" we always difference against the quad's TL/TR/BL — GPU semantics use a single per-quad gradient, so compute from the fixed quad corners regardless of quad_lane.
+Return (ddx_uv, ddy_uv) as 2-element lists.
+c. Both Sample handlers (:1628-1651 function-call and :1667-1689 method-call): after evaluating coords, call _compute_uv_derivatives(coords_node, local_vars) and pass ddx_uv, ddy_uv into self._texture_exec.sample(...). When derivatives are None (no quad / points / lines), behavior is unchanged. (coords_node is args[1] / node.args[1] already in scope.)
+
+4. texture.py — sample() computes LOD from derivatives
+Extend the signature: sample(self, u, v, w, texture_desc, sampler, ddx_uv=None, ddy_uv=None) (texture.py:606). New LOD source (replacing/augmenting lines :609-611):
+
+If ddx_uv/ddy_uv provided: scale by mip0 texel dims W = mip_levels[0] width, H = height → dx=(ddx_u*W, ddx_v*H), dy=(ddy_u*W, ddy_v*H); rho = sqrt(max(dx·dx, dy·dy)); lod = log2(rho) (guard rho<=0 → lod=0). Then apply + MipLODBias, clamp to [MinLOD, MaxLOD] (keep existing clamp).
+Else (derivatives None): keep the current explicit-w-as-LOD path verbatim — preserves SampleLevel-style and 3-component-coord behavior, and points/lines.
+Use texture dims from the loaded mip0 grid (already available as mip_levels[0]), not just texture_desc.Width, so it matches actual texel data. The rest of the mip-select + trilinear blend (:624-677) is unchanged.
+Out of scope / non-goals
+HLSL ddx()/ddy() intrinsics (the lockstep machinery enables them; not wired here).
+Anisotropic filtering (LOD stays isotropic: max of the two gradients).
+Helper-lane PS execution (helpers feed derivatives only; never shaded/depth-tested/output).
+The pre-existing Pixel.to_dict self.position bug.
+Verification
+Run the canonical case: python render.py ./Cases/Default.json.
+Confirm no Error: lines in Cases/output.log (VS golden path must stay green — this change doesn't touch VS).
+Pick a textured case whose zip has a real mip chain (the prompt doc notes event28: t0 = 9 levels 256→1, t1 = 8 levels 128→1, sampler s0 = min/mag Linear, mip Point, Wrap). Run it and grep [FUNC]/[METHOD] …Sample( debug lines: minified pixels should now resolve to LOD > 0 (sampling smaller mips), whereas near pixels stay ~LOD 0. Before this change every Sample used mip 0.
+Add a temporary debug print of computed lod in texture.sample to eyeball the LOD range across a triangle that recedes into the distance (remove after).
+Sanity: pixel count in the "Rasterized → N pixels" log should be unchanged vs. before (helpers are not emitted into self._pixels).
+mesh_view_enabled case still renders (rasterizer/PS/output-merger pixel sets unchanged).
+
+## Claude Code Session
+What changed
+1. 光栅化按照 quad 输出 — rasterizer.py
+_rasterize_triangle now walks the bounding box in 2×2 quad blocks snapped to even coords. Every lane (including helper lanes outside the triangle) gets interpolated via the existing _interpolate_with_barycentric, so derivatives stay valid at triangle edges. Only covered lanes are emitted to self._pixels — each carrying quad_lane (TL/TR/BL/BR) and a shared quad_inputs reference.
+
+2. PS 使用 2×2 quad，对插值后的 UV 做 ddx/ddy — hlsl_interpreter.py
+True quad lockstep re-eval: each Sample(s, coord) call invokes _compute_uv_derivatives, which re-evaluates the actual coordinate expression for the TL/TR/BL lanes and differences them (ddx = TR−TL, ddy = BL−TL). Because the coordinate often depends on shader locals (float2 uv = input.TexCoord; Sample(s, uv)), neighbor lanes are re-executed via _get_lane_locals to reconstruct their full local environment — guarded against recursion/log-spam (_in_derivative_eval) and cached per-quad (not per-pixel) so each quad runs its lanes once.
+
+3. 正确的纹理 LOD — texture.py
+sample() gains ddx_uv/ddy_uv. When present: ρ² = max(|ddx·texsize|², |ddy·texsize|²), LOD = ½·log2(ρ²), then + MipLODBias, clamp [MinLOD, MaxLOD], and the mip index is floored at 0 (magnification → mip0). Falls back to the old explicit-w LOD when no derivatives (points/lines/SampleLevel-style).
+
+Verification
+VS golden untouched: Default (event28) 204/204 PASS, color-correct-ninjia 2712/2712 PASS, zero Error: lines.
+LOD now varies: distribution spanned −3.07 … 6.65 across mip levels 0–7 (event28 t0 has 9 mips); previously every sample was LOD 0.
+Pixel count parity: 62200 = 62200 vs. stashed baseline — coverage set is identical, quads are derivative context only.
+Cost: PS ~16s → 39s (neighbor re-execution); the per-quad cache cut it from an initial 65s. Rasterizer ~1.9s → 6.6s (4 lanes/quad). Acceptable for an emulator; noted as the main perf trade-off.
+The two configs that errored (specular_too_shining, wrong_constant_attenuation) are pre-existing broken legacy configs (data_path: null, missing log dirs) — not affected by this work.
+
+One follow-up worth flagging for §11 of your prompt doc: the lockstep model now makes HLSL ddx()/ddy() intrinsics straightforward to add (the machinery is in place) — currently out of scope.
 
 
 # 12

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python render.py ./Cases/Default.json)",
+      "Bash(LOD_DEBUG=1 python render.py ./Cases/Default.json)",
+      "Bash(python -c ' *)",
+      "Bash(git stash *)"
+    ]
+  }
+}
