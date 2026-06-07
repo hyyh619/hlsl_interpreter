@@ -408,6 +408,20 @@ class Rasterizer:
         if self._should_cull_triangle(screen_v0, screen_v1, screen_v2):
             return
 
+        # FillMode != SOLID: draw the triangle as its 3 edges (wireframe) or its
+        # 3 corner points. Culling above still applies, matching D3D11 which only
+        # rasterizes wireframe/point fills for triangles that survive the cull.
+        if self.config.fill_mode == FillMode.LINE:
+            self._rasterize_line(triangle.v0, triangle.v1, triangle.primitive_id)
+            self._rasterize_line(triangle.v1, triangle.v2, triangle.primitive_id)
+            self._rasterize_line(triangle.v2, triangle.v0, triangle.primitive_id)
+            return
+        elif self.config.fill_mode == FillMode.POINT:
+            self._rasterize_point(triangle.v0, triangle.primitive_id)
+            self._rasterize_point(triangle.v1, triangle.primitive_id)
+            self._rasterize_point(triangle.v2, triangle.primitive_id)
+            return
+
         min_depth = self.config.viewport.min_depth
         max_depth = self.config.viewport.max_depth
 

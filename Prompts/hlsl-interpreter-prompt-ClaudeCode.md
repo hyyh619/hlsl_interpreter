@@ -472,8 +472,9 @@ The two configs that errored (specular_too_shining, wrong_constant_attenuation) 
 One follow-up worth flagging for §11 of your prompt doc: the lockstep model now makes HLSL ddx()/ddy() intrinsics straightforward to add (the machinery is in place) — currently out of scope.
 
 
-# 12
+# 12 实现wireframe绘制
 ## Prompts
+rasterizer只支持solid绘制，请根据FillMode实现wireframe
 
 ## Git commit: 
 
@@ -500,6 +501,33 @@ One follow-up worth flagging for §11 of your prompt doc: the lockstep model now
 
 
 # 15
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 16
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 17
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 18
 ## Prompts
 
 ## Git commit: 
