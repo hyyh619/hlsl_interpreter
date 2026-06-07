@@ -636,27 +636,95 @@ Add regression test to verify each code modification by claude code.
 5. pixels的color和depth value比较需要加入容错值，该值可以通过输入json文件配置，默认配置为0.01
 6. 把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Add pipeline statistic compare and pixels compare by claude code.
 
 ## Claude Code Session
+Summary
+I implemented the two golden comparisons in render.py and verified them, then wrote the session doc to Sessions/hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output.md.
+
+What was added (all in render.py):
+
+Pipeline-statistics comparison — _load_golden_pipeline_statistics reads pipeline_statistics.csv; _compare_pipeline_statistics maps each golden RawCounter to our pipeline_stats and reports per counter. VSInvocations/SamplesPassed mismatches → error, all other mapped counters → warning. Unmodeled stages (HS/DS/GS/CS) are skipped to avoid noise.
+Output-merger pixel comparison — _load_golden_ps_output reads diff_ps_output_rt0.csv (re-ordering its B,G,R,A channels to RGBA); _compare_ps_output collapses overlapping pixels to the nearest-depth winner, compares color + depth within tolerance, caps detail to 50 lines, and prints a matched/mismatched/missing/extra summary.
+pixel_tolerance config key, default 0.01, used for both color and depth.
+Key design decision (you confirmed): the spec says print "Error", but run_regression.py gates failures on lines starting with the bare token Error:. Since the interpreter currently over-produces pixels (no real depth occlusion), SamplesPassed won't match golden yet. I used distinct Error [PipelineStats]: / Error [PixelDiff]: prefixes — error-level and greppable, but they don't trip the regression gate.
+
+Verification:
+
+event371: stats comparison correctly flags SamplesPassed (1404 vs golden 576) as an error and IAPrimitives/PSInvocations as warnings; pixel diff shows depth matching to ~3e-4 but PS color far darker than golden.
+event28 (occluded draw): empty pixel CSV handled gracefully (comparison skipped).
+Regression suite: 6/6 PASS — the new lines don't break the existing VS-vs-golden gate.
+The comparison feature works correctly. It surfaces two pre-existing pipeline gaps (no culling/depth occlusion → SamplesPassed; PS color darkness vs golden) that are real follow-up items, noted in the doc but out of scope for this change.
 
 
-
-# 19
+# 19 检查是否实现了depth clip
 ## Prompts
+检查是否实现了depth clip
 
 ## Git commit: 
 
 ## Claude Code Session
+结论：Depth clip 没有真正实现
+我检查了整个 rasterizer 和 render 管线。现状如下：
+
+1. depth_clip_enable 标志是死配置
+在 rasterizer.py:84 定义 depth_clip_enable: bool = True，并在 rasterizer.py:218 和 rasterizer.py:868 从 JSON / pipeline state 读取。
+但这个字段在全代码里从未被任何逻辑读取使用（grep 只命中定义和赋值，无消费点）。也就是说把它设成 False 不会有任何效果——depth clip 无法被关闭。
+2. 只有三角形有一个"近似"的逐像素深度范围剔除
+在 rasterizer.py:460-490，三角形光栅化时计算透视插值后的 NDC z（depth = Σ baryᵢ·(zᵢ/wᵢ)），并在判定覆盖时做：
 
 
+covered = inside and ... and min_depth <= depth <= max_depth ...
+其中 min_depth/max_depth 来自 viewport（默认 0.0 / 1.0）。这只是逐片元的深度范围拒绝，能近似模拟近/远平面裁剪的可见效果，但不是真正的 depth clip：
 
-# 20
+绑错了概念：它用 viewport 的 MinDepth/MaxDepth 当裁剪边界。在 D3D11 中 viewport 的 min/max depth 是深度重映射（depth_out = min + ndc_z·(max-min)），而真正的近/远裁剪固定在 NDC z ∈ [0,1]。这里既没做重映射（rasterizer.py:480/514 直接输出原始 NDC z），又把重映射范围当裁剪面用，两个概念混在了一起。
+不受 depth_clip_enable 控制：即使该标志为 False，这个剔除依然生效。
+3. 没有真正的几何近平面裁剪
+D3D11 的 depth clip 是在透视除法之前对三角形按 near 平面（clip 空间 z < 0）做几何切割、生成新顶点。这里完全没有：
+
+没有三角形切分。
+对相机背后的顶点（w < 0）只在 rasterizer.py:420 用 abs(w) < 1e-8 拒绝退化值，负 w 不会被正确处理——透视除法会翻转坐标，跨近平面的三角形会被错误光栅化。
+4. 点 / 线根本没有深度范围测试
+点光栅化 rasterizer.py:320-350：算了 depth 但无任何范围检查。
+线光栅化 rasterizer.py:353-404：同样只算 depth，无 min/max 判定。
+5. render.py 无前置裁剪
+render.py 里 clipped 仅是统计计数（退化 w / 屏幕外），与深度裁剪无关。
+
+总结：当前只有三角形带一个绑在 viewport min/max depth 上的逐像素深度范围剔除，可以粗略模拟 depth clip 开启时的可见结果；但严格意义的 depth clip（受 depth_clip_enable 控制、近平面几何裁剪、负 w 处理、点/线支持、viewport 深度重映射）均未实现。
+
+需要我把它补成真正的 depth clip 吗？（建议至少：让 depth_clip_enable 生效、把深度范围测试扩展到点/线、并分离"裁剪 z∈[0,1]"与"viewport 深度重映射"两个步骤。）
+
+
+# 20 实现depth clip
 ## Prompts
+实现完整的D3D的depth clip功能 
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
 ## Claude Code Session
+改动（全部在 rasterizer.py）
+在裁剪空间（透视除法之前）对图元做半空间裁剪，平面用 dist(p) ≥ 0 表示：
+
+平面	判据	何时启用
+w>0	w - eps	始终（保证除法有限、剔除相机背后几何）
+近	z	仅 depth_clip_enable 为真
+远	w - z	仅 depth_clip_enable 为真
+新增辅助方法：_map_depth（viewport 深度重映射 + 关闭时钳制）、_lerp_vertex（裁剪空间线性插值整个顶点 dict）、_clip_planes、_clip_segment（Liang–Barsky 线裁剪）、_clip_polygon_against_plane（Sutherland–Hodgman）、_clip_triangle（裁成子三角形扇）。
+_rasterize_triangle 改为薄包装：裁剪 → 对每个子三角形调用核心 _raster_triangle_core，聚合返回状态。
+核心里删除了原来混淆概念的逐像素 min_depth ≤ depth ≤ max_depth 剔除；深度统一走 _map_depth。
+点 / 线也加上了近/远裁剪与深度重映射。
+load_config_from_pipeline_state_csv 现在能解析 Rasterizer,DepthClip（之前 capture 里的这一行被忽略，标志是死配置）。
+关键设计：完全在裁剪内部的几何裁剪让透视校正不变（属性与 w 同样线性插值）；完全在视口内的三角形会原样返回原顶点对象（零浮点扰动），所以对回归无影响。
+
+验证
+回归 6/6 PASS，所有行全匹配（204/204、1149/1149、315/315、6/6、696/696、3/3）。
+针对性测试（回归用例都在屏幕内，不触发裁剪，故另写脚本验证后删除）：全内三角形=恒等；跨近平面→裁成 2 个子三角形、深度 ∈[0,1]；w<0 顶点→正确剔除无垃圾；点列 ON 保留 1/3、OFF 保留 3/3 且深度钳制；CSV DepthClip,False 正确解析。
+文档
+思考/执行/结果已写入 Sessions/hlsl-interpreter-step91-implement-depth-clip.md。
+
+改动已就绪，未提交。需要的话我可以按你的惯例提交（commit message：Implement full D3D depth clip by claude code.）。
 
 
 # 21

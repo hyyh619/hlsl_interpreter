@@ -16,6 +16,14 @@ from d3d import (
 )
 
 
+# Epsilon for the homogeneous w>0 clip plane. Vertices with w below this lie on
+# or behind the camera plane; clipping against w>=eps keeps the perspective
+# divide finite regardless of the depth-clip setting. This plane is always
+# active (D3D's clip volume 0<=z<=w implies w>0); near/far depth clipping is
+# layered on top of it only when depth_clip_enable is True.
+_CLIP_W_EPS = 1e-7
+
+
 class CullMode(Enum):
     NONE = 0
     FRONT = 1
@@ -323,7 +331,13 @@ class Rasterizer:
             return 'clipped'
 
         clip_w = pos[3] if len(pos) >= 4 else 1.0
-        if abs(clip_w) < 1e-8:
+        # w-clip: a point on or behind the camera plane has no valid projection.
+        if clip_w < _CLIP_W_EPS:
+            return 'clipped'
+
+        ndc_z = pos[2] / clip_w
+        # Near/far depth clip: discard the point if it falls outside [0,1] in z.
+        if self.config.depth_clip_enable and (ndc_z < 0.0 or ndc_z > 1.0):
             return 'clipped'
 
         screen_x, screen_y = self.config.viewport.transform_to_screen(pos[0], pos[1], clip_w)
@@ -337,7 +351,7 @@ class Rasterizer:
         pixel = Pixel(
             x=screen_x,
             y=screen_y,
-            depth=pos[2] / clip_w if clip_w != 0 else pos[2],
+            depth=self._map_depth(ndc_z),
             color=self._interpolate_vertex_attribute(vertex, 'Color'),
             texcoord=self._interpolate_vertex_attribute(vertex, 'TexCoord'),
             texcoord2=self._interpolate_vertex_attribute(vertex, 'TexCoord2'),
@@ -350,7 +364,17 @@ class Rasterizer:
         return 'rasterized'
 
     def _rasterize_line(self, v0: Dict[str, Any], v1: Dict[str, Any], primitive_id: int) -> str:
-        """Rasterize a line primitive using DDA. Returns 'clipped' or 'rasterized'."""
+        """Rasterize a line primitive using DDA. Returns 'clipped' or 'rasterized'.
+
+        The segment is first clipped in clip space against the w>0 plane (always)
+        and the near/far depth planes (when depth_clip_enable is True); the
+        clipped endpoints replace the originals before the screen-space walk.
+        """
+        clipped = self._clip_segment(v0, v1)
+        if clipped is None:
+            return 'clipped'
+        v0, v1 = clipped
+
         pos0 = self._get_vertex_position(v0)
         pos1 = self._get_vertex_position(v1)
 
@@ -362,6 +386,10 @@ class Rasterizer:
 
         if abs(clip_w0) < 1e-8 or abs(clip_w1) < 1e-8:
             return 'clipped'
+
+        # Post-clip NDC z at each endpoint; depth is interpolated screen-linearly.
+        ndc_z0 = pos0[2] / clip_w0
+        ndc_z1 = pos1[2] / clip_w1
 
         screen_x0, screen_y0 = self.config.viewport.transform_to_screen(pos0[0], pos0[1], clip_w0)
         screen_x1, screen_y1 = self.config.viewport.transform_to_screen(pos1[0], pos1[1], clip_w1)
@@ -384,7 +412,7 @@ class Rasterizer:
             if self.config.scissor_enable and not self._is_in_scissor(screen_x, screen_y):
                 continue
 
-            depth = pos0[2] + (pos1[2] - pos0[2]) * t if len(pos0) >= 3 and len(pos1) >= 3 else 0.0
+            depth = self._map_depth(ndc_z0 + (ndc_z1 - ndc_z0) * t)
 
             interpolated_attrs = self._interpolate_attributes_line(v0, v1, t, clip_w0, clip_w1)
 
@@ -403,12 +431,144 @@ class Rasterizer:
             self._pixels.append(pixel)
         return 'rasterized'
 
+    def _map_depth(self, ndc_z: float) -> float:
+        """Map an NDC z (post perspective-divide) to the viewport depth range.
+
+        depth = MinDepth + ndc_z * (MaxDepth - MinDepth). When depth clipping is
+        DISABLED, geometry outside the near/far planes is kept but its depth is
+        clamped to the viewport range (D3D11 DepthClipEnable=FALSE semantics).
+        When ENABLED, callers have already removed out-of-range geometry, so no
+        clamp is applied (and with the default [0,1] range the map is identity)."""
+        min_d = self.config.viewport.min_depth
+        max_d = self.config.viewport.max_depth
+        depth = min_d + ndc_z * (max_d - min_d)
+        if not self.config.depth_clip_enable:
+            lo, hi = (min_d, max_d) if min_d <= max_d else (max_d, min_d)
+            depth = max(lo, min(hi, depth))
+        return depth
+
+    def _lerp_vertex(self, va: Dict[str, Any], vb: Dict[str, Any], t: float) -> Dict[str, Any]:
+        """Linearly interpolate two vertex dicts at parameter t, producing the
+        vertex created where a clip plane crosses edge a->b.
+
+        Interpolation is LINEAR in homogeneous clip space — positions (incl. w)
+        and every attribute alike. This is the correct basis for clip-space
+        clipping: the rasterizer's later perspective divide (attr/w) restores
+        perspective-correct values, because both the attribute and w were
+        interpolated the same way here."""
+        out: Dict[str, Any] = {}
+        for k in set(va.keys()) | set(vb.keys()):
+            a = va.get(k)
+            b = vb.get(k)
+            if isinstance(a, list) and isinstance(b, list):
+                n = min(len(a), len(b))
+                out[k] = [a[i] + (b[i] - a[i]) * t for i in range(n)]
+            elif isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                out[k] = a + (b - a) * t
+            else:
+                out[k] = a if a is not None else b
+        return out
+
+    def _clip_planes(self):
+        """Active clip-space half-space tests, as dist(pos)>=0 predicates.
+
+        The w>0 plane is always present (the clip volume 0<=z<=w requires w>0,
+        and it keeps the perspective divide finite). Near (z>=0) and far (z<=w)
+        are added only when depth_clip_enable is True."""
+        planes = [lambda p: p[3] - _CLIP_W_EPS]            # w >= eps
+        if self.config.depth_clip_enable:
+            planes.append(lambda p: p[2])                  # near: z >= 0
+            planes.append(lambda p: p[3] - p[2])           # far:  z <= w
+        return planes
+
+    def _clip_segment(self, v0: Dict[str, Any], v1: Dict[str, Any]):
+        """Liang-Barsky clip of a line segment against the active clip planes.
+        Returns (cv0, cv1) clipped vertex dicts, or None if fully outside.
+        A fully-inside segment returns its original endpoint objects."""
+        p0 = self._get_vertex_position(v0)
+        p1 = self._get_vertex_position(v1)
+        if p0 is None or p1 is None:
+            return None
+
+        t0, t1 = 0.0, 1.0
+        for dist in self._clip_planes():
+            d0 = dist(p0)
+            d1 = dist(p1)
+            if d0 < 0.0 and d1 < 0.0:
+                return None                 # both endpoints outside this plane
+            if d0 >= 0.0 and d1 >= 0.0:
+                continue                    # both inside; no constraint
+            t = d0 / (d0 - d1)              # crossing along the original segment
+            if d0 < 0.0:
+                t0 = max(t0, t)             # entering the half-space
+            else:
+                t1 = min(t1, t)             # leaving the half-space
+            if t0 > t1:
+                return None
+        cv0 = self._lerp_vertex(v0, v1, t0) if t0 > 0.0 else v0
+        cv1 = self._lerp_vertex(v0, v1, t1) if t1 < 1.0 else v1
+        return cv0, cv1
+
+    def _clip_polygon_against_plane(self, verts, dist):
+        """Sutherland-Hodgman clip of a polygon (list of vertex dicts) against a
+        single clip-space plane. `dist(pos)>=0` marks the inside half-space."""
+        out = []
+        n = len(verts)
+        for i in range(n):
+            cur = verts[i]
+            nxt = verts[(i + 1) % n]
+            dc = dist(self._get_vertex_position(cur))
+            dn = dist(self._get_vertex_position(nxt))
+            cur_in = dc >= 0.0
+            nxt_in = dn >= 0.0
+            if cur_in:
+                out.append(cur)
+            if cur_in != nxt_in:
+                t = dc / (dc - dn)
+                out.append(self._lerp_vertex(cur, nxt, t))
+        return out
+
+    def _clip_triangle(self, v0: Dict[str, Any], v1: Dict[str, Any], v2: Dict[str, Any]):
+        """Clip a triangle against the active clip planes and return a fan of
+        (va, vb, vc) sub-triangles. Empty list if fully clipped. A triangle
+        fully inside every plane returns [(v0, v1, v2)] with the ORIGINAL vertex
+        objects untouched — the common case incurs no new vertices and no
+        floating-point perturbation."""
+        verts = [v0, v1, v2]
+        for dist in self._clip_planes():
+            verts = self._clip_polygon_against_plane(verts, dist)
+            if len(verts) < 3:
+                return []
+        return [(verts[0], verts[i], verts[i + 1]) for i in range(1, len(verts) - 1)]
+
     def _rasterize_triangle(self, triangle: Triangle) -> str:
-        """Rasterize a triangle using barycentric coordinates.
-        Returns 'clipped', 'culled', or 'rasterized'."""
-        v0_pos = self._get_vertex_position(triangle.v0)
-        v1_pos = self._get_vertex_position(triangle.v1)
-        v2_pos = self._get_vertex_position(triangle.v2)
+        """Clip the triangle against the depth-clip planes, then rasterize each
+        resulting sub-triangle. Returns the aggregate status ('clipped',
+        'culled', or 'rasterized') for the original primitive."""
+        if (self._get_vertex_position(triangle.v0) is None or
+                self._get_vertex_position(triangle.v1) is None or
+                self._get_vertex_position(triangle.v2) is None):
+            return 'clipped'
+
+        sub_tris = self._clip_triangle(triangle.v0, triangle.v1, triangle.v2)
+        if not sub_tris:
+            return 'clipped'
+
+        statuses = [self._raster_triangle_core(a, b, c, triangle.primitive_id)
+                    for (a, b, c) in sub_tris]
+        if any(s == 'rasterized' for s in statuses):
+            return 'rasterized'
+        if any(s == 'culled' for s in statuses):
+            return 'culled'
+        return 'clipped'
+
+    def _raster_triangle_core(self, v0: Dict[str, Any], v1: Dict[str, Any], v2: Dict[str, Any],
+                              primitive_id: int) -> str:
+        """Rasterize a single (already clip-space-clipped) triangle using
+        barycentric coordinates. Returns 'clipped', 'culled', or 'rasterized'."""
+        v0_pos = self._get_vertex_position(v0)
+        v1_pos = self._get_vertex_position(v1)
+        v2_pos = self._get_vertex_position(v2)
 
         if v0_pos is None or v1_pos is None or v2_pos is None:
             return 'clipped'
@@ -452,13 +612,10 @@ class Rasterizer:
         # still applies, matching D3D11 which only rasterizes wireframe fills for
         # triangles that survive the cull.
         if self.config.fill_mode == FillMode.WIREFRAME:
-            self._rasterize_line(triangle.v0, triangle.v1, triangle.primitive_id)
-            self._rasterize_line(triangle.v1, triangle.v2, triangle.primitive_id)
-            self._rasterize_line(triangle.v2, triangle.v0, triangle.primitive_id)
+            self._rasterize_line(v0, v1, primitive_id)
+            self._rasterize_line(v1, v2, primitive_id)
+            self._rasterize_line(v2, v0, primitive_id)
             return 'rasterized'
-
-        min_depth = self.config.viewport.min_depth
-        max_depth = self.config.viewport.max_depth
 
         def _shade_lane(x: int, y: int):
             """Interpolate one lane unconditionally (helpers included so derivatives
@@ -473,18 +630,22 @@ class Rasterizer:
             bary_z = w2 / area
 
             interpolated = self._interpolate_with_barycentric(
-                triangle.v0, triangle.v1, triangle.v2,
+                v0, v1, v2,
                 bary_x, bary_y, bary_z,
                 clip_w0, clip_w1, clip_w2
             )
-            depth = bary_x * v0_ndc[2] + bary_y * v1_ndc[2] + bary_z * v2_ndc[2]
+            # Screen-linear NDC z (a convex combination of the post-clip vertex
+            # depths, hence within [0,1] when depth clipping is enabled), then
+            # mapped to the viewport depth range. Near/far rejection is handled
+            # geometrically by _clip_triangle, not per-pixel here.
+            ndc_z = bary_x * v0_ndc[2] + bary_y * v1_ndc[2] + bary_z * v2_ndc[2]
+            depth = self._map_depth(ndc_z)
 
             inside = (area > 0 and w0 >= 0 and w1 >= 0 and w2 >= 0) or \
                      (area < 0 and w0 <= 0 and w1 <= 0 and w2 <= 0)
             covered = (
                 inside
                 and min_x <= x <= max_x and min_y <= y <= max_y
-                and min_depth <= depth <= max_depth
                 and (not self.config.scissor_enable or self._is_in_scissor(x, y))
             )
             return interpolated, depth, covered
@@ -518,7 +679,7 @@ class Rasterizer:
                         normal=interpolated.get('Normal'),
                         worldPos=interpolated.get('WorldPos'),
                         attributes=interpolated.get('attributes', {}),
-                        primitive_id=triangle.primitive_id,
+                        primitive_id=primitive_id,
                         quad_lane=lane_idx,
                         quad_inputs=quad_inputs
                     )
@@ -825,6 +986,8 @@ class Rasterizer:
                         self.config.front_face = FrontFace.COUNTER_CLOCKWISE
                     else:
                         self.config.front_face = FrontFace.CLOCKWISE
+                elif prop in ('DepthClip', 'DepthClipEnable'):
+                    self.config.depth_clip_enable = val.lower() in ('true', '1', 'yes')
 
             elif section == 'Topology':
                 if prop == 'Primitive':

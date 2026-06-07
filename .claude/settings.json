@@ -24,7 +24,10 @@
       "Bash(python run_regression.py)",
       "Bash(python render.py Cases/.tmp_ev371.json)",
       "Bash(sed -n '/Pipeline Statistics vs Golden/,/extra \\(ours not in golden\\)/p' Cases/ev371.log)",
-      "Bash(git -C /c/Development/Graphics/hlsl_interpreter status --short)"
+      "Bash(git -C /c/Development/Graphics/hlsl_interpreter status --short)",
+      "Bash(sort -t p -k2 -n)",
+      "Bash(python -c \"import rasterizer; print\\('import OK'\\)\")",
+      "Bash(python _depthclip_check.py)"
     ],
     "additionalDirectories": [
       "\\tmp"
