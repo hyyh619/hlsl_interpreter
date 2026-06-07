@@ -116,6 +116,162 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
+def _fmt4(vals) -> str:
+    """Format a numeric sequence as a 4-decimal list for logs."""
+    try:
+        return "[" + ", ".join(f"{float(v):.4f}" for v in vals) + "]"
+    except (TypeError, ValueError):
+        return str(vals)
+
+
+# ----------------------------------------------------------------------------
+# Golden pipeline-statistics comparison (pipeline_statistics.csv)
+# ----------------------------------------------------------------------------
+# Maps each golden RawCounter to the matching key in render.py's pipeline_stats
+# dict. Counters for stages we don't emulate (HS/DS/GS/CS) are intentionally
+# absent — they're skipped rather than warned on.
+_PIPELINE_STAT_MAP = {
+    'InputVerticesRead': 'vertices',
+    'VSInvocations': 'vertices',
+    'IAPrimitives': 'primitives',
+    'RasterizerInvocations': 'primitives',
+    'RasterizedPrimitives': 'not_culled',
+    'PSInvocations': 'ps_pixels',
+    'SamplesPassed': 'depth_passed',
+}
+# Per the spec, only these two counters are treated as errors; the rest are
+# warnings. The prefixes deliberately do NOT start with "Error:" so the
+# regression runner (which gates on VS-vs-golden "Error:" lines) is unaffected.
+_PIPELINE_STAT_ERRORS = ('VSInvocations', 'SamplesPassed')
+
+
+def _load_golden_pipeline_statistics(path: str) -> dict:
+    """Parse pipeline_statistics.csv → {RawCounter: int Value}. {} if absent.
+
+    Columns are ``RawCounter,Description,Value`` (plus trailing empties)."""
+    stats = {}
+    for row in _read_csv_rows(path):
+        name = (row.get('RawCounter') or '').strip()
+        if not name:
+            continue
+        stats[name] = _as_int(row.get('Value'), 0)
+    return stats
+
+
+def _compare_pipeline_statistics(golden: dict, pipeline_stats: dict, log) -> None:
+    """Compare our pipeline_stats against the golden capture, counter by counter.
+
+    VSInvocations / SamplesPassed mismatches log an error-level line; every
+    other mapped counter mismatch logs a warning."""
+    log("\n" + "=" * 50)
+    log("Pipeline Statistics vs Golden (pipeline_statistics.csv):")
+    log("=" * 50)
+    mismatches = 0
+    for counter, our_key in _PIPELINE_STAT_MAP.items():
+        if counter not in golden:
+            continue
+        golden_val = golden[counter]
+        our_val = pipeline_stats.get(our_key, 0)
+        if golden_val == our_val:
+            log(f"  OK  {counter}: output={our_val} golden={golden_val}")
+            continue
+        mismatches += 1
+        kind = "Error" if counter in _PIPELINE_STAT_ERRORS else "Warning"
+        log(f"{kind} [PipelineStats]: {counter} mismatch: "
+            f"output={our_val} golden={golden_val} "
+            f"(mapped from pipeline_stats['{our_key}'])")
+    if mismatches == 0:
+        log("  All compared pipeline statistics match golden.")
+    log("=" * 50)
+
+
+# ----------------------------------------------------------------------------
+# Golden output-merger pixel comparison (diff_ps_output_rt0.csv)
+# ----------------------------------------------------------------------------
+def _load_golden_ps_output(path: str) -> dict:
+    """Parse diff_ps_output_rt0.csv → {(x, y): {'color': [r,g,b,a], 'depth': f}}.
+
+    Columns are ``X,Y,B,G,R,A,Depth,Stencil`` — note the B,G,R channel order in
+    the capture; we re-order to RGBA to match Pixel.ps_output_color."""
+    golden = {}
+    for row in _read_csv_rows(path):
+        try:
+            x = int(float(row['X']))
+            y = int(float(row['Y']))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        def f(key):
+            try:
+                return float(row.get(key))
+            except (TypeError, ValueError):
+                return 0.0
+
+        golden[(x, y)] = {
+            'color': [f('R'), f('G'), f('B'), f('A')],
+            'depth': f('Depth'),
+        }
+    return golden
+
+
+def _compare_ps_output(golden: dict, pixels, tolerance: float, log, max_report: int = 50) -> None:
+    """Compare final output-merger pixels against the golden RT0 dump.
+
+    Color (RGBA) and depth are compared per pixel within ``tolerance``. Where
+    several rendered pixels land on the same (x, y) — the interpreter has no
+    true depth occlusion — the nearest (smallest depth) is taken as the winner,
+    matching what a standard LESS depth test would keep."""
+    log("\n" + "=" * 50)
+    log(f"Output-Merger Pixels vs Golden (diff_ps_output_rt0.csv, tolerance={tolerance}):")
+    log("=" * 50)
+    if not golden:
+        log("  No golden pixel data (diff_ps_output_rt0.csv empty or absent) — skipped.")
+        log("=" * 50)
+        return
+
+    # Collapse rendered pixels to one winner per (x, y): nearest depth wins.
+    ours = {}
+    for p in pixels:
+        key = (int(p.x), int(p.y))
+        prev = ours.get(key)
+        if prev is None or p.depth < prev.depth:
+            ours[key] = p
+
+    matched = mismatched = missing = 0
+    reported = 0
+    for key, g in golden.items():
+        p = ours.get(key)
+        if p is None:
+            missing += 1
+            if reported < max_report:
+                log(f"Error [PixelDiff]: ({key[0]},{key[1]}) missing in output "
+                    f"(golden color={_fmt4(g['color'])} depth={g['depth']:.6f})")
+                reported += 1
+            continue
+        our_color = p.ps_output_color if p.ps_output_color else (p.color or [0.0, 0.0, 0.0, 0.0])
+        our_color = (list(our_color) + [0.0] * 4)[:4]
+        cdiff = [abs(our_color[i] - g['color'][i]) for i in range(4)]
+        ddiff = abs(float(p.depth) - g['depth'])
+        if max(cdiff) <= tolerance and ddiff <= tolerance:
+            matched += 1
+        else:
+            mismatched += 1
+            if reported < max_report:
+                log(f"Error [PixelDiff]: ({key[0]},{key[1]}) "
+                    f"color out={_fmt4(our_color)} golden={_fmt4(g['color'])} cdiff={_fmt4(cdiff)} | "
+                    f"depth out={float(p.depth):.6f} golden={g['depth']:.6f} ddiff={ddiff:.6f}")
+                reported += 1
+
+    extra = sum(1 for k in ours if k not in golden)
+    suppressed = (mismatched + missing) - reported
+    if suppressed > 0:
+        log(f"  ... ({suppressed} more mismatch/missing line(s) suppressed)")
+    log(f"  Golden pixels: {len(golden)} | matched: {matched} | "
+        f"mismatched: {mismatched} | missing: {missing} | "
+        f"extra (ours not in golden): {extra}")
+    log("=" * 50)
+
+
 def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
     """Ordered BMP paths for a texture's view mip range (mip0, mip1, ...).
 
@@ -310,6 +466,8 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     early_z = config.get('early_z', True)
     mesh_view_enabled = config.get('mesh_view_enabled', False)
     primitive_topology = config.get('primitive_topology', D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
+    # Tolerance for the golden output-merger pixel comparison (color + depth).
+    pixel_tolerance = config.get('pixel_tolerance', 0.01)
 
     # Resolve log path relative to config
     if log_file_path:
@@ -571,6 +729,19 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     vs_interp.log_output(f"  Pixels failed depth test: {pipeline_stats['depth_failed']}  (passed: {pipeline_stats['depth_passed']})")
     vs_interp.log_output(f"  Pixel shader executed:    {pipeline_stats['ps_pixels']} pixels")
     vs_interp.log_output("=" * 50)
+
+    # ============================================================
+    # Golden comparisons: pipeline statistics + output-merger pixels
+    # ============================================================
+    golden_stats = _load_golden_pipeline_statistics(
+        os.path.join(data_folder, 'pipeline_statistics.csv'))
+    if golden_stats:
+        _compare_pipeline_statistics(golden_stats, pipeline_stats, vs_interp.log_output)
+
+    golden_ps = _load_golden_ps_output(
+        os.path.join(data_folder, 'diff_ps_output_rt0.csv'))
+    if golden_ps:
+        _compare_ps_output(golden_ps, pixels, pixel_tolerance, vs_interp.log_output)
 
     # ============================================================
     # Mesh view: feed rasterizer/PS/output-merger pixels and stay open

@@ -21,7 +21,10 @@
       "Bash(python render.py ./Cases/_stats_test.json)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('mesh_view.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK: mesh_view.py parses'\\)\")",
       "Bash(python _perf_test.py)",
-      "Bash(python run_regression.py)"
+      "Bash(python run_regression.py)",
+      "Bash(python render.py Cases/.tmp_ev371.json)",
+      "Bash(sed -n '/Pipeline Statistics vs Golden/,/extra \\(ours not in golden\\)/p' Cases/ev371.log)",
+      "Bash(git -C /c/Development/Graphics/hlsl_interpreter status --short)"
     ],
     "additionalDirectories": [
       "\\tmp"

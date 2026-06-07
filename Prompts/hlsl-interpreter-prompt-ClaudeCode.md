@@ -620,14 +620,21 @@ canvas item 数	~140,000	1
 给claude.md增加一个regression test项目，要求每次claude code改动代码后需要执行一组regression test，regression test的列表用文件Cases/regression_test_zip_files.csv描述
 把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Add regression test to verify each code modification by claude code.
 
 ## Claude Code Session
 
 
 
-# 18
+# 18 Case增加pipeline statistics，请比较pipeline statistics
 ## Prompts
+1. Case的zip文件增加了pipeline_statistics.csv，请读取golden的pipeline statistic数据
+2. 然后与render.py执行后的Pipeline statistic数据比对。
+3. 如果不match打印不匹配的项。目前主要关注VSInvocations和SamplesPassed，如果这两项不匹配则打印Error，其它打印warning
+4. Case的zip文件提供了diff_ps_output_rt0.csv，保存了DX11 output merger处理完毕后输出的pixel color和depth value。请用diff_ps_output_rt0.csv的数据与_execute_pipeline执行后的pixels进行对比，如果值不匹配，则打印
+5. pixels的color和depth value比较需要加入容错值，该值可以通过输入json文件配置，默认配置为0.01
+6. 把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
