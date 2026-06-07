@@ -23,9 +23,10 @@ class CullMode(Enum):
 
 
 class FillMode(Enum):
-    POINT = 0
-    LINE = 1
-    SOLID = 2
+    # D3D11_FILL_MODE: only wireframe and solid exist. Point/line rendering
+    # comes from primitive topology, not the rasterizer fill mode.
+    WIREFRAME = 2
+    SOLID = 3
 
 
 class FrontFace(Enum):
@@ -159,8 +160,7 @@ class Rasterizer:
             self.config.cull_mode = cull_mode_map.get(cull_mode_str, CullMode.BACK)
 
             fill_mode_map = {
-                'point': FillMode.POINT,
-                'line': FillMode.LINE,
+                'wireframe': FillMode.WIREFRAME,
                 'solid': FillMode.SOLID
             }
             fill_mode_str = config_data.get('fill_mode', 'solid').lower()
@@ -301,11 +301,11 @@ class Rasterizer:
             x=screen_x,
             y=screen_y,
             depth=pos[2] / clip_w if clip_w != 0 else pos[2],
-            color=self._interpolate_vertex_attribute(vertex, 'color'),
-            texcoord=self._interpolate_vertex_attribute(vertex, 'texcoord'),
-            texcoord2=self._interpolate_vertex_attribute(vertex, 'texcoord2'),
-            normal=self._interpolate_vertex_attribute(vertex, 'normal'),
-            position=self._interpolate_vertex_attribute(vertex, 'position'),
+            color=self._interpolate_vertex_attribute(vertex, 'Color'),
+            texcoord=self._interpolate_vertex_attribute(vertex, 'TexCoord'),
+            texcoord2=self._interpolate_vertex_attribute(vertex, 'TexCoord2'),
+            normal=self._interpolate_vertex_attribute(vertex, 'Normal'),
+            worldPos=self._interpolate_vertex_attribute(vertex, 'WorldPos'),
             attributes={},
             primitive_id=primitive_id
         )
@@ -354,12 +354,12 @@ class Rasterizer:
                 x=screen_x,
                 y=screen_y,
                 depth=depth,
-                color=interpolated_attrs.get('color'),
-                texcoord=interpolated_attrs.get('texcoord'),
-                texcoord2=interpolated_attrs.get('texcoord2'),
-                normal=interpolated_attrs.get('normal'),
-                position=interpolated_attrs.get('position'),
-                attributes=interpolated_attrs.get('attributes', {}),
+                color=interpolated_attrs.get('Color'),
+                texcoord=interpolated_attrs.get('TexCoord'),
+                texcoord2=interpolated_attrs.get('TexCoord2'),
+                normal=interpolated_attrs.get('Normal'),
+                worldPos=interpolated_attrs.get('WorldPos'),
+                attributes={},
                 primitive_id=primitive_id
             )
             self._pixels.append(pixel)
@@ -408,18 +408,13 @@ class Rasterizer:
         if self._should_cull_triangle(screen_v0, screen_v1, screen_v2):
             return
 
-        # FillMode != SOLID: draw the triangle as its 3 edges (wireframe) or its
-        # 3 corner points. Culling above still applies, matching D3D11 which only
-        # rasterizes wireframe/point fills for triangles that survive the cull.
-        if self.config.fill_mode == FillMode.LINE:
+        # FillMode.WIREFRAME: draw the triangle as its 3 edges. Culling above
+        # still applies, matching D3D11 which only rasterizes wireframe fills for
+        # triangles that survive the cull.
+        if self.config.fill_mode == FillMode.WIREFRAME:
             self._rasterize_line(triangle.v0, triangle.v1, triangle.primitive_id)
             self._rasterize_line(triangle.v1, triangle.v2, triangle.primitive_id)
             self._rasterize_line(triangle.v2, triangle.v0, triangle.primitive_id)
-            return
-        elif self.config.fill_mode == FillMode.POINT:
-            self._rasterize_point(triangle.v0, triangle.primitive_id)
-            self._rasterize_point(triangle.v1, triangle.primitive_id)
-            self._rasterize_point(triangle.v2, triangle.primitive_id)
             return
 
         min_depth = self.config.viewport.min_depth
@@ -743,8 +738,8 @@ class Rasterizer:
             '0': CullMode.NONE, '1': CullMode.FRONT, '2': CullMode.BACK,
         }
         fill_mode_map = {
-            'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
-            '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
+            'wireframe': FillMode.WIREFRAME, 'solid': FillMode.SOLID,
+            '2': FillMode.WIREFRAME, '3': FillMode.SOLID,
         }
 
         for row in rows[1:]:

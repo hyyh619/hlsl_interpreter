@@ -55,8 +55,8 @@ class Pixel:
             result['texcoord2'] = self.texcoord2
         if self.normal is not None:
             result['normal'] = self.normal
-        if self.position is not None:
-            result['position'] = self.position
+        if self.worldPos is not None:
+            result['worldPos'] = self.worldPos
         result['attributes'] = self.attributes
         return result
 
@@ -71,7 +71,7 @@ class Pixel:
             texcoord=data.get('texcoord'),
             texcoord2=data.get('texcoord2'),
             normal=data.get('normal'),
-            position=data.get('position'),
+            worldPos=data.get('worldPos'),
             attributes=data.get('attributes', {}),
             primitive_id=data.get('primitive_id', 0),
             sample_index=data.get('sample_index', 0)

@@ -500,7 +500,7 @@ Collision-fix-constant-buffer-and-RdotV-zero_event516.zip
 Collision-fix-constant-buffer-and-RdotV-zero_event104.zip
 
 ## Git commit:
-
+Fix wrong cull algorithm by claude code.
 
 ## Claude Code Session
 Root cause
@@ -523,8 +523,13 @@ Worth a visual confirmation in the mesh viewer on your end, but the front/back f
 
 
 
-# 14
+# 14 fill mode map错误
 ## Prompts
+fill_mode_map不应该是这些选项，而应该是Wireframe和Solid。相应的rasterizer也要根据这两种fill mode来完成光珊化
+        fill_mode_map = {
+            'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
+            '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
+        }
 
 ## Git commit: 
 

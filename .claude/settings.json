@@ -12,7 +12,14 @@
       "Bash(xargs grep -iE \"front|clock|winding\")",
       "Bash(timeout 240 python render.py ./Cases/_cull_verify.json)",
       "Bash(sed 's/event516/event104/' Cases/_cull_verify.json)",
-      "Bash(timeout 240 python render.py ./Cases/_cull_verify104.json)"
+      "Bash(timeout 240 python render.py ./Cases/_cull_verify104.json)",
+      "Bash(unzip -l Cases/Collision-fix-constant-buffer-and-RdotV-zero_event104.zip)",
+      "Bash(python -c \"import rasterizer; print\\([m.name for m in rasterizer.FillMode]\\)\")",
+      "Bash(echo \"exit=$?\")",
+      "Bash(python render.py ./Cases/Default.json > /tmp/run.log 2>&1; echo \"exit=$?\"; echo \"--- Error: count ---\"; grep -c \"^Error:\" Cases/output.log 2>/dev/null; echo \"--- tail run.log ---\"; tail -6 /tmp/run.log)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }
