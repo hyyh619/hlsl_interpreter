@@ -16,7 +16,9 @@
       "Bash(unzip -l Cases/Collision-fix-constant-buffer-and-RdotV-zero_event104.zip)",
       "Bash(python -c \"import rasterizer; print\\([m.name for m in rasterizer.FillMode]\\)\")",
       "Bash(echo \"exit=$?\")",
-      "Bash(python render.py ./Cases/Default.json > /tmp/run.log 2>&1; echo \"exit=$?\"; echo \"--- Error: count ---\"; grep -c \"^Error:\" Cases/output.log 2>/dev/null; echo \"--- tail run.log ---\"; tail -6 /tmp/run.log)"
+      "Bash(python render.py ./Cases/Default.json > /tmp/run.log 2>&1; echo \"exit=$?\"; echo \"--- Error: count ---\"; grep -c \"^Error:\" Cases/output.log 2>/dev/null; echo \"--- tail run.log ---\"; tail -6 /tmp/run.log)",
+      "Bash(python -c \"import json; c=json.load\\(open\\('Cases/Default.json'\\)\\); c['mesh_view_enabled']=False; json.dump\\(c, open\\('Cases/_stats_test.json','w'\\)\\)\")",
+      "Bash(python render.py ./Cases/_stats_test.json)"
     ],
     "additionalDirectories": [
       "\\tmp"

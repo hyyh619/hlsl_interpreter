@@ -463,12 +463,20 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     rast_start = time.time()
     pixels = rast.rasterize(vs_results, primitive_topology)
     rast_time = time.time() - rast_start
+    rast_stats = dict(rast.get_stats())
     vs_interp.log_output(f"Rasterized → {len(pixels)} pixels in {rast_time:.4f}s")
+
+    # Pipeline statistics accumulated across the stages, reported at the end and
+    # mirrored into the MeshView status bar.
+    rast_pixel_count = len(pixels)
+    ps_pixel_count = 0
+    depth_failed = 0
 
     # Depth/stencil
     depth = Depth()
     if early_z:
         pixels = depth.execute(pixels, early_z=True)
+        depth_failed = rast_pixel_count - len(pixels)
         vs_interp.log_output(f"Early-Z: {len(pixels)} pixels after depth test")
 
     pixels_for_ps = pixels
@@ -517,6 +525,7 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
                 ps_interp.map_params_to_signature(ps_output_params, ps_sig['outputs'])
 
             ps_interp.log_output(f"\nExecuting Pixel Shader on {len(pixels_for_ps)} pixels...")
+            ps_pixel_count = len(pixels_for_ps)
             ps_start = time.time()
             ps_interp.executePS_with_params(
                 'main', ps_input_params, ps_output_params, pixels_for_ps, ps_code=ps_code
@@ -526,6 +535,7 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
 
     if not early_z:
         pixels = depth.execute(pixels, early_z=False)
+        depth_failed = rast_pixel_count - len(pixels)
         vs_interp.log_output(f"Late-Z: {len(pixels)} pixels after depth test")
 
     total_time = time.time() - total_start
@@ -536,9 +546,37 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     vs_interp.log_output(f"  Total:       {total_time:.4f}s")
 
     # ============================================================
+    # Pipeline statistics (vertices, primitives, clip/cull, pixels)
+    # ============================================================
+    pipeline_stats = {
+        'vertices': len(vs_results),
+        'primitives': rast_stats.get('primitives', 0),
+        'clipped': rast_stats.get('clipped', 0),
+        'not_clipped': rast_stats.get('not_clipped', 0),
+        'culled': rast_stats.get('culled', 0),
+        'not_culled': rast_stats.get('not_culled', 0),
+        'rast_pixels': rast_pixel_count,
+        'depth_failed': depth_failed,
+        'depth_passed': rast_pixel_count - depth_failed,
+        'ps_pixels': ps_pixel_count,
+    }
+    vs_interp.log_output("\n" + "=" * 50)
+    vs_interp.log_output("Pipeline Statistics:")
+    vs_interp.log_output("=" * 50)
+    vs_interp.log_output(f"  Vertices executed:        {pipeline_stats['vertices']}")
+    vs_interp.log_output(f"  Primitives assembled:     {pipeline_stats['primitives']}")
+    vs_interp.log_output(f"  Primitives clipped:       {pipeline_stats['clipped']}  (not clipped: {pipeline_stats['not_clipped']})")
+    vs_interp.log_output(f"  Primitives culled:        {pipeline_stats['culled']}  (not culled: {pipeline_stats['not_culled']})")
+    vs_interp.log_output(f"  Rasterizer pixels:        {pipeline_stats['rast_pixels']}")
+    vs_interp.log_output(f"  Pixels failed depth test: {pipeline_stats['depth_failed']}  (passed: {pipeline_stats['depth_passed']})")
+    vs_interp.log_output(f"  Pixel shader executed:    {pipeline_stats['ps_pixels']} pixels")
+    vs_interp.log_output("=" * 50)
+
+    # ============================================================
     # Mesh view: feed rasterizer/PS/output-merger pixels and stay open
     # ============================================================
     if mesh_view_enabled and vs_interp._mesh_view:
+        vs_interp._mesh_view.set_pipeline_stats(pipeline_stats)
         if pixels:
             vs_interp._mesh_view.set_rasterizer_pixels(pixels)
             vs_interp._mesh_view.set_output_merger_pixels(pixels)

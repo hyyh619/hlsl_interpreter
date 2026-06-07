@@ -67,6 +67,7 @@ class MeshView:
         self._output_offset_y = MESH_VIEW_OFFSET_Y
         self._last_mouse = None
         self._info_label = None
+        self._pipeline_stats = None
         self._input_bounds = None
         self._output_bounds = None
         self._current_index = 0
@@ -435,6 +436,15 @@ class MeshView:
         pixels: Pixel对象列表，Depth处理后的像素列表
         """
         self._output_merger_pixels = pixels
+
+    def set_pipeline_stats(self, stats: dict):
+        """设置管线统计信息（顶点/图元/裁剪/剔除/像素），显示在状态栏。
+        stats: dict from render._execute_pipeline (vertices, primitives,
+        clipped, not_clipped, culled, not_culled, rast_pixels, depth_failed,
+        depth_passed, ps_pixels)."""
+        self._pipeline_stats = stats
+        if self._info_label:
+            self._update_info()
 
     def _compute_input_bounds(self):
         """计算输入顶点边界框"""
@@ -947,6 +957,17 @@ class MeshView:
                 D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN: "Triangle Fan",
             }
             info = f"Input: {len(self.input_vertices)} vertices | Output: {len(self.output_vertices)} vertices | Topology: {topo_names.get(self.primitive_topology, 'Unknown')} | Input Zoom: {self._input_scale:.2f}x | Result Zoom: {self._output_scale:.2f}x"
+            s = self._pipeline_stats
+            if s:
+                info += (
+                    f"\nVerts: {s.get('vertices', 0)} | "
+                    f"Prims: {s.get('primitives', 0)} | "
+                    f"Clipped: {s.get('clipped', 0)}/{s.get('not_clipped', 0)} | "
+                    f"Culled: {s.get('culled', 0)}/{s.get('not_culled', 0)} | "
+                    f"Rast px: {s.get('rast_pixels', 0)} | "
+                    f"Depth fail: {s.get('depth_failed', 0)} (pass {s.get('depth_passed', 0)}) | "
+                    f"PS px: {s.get('ps_pixels', 0)}"
+                )
             self._info_label.config(text=info)
 
     def _on_mouse_drag_input(self, event):

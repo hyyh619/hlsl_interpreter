@@ -141,9 +141,39 @@ class Rasterizer:
         self.config = RasterizerConfig()
         self._primitive_id_counter = 0
         self._pixels: List[Pixel] = []
+        self.stats = self._new_stats()
 
         if config_path:
             self.load_config(config_path)
+
+    @staticmethod
+    def _new_stats() -> Dict[str, int]:
+        """Per-rasterize() primitive/pixel counters."""
+        return {
+            'primitives': 0,    # primitives assembled from the vertex stream
+            'clipped': 0,       # primitives discarded before cull (degenerate w,
+                                # zero area, or bounding box fully off-viewport)
+            'not_clipped': 0,
+            'culled': 0,        # primitives discarded by face culling
+            'not_culled': 0,    # primitives that reached pixel generation
+            'pixels': 0,        # fragments emitted to the pixel list
+        }
+
+    def get_stats(self) -> Dict[str, int]:
+        """Counters from the most recent rasterize() call."""
+        return self.stats
+
+    def _tally(self, status: str):
+        """Fold a per-primitive rasterize status into the running stats.
+        status is one of 'clipped', 'culled', 'rasterized'."""
+        if status == 'clipped':
+            self.stats['clipped'] += 1
+        elif status == 'culled':
+            self.stats['not_clipped'] += 1
+            self.stats['culled'] += 1
+        else:  # 'rasterized'
+            self.stats['not_clipped'] += 1
+            self.stats['not_culled'] += 1
 
     def load_config(self, config_path: str):
         """Load rasterizer configuration from JSON file"""
@@ -221,6 +251,7 @@ class Rasterizer:
             List of Pixel objects representing rasterized fragments
         """
         self.clear_pixels()
+        self.stats = self._new_stats()
 
         if primitive_topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
             self._rasterize_triangle_list(results)
@@ -233,6 +264,7 @@ class Rasterizer:
         elif primitive_topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
             self._rasterize_point_list(results)
 
+        self.stats['pixels'] = len(self._pixels)
         return self._pixels
 
     def _rasterize_triangle_list(self, vertices: List[Dict[str, Any]]):
@@ -245,7 +277,8 @@ class Rasterizer:
                 v2=vertices[i * 3 + 2],
                 primitive_id=i
             )
-            self._rasterize_triangle(tri)
+            self.stats['primitives'] += 1
+            self._tally(self._rasterize_triangle(tri))
 
     def _rasterize_triangle_strip(self, vertices: List[Dict[str, Any]]):
         """Rasterize triangle strip"""
@@ -258,44 +291,48 @@ class Rasterizer:
                 v2=vertices[i + 2],
                 primitive_id=i
             )
-            self._rasterize_triangle(tri)
+            self.stats['primitives'] += 1
+            self._tally(self._rasterize_triangle(tri))
 
     def _rasterize_line_list(self, vertices: List[Dict[str, Any]]):
         """Rasterize line list - every 2 vertices form a line"""
         if len(vertices) < 2:
             return
         for i in range(0, len(vertices) - 1, 2):
-            self._rasterize_line(vertices[i], vertices[i + 1], i // 2)
+            self.stats['primitives'] += 1
+            self._tally(self._rasterize_line(vertices[i], vertices[i + 1], i // 2))
 
     def _rasterize_line_strip(self, vertices: List[Dict[str, Any]]):
         """Rasterize line strip"""
         if len(vertices) < 2:
             return
         for i in range(len(vertices) - 1):
-            self._rasterize_line(vertices[i], vertices[i + 1], i)
+            self.stats['primitives'] += 1
+            self._tally(self._rasterize_line(vertices[i], vertices[i + 1], i))
 
     def _rasterize_point_list(self, vertices: List[Dict[str, Any]]):
         """Rasterize point list"""
         for i, vertex in enumerate(vertices):
-            self._rasterize_point(vertex, i)
+            self.stats['primitives'] += 1
+            self._tally(self._rasterize_point(vertex, i))
 
-    def _rasterize_point(self, vertex: Dict[str, Any], primitive_id: int):
-        """Rasterize a point primitive"""
+    def _rasterize_point(self, vertex: Dict[str, Any], primitive_id: int) -> str:
+        """Rasterize a point primitive. Returns 'clipped' or 'rasterized'."""
         pos = self._get_vertex_position(vertex)
         if pos is None:
-            return
+            return 'clipped'
 
         clip_w = pos[3] if len(pos) >= 4 else 1.0
         if abs(clip_w) < 1e-8:
-            return
+            return 'clipped'
 
         screen_x, screen_y = self.config.viewport.transform_to_screen(pos[0], pos[1], clip_w)
 
         if not self._is_in_viewport(screen_x, screen_y):
-            return
+            return 'clipped'
 
         if self.config.scissor_enable and not self._is_in_scissor(screen_x, screen_y):
-            return
+            return 'clipped'
 
         pixel = Pixel(
             x=screen_x,
@@ -310,20 +347,21 @@ class Rasterizer:
             primitive_id=primitive_id
         )
         self._pixels.append(pixel)
+        return 'rasterized'
 
-    def _rasterize_line(self, v0: Dict[str, Any], v1: Dict[str, Any], primitive_id: int):
-        """Rasterize a line primitive using DDA"""
+    def _rasterize_line(self, v0: Dict[str, Any], v1: Dict[str, Any], primitive_id: int) -> str:
+        """Rasterize a line primitive using DDA. Returns 'clipped' or 'rasterized'."""
         pos0 = self._get_vertex_position(v0)
         pos1 = self._get_vertex_position(v1)
 
         if pos0 is None or pos1 is None:
-            return
+            return 'clipped'
 
         clip_w0 = pos0[3] if len(pos0) >= 4 else 1.0
         clip_w1 = pos1[3] if len(pos1) >= 4 else 1.0
 
         if abs(clip_w0) < 1e-8 or abs(clip_w1) < 1e-8:
-            return
+            return 'clipped'
 
         screen_x0, screen_y0 = self.config.viewport.transform_to_screen(pos0[0], pos0[1], clip_w0)
         screen_x1, screen_y1 = self.config.viewport.transform_to_screen(pos1[0], pos1[1], clip_w1)
@@ -363,22 +401,24 @@ class Rasterizer:
                 primitive_id=primitive_id
             )
             self._pixels.append(pixel)
+        return 'rasterized'
 
-    def _rasterize_triangle(self, triangle: Triangle):
-        """Rasterize a triangle using barycentric coordinates"""
+    def _rasterize_triangle(self, triangle: Triangle) -> str:
+        """Rasterize a triangle using barycentric coordinates.
+        Returns 'clipped', 'culled', or 'rasterized'."""
         v0_pos = self._get_vertex_position(triangle.v0)
         v1_pos = self._get_vertex_position(triangle.v1)
         v2_pos = self._get_vertex_position(triangle.v2)
 
         if v0_pos is None or v1_pos is None or v2_pos is None:
-            return
+            return 'clipped'
 
         clip_w0 = v0_pos[3] if len(v0_pos) >= 4 else 1.0
         clip_w1 = v1_pos[3] if len(v1_pos) >= 4 else 1.0
         clip_w2 = v2_pos[3] if len(v2_pos) >= 4 else 1.0
 
         if abs(clip_w0) < 1e-8 or abs(clip_w1) < 1e-8 or abs(clip_w2) < 1e-8:
-            return
+            return 'clipped'
 
         screen_v0 = self.config.viewport.transform_to_screen(v0_pos[0], v0_pos[1], clip_w0)
         screen_v1 = self.config.viewport.transform_to_screen(v1_pos[0], v1_pos[1], clip_w1)
@@ -395,7 +435,7 @@ class Rasterizer:
         max_y = min(max_y, int(self.config.viewport.y + self.config.viewport.height - 1))
 
         if min_x > max_x or min_y > max_y:
-            return
+            return 'clipped'
 
         v0_ndc = [v0_pos[0] / clip_w0, v0_pos[1] / clip_w0, v0_pos[2] / clip_w0]
         v1_ndc = [v1_pos[0] / clip_w1, v1_pos[1] / clip_w1, v1_pos[2] / clip_w1]
@@ -403,10 +443,10 @@ class Rasterizer:
 
         area = self._edge_function(screen_v0, screen_v1, screen_v2)
         if abs(area) < 1e-10:
-            return
+            return 'clipped'
 
         if self._should_cull_triangle(screen_v0, screen_v1, screen_v2):
-            return
+            return 'culled'
 
         # FillMode.WIREFRAME: draw the triangle as its 3 edges. Culling above
         # still applies, matching D3D11 which only rasterizes wireframe fills for
@@ -415,7 +455,7 @@ class Rasterizer:
             self._rasterize_line(triangle.v0, triangle.v1, triangle.primitive_id)
             self._rasterize_line(triangle.v1, triangle.v2, triangle.primitive_id)
             self._rasterize_line(triangle.v2, triangle.v0, triangle.primitive_id)
-            return
+            return 'rasterized'
 
         min_depth = self.config.viewport.min_depth
         max_depth = self.config.viewport.max_depth
@@ -483,6 +523,7 @@ class Rasterizer:
                         quad_inputs=quad_inputs
                     )
                     self._pixels.append(pixel)
+        return 'rasterized'
 
     def _should_cull_triangle(self, v0: Tuple[int, int], v1: Tuple[int, int], v2: Tuple[int, int]) -> bool:
         """Determine if triangle should be culled based on cull mode"""
