@@ -18,7 +18,9 @@
       "Bash(echo \"exit=$?\")",
       "Bash(python render.py ./Cases/Default.json > /tmp/run.log 2>&1; echo \"exit=$?\"; echo \"--- Error: count ---\"; grep -c \"^Error:\" Cases/output.log 2>/dev/null; echo \"--- tail run.log ---\"; tail -6 /tmp/run.log)",
       "Bash(python -c \"import json; c=json.load\\(open\\('Cases/Default.json'\\)\\); c['mesh_view_enabled']=False; json.dump\\(c, open\\('Cases/_stats_test.json','w'\\)\\)\")",
-      "Bash(python render.py ./Cases/_stats_test.json)"
+      "Bash(python render.py ./Cases/_stats_test.json)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('mesh_view.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK: mesh_view.py parses'\\)\")",
+      "Bash(python _perf_test.py)"
     ],
     "additionalDirectories": [
       "\\tmp"

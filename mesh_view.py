@@ -114,6 +114,13 @@ class MeshView:
         self._rasterizer_scale = 1.0
         self._rasterizer_offset_x = 0
         self._rasterizer_offset_y = 0
+        # Pixel-rendering cache: each pixel canvas (rasterizer/pixel-shader/output-merger)
+        # is drawn as ONE PhotoImage instead of one canvas item per pixel. The base image
+        # (native pixel resolution) is built once per pixel-list and cached here; pan/zoom
+        # only re-place or integer-rescale the cached image. Keyed by canvas role string.
+        self._pixel_caches = {}
+        # primitive_id -> hex color, memoized so the per-pixel color lookup is cheap.
+        self._prim_color_map = {}
         self._start_gui_thread()
 
     @property
@@ -315,6 +322,9 @@ class MeshView:
             self._output_merger_canvas.bind("<B1-Motion>", lambda e: self._on_mouse_drag_output_merger(e))
             self._output_merger_canvas.bind("<ButtonRelease-1>", lambda e: self._on_mouse_release(e))
             self._output_merger_canvas.bind("<MouseWheel>", lambda e: self._on_mouse_wheel_output_merger(e))
+
+        # Redraw the now-visible pixel tab on switch (cheap: re-places the cached image).
+        self._output_notebook.bind("<<NotebookTabChanged>>", lambda e: self._redraw_active_pixel_tab())
 
         self._root.bind("<Configure>", lambda e: self._on_resize(e))
 
@@ -730,171 +740,160 @@ class MeshView:
         """绘制mesh到画布"""
         self._draw_mesh_animated(max(len(self.input_vertices), len(self.output_vertices)))
 
-    def _draw_rasterizer_pixels(self):
-        """绘制光栅化后的像素到Rasterizer画布"""
-        if not self._rasterizer_canvas or not self._rasterizer_pixels:
-            return
+    PIXEL_CANVAS_BG = '#1a1a2e'
 
-        self._rasterizer_canvas.delete("all")
-
-        canvas_width = int(self._rasterizer_canvas.cget('width'))
-        canvas_height = int(self._rasterizer_canvas.cget('height'))
-
-        if not self._rasterizer_pixels:
-            return
-
-        min_x = min(p.x for p in self._rasterizer_pixels)
-        max_x = max(p.x for p in self._rasterizer_pixels)
-        min_y = min(p.y for p in self._rasterizer_pixels)
-        max_y = max(p.y for p in self._rasterizer_pixels)
-
-        mesh_width = max(max_x - min_x, 1)
-        mesh_height = max(max_y - min_y, 1)
-
-        margin = 40
-        usable_width = canvas_width - 2 * margin
-        usable_height = canvas_height - 2 * margin
-        scale = self._rasterizer_scale * min(usable_width, usable_height) / max(mesh_width, mesh_height)
-        if scale < 0.01:
-            scale = 0.01
-
-        offset_x = canvas_width / 2 + self._rasterizer_offset_x - (min_x + max_x) / 2 * scale
-        offset_y = canvas_height / 2 + self._rasterizer_offset_y - (min_y + max_y) / 2 * scale
-
-        drawn_primitives = set()
-        for pixel in self._rasterizer_pixels:
-            screen_x = pixel.x * scale + offset_x
-            screen_y = pixel.y * scale + offset_y
-
-            prim_id = pixel.primitive_id
-            if prim_id not in drawn_primitives:
-                hue = (prim_id * 37) % 360
-                drawn_primitives.add(prim_id)
-            else:
-                hue = (prim_id * 37) % 360
-
+    def _prim_color(self, prim_id: int) -> str:
+        """primitive_id -> 稳定的hex颜色（带memo缓存，避免每像素重复三角函数计算）"""
+        c = self._prim_color_map.get(prim_id)
+        if c is None:
+            hue = (prim_id * 37) % 360
             r = int(127 + 127 * math.sin(hue * math.pi / 180))
             g = int(127 + 127 * math.sin((hue + 120) * math.pi / 180))
             b = int(127 + 127 * math.sin((hue + 240) * math.pi / 180))
-            color_hex = f'#{r:02x}{g:02x}{b:02x}'
+            c = f'#{r:02x}{g:02x}{b:02x}'
+            self._prim_color_map[prim_id] = c
+        return c
 
-            self._rasterizer_canvas.create_rectangle(
-                screen_x - 1, screen_y - 1, screen_x + 1, screen_y + 1,
-                fill=color_hex, outline=color_hex
-            )
+    def _rasterizer_color_fn(self, pixel) -> str:
+        """Rasterizer视图：按primitive_id着色"""
+        return self._prim_color(pixel.primitive_id)
 
-    def _draw_pixel_shader_pixels(self):
-        """绘制Pixel Shader输出后的像素到Pixel Shader画布"""
-        if not self._pixel_shader_canvas or not self._rasterizer_pixels:
-            return
+    def _shaded_color_fn(self, pixel) -> str:
+        """Pixel Shader / Output Merger视图：有ps_output_color用之，否则按primitive着色"""
+        color = pixel.ps_output_color
+        if color:
+            r = int(min(255, max(0, color[0] * 255)))
+            g = int(min(255, max(0, color[1] * 255)))
+            b = int(min(255, max(0, color[2] * 255)))
+            return f'#{r:02x}{g:02x}{b:02x}'
+        return self._prim_color(pixel.primitive_id)
 
-        self._pixel_shader_canvas.delete("all")
-
-        canvas_width = int(self._pixel_shader_canvas.cget('width'))
-        canvas_height = int(self._pixel_shader_canvas.cget('height'))
-
-        if not self._rasterizer_pixels:
-            return
-
-        min_x = min(p.x for p in self._rasterizer_pixels)
-        max_x = max(p.x for p in self._rasterizer_pixels)
-        min_y = min(p.y for p in self._rasterizer_pixels)
-        max_y = max(p.y for p in self._rasterizer_pixels)
-
-        mesh_width = max(max_x - min_x, 1)
-        mesh_height = max(max_y - min_y, 1)
-
-        margin = 40
-        usable_width = canvas_width - 2 * margin
-        usable_height = canvas_height - 2 * margin
-        scale = self._rasterizer_scale * min(usable_width, usable_height) / max(mesh_width, mesh_height)
-        if scale < 0.01:
-            scale = 0.01
-
-        offset_x = canvas_width / 2 + self._rasterizer_offset_x - (min_x + max_x) / 2 * scale
-        offset_y = canvas_height / 2 + self._rasterizer_offset_y - (min_y + max_y) / 2 * scale
-
-        for pixel in self._rasterizer_pixels:
-            screen_x = pixel.x * scale + offset_x
-            screen_y = pixel.y * scale + offset_y
-
-            if pixel.ps_output_color:
-                color = pixel.ps_output_color
-                r = int(min(255, max(0, color[0] * 255)))
-                g = int(min(255, max(0, color[1] * 255)))
-                b = int(min(255, max(0, color[2] * 255)))
-                color_hex = f'#{r:02x}{g:02x}{b:02x}'
-            else:
-                prim_id = pixel.primitive_id
-                hue = (prim_id * 37) % 360
-                r = int(127 + 127 * math.sin(hue * math.pi / 180))
-                g = int(127 + 127 * math.sin((hue + 120) * math.pi / 180))
-                b = int(127 + 127 * math.sin((hue + 240) * math.pi / 180))
-                color_hex = f'#{r:02x}{g:02x}{b:02x}'
-
-            self._pixel_shader_canvas.create_rectangle(
-                screen_x - 1, screen_y - 1, screen_x + 1, screen_y + 1,
-                fill=color_hex, outline=color_hex
-            )
-
-    def _draw_output_merger_pixels(self):
-        """绘制Output Merger处理后的像素到Output Merger画布"""
-        if not self._output_merger_canvas:
-            return
-
-        if self._output_merger_pixels:
-            pixels = self._output_merger_pixels
-        else:
-            pixels = self._rasterizer_pixels
-
-        if not pixels:
-            return
-
-        self._output_merger_canvas.delete("all")
-
-        canvas_width = int(self._output_merger_canvas.cget('width'))
-        canvas_height = int(self._output_merger_canvas.cget('height'))
-
+    def _build_pixel_base_image(self, pixels, color_fn) -> dict:
+        """
+        把像素列表渲染成一张原始分辨率(1像素=1图像点)的PhotoImage。
+        这是性能优化的核心：用一次 PhotoImage.put() 取代每像素一个 create_rectangle，
+        把成千上万个canvas item压缩成一个image item。构建结果会被缓存复用。
+        """
         min_x = min(p.x for p in pixels)
         max_x = max(p.x for p in pixels)
         min_y = min(p.y for p in pixels)
         max_y = max(p.y for p in pixels)
 
-        mesh_width = max(max_x - min_x, 1)
-        mesh_height = max(max_y - min_y, 1)
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+
+        bg = self.PIXEL_CANVAS_BG
+        # 背景填满（空像素显示画布背景色），再逐像素覆盖颜色。
+        grid = [[bg] * width for _ in range(height)]
+        for p in pixels:
+            grid[p.y - min_y][p.x - min_x] = color_fn(p)
+
+        # Tk PhotoImage.put 接受 "{c c c} {c c c} ..." 的行块字符串，一次性写入整张图。
+        data = ' '.join('{' + ' '.join(row) + '}' for row in grid)
+        img = tk.PhotoImage(width=width, height=height)
+        img.put(data, to=(0, 0))
+
+        return {
+            'base': img, 'disp': img, 'disp_key': None,
+            'min_x': min_x, 'max_x': max_x, 'min_y': min_y, 'max_y': max_y,
+            'width': width, 'height': height,
+        }
+
+    def _draw_pixels_image(self, canvas, pixels, color_fn, cache_key: str):
+        """
+        在指定画布上以单张PhotoImage绘制像素。
+        - 像素列表未变时复用缓存的base image（不重建）。
+        - 缩放用整数 zoom()/subsample()，并按缩放因子缓存放大/缩小后的图。
+        - 平移只改变 create_image 的位置，几乎零成本。
+        """
+        if not canvas:
+            return
+        if not pixels:
+            canvas.delete("all")
+            return
+
+        cache = self._pixel_caches.get(cache_key)
+        # 用 (列表对象id, 长度) 作为指纹判断像素数据是否更换。
+        sig = (id(pixels), len(pixels))
+        if cache is None or cache.get('sig') != sig:
+            cache = self._build_pixel_base_image(pixels, color_fn)
+            cache['sig'] = sig
+            self._pixel_caches[cache_key] = cache
+
+        canvas.delete("all")
+
+        canvas_width = canvas.winfo_width()
+        canvas_height = canvas.winfo_height()
+        if canvas_width <= 1:
+            canvas_width = int(canvas.cget('width'))
+            canvas_height = int(canvas.cget('height'))
+
+        mesh_width = max(cache['width'] - 1, 1)
+        mesh_height = max(cache['height'] - 1, 1)
 
         margin = 40
-        usable_width = canvas_width - 2 * margin
-        usable_height = canvas_height - 2 * margin
+        usable_width = max(canvas_width - 2 * margin, 1)
+        usable_height = max(canvas_height - 2 * margin, 1)
         scale = self._rasterizer_scale * min(usable_width, usable_height) / max(mesh_width, mesh_height)
-        if scale < 0.01:
+        if scale <= 0:
             scale = 0.01
 
-        offset_x = canvas_width / 2 + self._rasterizer_offset_x - (min_x + max_x) / 2 * scale
-        offset_y = canvas_height / 2 + self._rasterizer_offset_y - (min_y + max_y) / 2 * scale
+        # PhotoImage只支持整数倍 zoom / subsample，取最接近的整数因子。
+        if scale >= 1:
+            factor = max(1, int(round(scale)))
+            disp_key = ('zoom', factor)
+            eff = float(factor)
+        else:
+            factor = max(1, int(round(1.0 / scale)))
+            disp_key = ('subsample', factor)
+            eff = 1.0 / factor
 
-        for pixel in pixels:
-            screen_x = pixel.x * scale + offset_x
-            screen_y = pixel.y * scale + offset_y
-
-            if pixel.ps_output_color:
-                color = pixel.ps_output_color
-                r = int(min(255, max(0, color[0] * 255)))
-                g = int(min(255, max(0, color[1] * 255)))
-                b = int(min(255, max(0, color[2] * 255)))
-                color_hex = f'#{r:02x}{g:02x}{b:02x}'
+        if cache.get('disp_key') != disp_key:
+            base = cache['base']
+            if disp_key[0] == 'zoom':
+                cache['disp'] = base.zoom(factor) if factor > 1 else base
             else:
-                prim_id = pixel.primitive_id
-                hue = (prim_id * 37) % 360
-                r = int(127 + 127 * math.sin(hue * math.pi / 180))
-                g = int(127 + 127 * math.sin((hue + 120) * math.pi / 180))
-                b = int(127 + 127 * math.sin((hue + 240) * math.pi / 180))
-                color_hex = f'#{r:02x}{g:02x}{b:02x}'
+                cache['disp'] = base.subsample(factor) if factor > 1 else base
+            cache['disp_key'] = disp_key
 
-            self._output_merger_canvas.create_rectangle(
-                screen_x - 1, screen_y - 1, screen_x + 1, screen_y + 1,
-                fill=color_hex, outline=color_hex
-            )
+        disp = cache['disp']
+
+        # base图左上角(原始min_x,min_y)在画布上的位置；按 eff 缩放后居中并加平移偏移。
+        top_left_x = canvas_width / 2 + self._rasterizer_offset_x - eff * mesh_width / 2
+        top_left_y = canvas_height / 2 + self._rasterizer_offset_y - eff * mesh_height / 2
+
+        canvas.create_image(top_left_x, top_left_y, anchor=tk.NW, image=disp)
+
+    def _draw_rasterizer_pixels(self):
+        """绘制光栅化后的像素到Rasterizer画布（单PhotoImage，按primitive着色）"""
+        self._draw_pixels_image(self._rasterizer_canvas, self._rasterizer_pixels,
+                                self._rasterizer_color_fn, 'rasterizer')
+
+    def _draw_pixel_shader_pixels(self):
+        """绘制Pixel Shader输出后的像素到Pixel Shader画布（单PhotoImage）"""
+        self._draw_pixels_image(self._pixel_shader_canvas, self._rasterizer_pixels,
+                                self._shaded_color_fn, 'pixel_shader')
+
+    def _draw_output_merger_pixels(self):
+        """绘制Output Merger处理后的像素到Output Merger画布（单PhotoImage）"""
+        pixels = self._output_merger_pixels if self._output_merger_pixels else self._rasterizer_pixels
+        self._draw_pixels_image(self._output_merger_canvas, pixels,
+                                self._shaded_color_fn, 'output_merger')
+
+    def _redraw_active_pixel_tab(self):
+        """只重绘当前可见的输出子标签对应的像素画布（VS Result标签不涉及像素）"""
+        if not self._output_notebook:
+            return
+        try:
+            idx = self._output_notebook.index(self._output_notebook.select())
+        except Exception:
+            return
+        if idx == 1:
+            self._draw_rasterizer_pixels()
+        elif idx == 2:
+            self._draw_pixel_shader_pixels()
+        elif idx == 3:
+            self._draw_output_merger_pixels()
 
     def _draw_mesh_animated(self, count: int = None):
         """绘制动画mesh到画布，只渲染前count个元素"""
@@ -940,8 +939,10 @@ class MeshView:
             proj = self._project_output(p, output_width, output_height)
             self._output_canvas.create_oval(proj[0]-8, proj[1]-8, proj[0]+8, proj[1]+8, outline="#ff8800", width=2)
 
-        self._draw_rasterizer_pixels()
-        self._draw_pixel_shader_pixels()
+        # NOTE: pixel canvases (rasterizer/PS/output-merger) are NOT redrawn here.
+        # They are drawn once when their pixel data is set and re-drawn only on their
+        # own pan/zoom or tab switch — so rotating/zooming the VS mesh no longer pays
+        # the cost of re-rendering ~140k pixels.
         self._update_info()
 
     def _update_info(self):
@@ -1387,44 +1388,51 @@ class MeshView:
             self._output_scale = max(MESH_VIEW_MIN_SCALE, min(MESH_VIEW_MAX_SCALE, self._output_scale))
         self._draw_mesh()
 
-    def _on_mouse_drag_rasterizer(self, event):
-        """处理Rasterizer画布鼠标拖动"""
+    def _pan_pixel_view(self, event):
+        """像素画布共用的平移逻辑（rasterizer/PS/output-merger共享offset）。"""
         if self._last_mouse:
-            dx = event.x - self._last_mouse[0]
-            dy = event.y - self._last_mouse[1]
-            self._rasterizer_offset_x += dx
-            self._rasterizer_offset_y += dy
-            self._draw_mesh()
+            self._rasterizer_offset_x += event.x - self._last_mouse[0]
+            self._rasterizer_offset_y += event.y - self._last_mouse[1]
+            self._redraw_active_pixel_tab()
         self._last_mouse = (event.x, event.y)
 
-    def _on_mouse_wheel_rasterizer(self, event):
-        """处理Rasterizer画布鼠标滚轮缩放"""
+    def _zoom_pixel_view(self, event):
+        """像素画布共用的缩放逻辑（rasterizer/PS/output-merger共享scale）。"""
         if event.delta > 0:
             self._rasterizer_scale *= 1.1
         else:
             self._rasterizer_scale *= 0.9
         self._rasterizer_scale = max(0.01, min(100, self._rasterizer_scale))
-        self._draw_mesh()
+        self._redraw_active_pixel_tab()
+
+    def _on_mouse_drag_rasterizer(self, event):
+        """处理Rasterizer画布鼠标拖动"""
+        self._pan_pixel_view(event)
+
+    def _on_mouse_wheel_rasterizer(self, event):
+        """处理Rasterizer画布鼠标滚轮缩放"""
+        self._zoom_pixel_view(event)
 
     def _on_mouse_drag_pixel_shader(self, event):
         """处理Pixel Shader画布鼠标拖动"""
-        pass
+        self._pan_pixel_view(event)
 
     def _on_mouse_wheel_pixel_shader(self, event):
         """处理Pixel Shader画布鼠标滚轮缩放"""
-        pass
+        self._zoom_pixel_view(event)
 
     def _on_mouse_drag_output_merger(self, event):
         """处理Output Merger画布鼠标拖动"""
-        pass
+        self._pan_pixel_view(event)
 
     def _on_mouse_wheel_output_merger(self, event):
         """处理Output Merger画布鼠标滚轮缩放"""
-        pass
+        self._zoom_pixel_view(event)
 
     def _on_resize(self, event):
         """处理窗口大小改变"""
         self._draw_mesh()
+        self._redraw_active_pixel_tab()
 
     def _on_layout_changed(self):
         """处理布局变更"""

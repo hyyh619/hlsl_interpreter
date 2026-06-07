@@ -581,13 +581,37 @@ Depth-fail count is 0 whenever depth/stencil is disabled, since Depth.execute pa
 I added the stats to the active zip workflow only; the legacy struct-based workflow (_run_legacy_workflow) was left unchanged. Let me know if you'd like it mirrored there too.
 
 
-# 16
+# 16 优化MeshView的显示性能
 ## Prompts
+当前因为我们需要显示顶点和像素点的数量很大，
+例如运行Collision-fix-constant-buffer-and-RdotV-zero_event104.zip这个case时，
+有14万个像素点需要显示，导致MeshView界面及其卡顿。请优化顶点和像素点的绘制，提升执行速度
+把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
 ## Claude Code Session
+问题根因
+MeshView 卡顿的根因在 mesh_view.py 的三个像素绘制方法 _draw_rasterizer_pixels / _draw_pixel_shader_pixels / _draw_output_merger_pixels：它们 每个像素调用一次 create_rectangle。14 万像素 × 3 个画布 ≈ 42 万个持久化 canvas item——tkinter 要为每个 item 维护对象、命中测试、每次重绘全部重渲染,这是 Canvas 的固有瓶颈。
 
+更糟的是 _draw_mesh_animated 在每次 VS mesh 旋转/缩放时都无条件重建另外两个像素画布的全部矩形。
+
+修复
+单张 tk.PhotoImage 取代成千上万个矩形 —— 把像素渲染进一张原始分辨率的 PhotoImage，用一次 put() 整张写入,作为一个 create_image item 显示。
+缓存复用 —— base image 按 (id(pixels), len) 指纹缓存；平移只移动 image 位置,缩放用整数 zoom()/subsample() 并按因子缓存。
+解耦重绘 —— 从 _draw_mesh_animated 移除像素绘制；改为只重绘当前可见标签（_redraw_active_pixel_tab + Notebook 标签切换绑定）；像素画布的平移/缩放统一走共享逻辑,并接上原本为空的 PS/OutputMerger 回调。
+接口与着色行为不变，render.py 无需改动。
+
+验证结果（14 万像素 smoke test）
+操作	优化前	优化后
+canvas item 数	~140,000	1
+首次绘制	数秒卡顿	0.23s
+平移	重建 14 万 item	0.000s
+缩放	重建 14 万 item	0.005s
+旋转 VS mesh	连带重建像素画布	不再触碰
+思考、执行与结果总结已写入 Sessions/hlsl-step88-optimize-meshview-pixel-rendering.md（沿用仓库现有 hlsl-stepN-*.md 命名，上一步是 step87）。
+
+我做的验证是用合成的 14 万稠密像素跑新绘制路径，未跑实际的 zip case 全流程(那需要交互输入和 GUI 显示)——热路径逻辑和时序已经覆盖,但你最好用真实 case 实际操作一下确认手感。
 
 
 # 17
