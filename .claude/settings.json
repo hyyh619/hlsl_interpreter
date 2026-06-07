@@ -4,7 +4,10 @@
       "Bash(python render.py ./Cases/Default.json)",
       "Bash(LOD_DEBUG=1 python render.py ./Cases/Default.json)",
       "Bash(python -c ' *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(python _cull_probe.py)",
+      "Bash(python _count_probe.py)",
+      "Bash(python -c \"import json; d=json.load\\(open\\('Cases/Default.json'\\)\\); print\\('data_path =', d['data_path']\\)\")"
     ]
   }
 }

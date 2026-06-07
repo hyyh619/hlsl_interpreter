@@ -764,10 +764,10 @@ class Rasterizer:
                     if mode is not None:
                         self.config.fill_mode = mode
                 elif prop == 'FrontFace':
-                    if 'clockwise' in val.lower() and 'counter' not in val.lower():
-                        self.config.front_face = FrontFace.CLOCKWISE
-                    else:
+                    if 'CCW' in val.lower():
                         self.config.front_face = FrontFace.COUNTER_CLOCKWISE
+                    else:
+                        self.config.front_face = FrontFace.CLOCKWISE
 
             elif section == 'Topology':
                 if prop == 'Primitive':

@@ -386,7 +386,8 @@ MipLODBias / MinLOD 把它推到更高层。
 2. 像素着色器执行时使用2x2像素quad，对插值后的UV做ddx/ddy
 3. 增加正确的纹理LOD计算
 
-## Git commit: 
+## Git commit:
+Add rasterizer/ps quad execution and ddx/ddy for LOD by claude code.
 
 ## Claude Code Session Plan
 Plan: Quad-based rasterization + screen-space derivatives + correct texture LOD
