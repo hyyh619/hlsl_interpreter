@@ -66,3 +66,24 @@ The zip extracts to a single top-level folder containing (paths resolved in `_ex
 - `Prompts/` holds the prompt/spec history that drove development — `hlsl-interpreter-prompt-ClaudeCode.md` is the richest record of recent bug fixes and design decisions.
 - `Sessions/` contains 80+ step-by-step session logs (`hlsl-stepN-*.md`) documenting how each feature was built. Useful for "why does this work this way" archaeology.
 - `ReadMe.md` is currently empty.
+
+## Regression Test
+
+**After every code change, run the regression suite before considering the work done.** This project has no unit tests, so the regression suite is the safety net that catches interpreter/pipeline breakage.
+
+The suite is data-driven: `Cases/regression_test_zip_files.csv` lists (one filename per line, after a `filename` header) the capture zips in `Cases/` that must keep passing. To add or remove coverage, edit that CSV — do not hardcode case names in the runner.
+
+Run it with:
+
+```bash
+python run_regression.py
+```
+
+`run_regression.py` reads the CSV, runs each zip through the full pipeline **headless** (mesh viewer disabled), writes a per-case log to `Cases/regression_logs/<zip-stem>.log`, and prints a PASS/FAIL summary. It exits non-zero if any case fails, so it can gate a change.
+
+A case **passes** when all three hold:
+1. `render.py` exits cleanly,
+2. its log contains no lines starting with `Error:` (per-component VS-vs-golden mismatches), and
+3. the log's `Total PASSED rows: X/Y` summary has `X == Y` (every golden row matched).
+
+If a case fails, open its log in `Cases/regression_logs/` and grep for `Error:` to find the mismatching components, then fix the interpreter before proceeding (see "The verify-by-log workflow" above).

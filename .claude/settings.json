@@ -20,7 +20,8 @@
       "Bash(python -c \"import json; c=json.load\\(open\\('Cases/Default.json'\\)\\); c['mesh_view_enabled']=False; json.dump\\(c, open\\('Cases/_stats_test.json','w'\\)\\)\")",
       "Bash(python render.py ./Cases/_stats_test.json)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('mesh_view.py',encoding='utf-8'\\).read\\(\\)\\); print\\('OK: mesh_view.py parses'\\)\")",
-      "Bash(python _perf_test.py)"
+      "Bash(python _perf_test.py)",
+      "Bash(python run_regression.py)"
     ],
     "additionalDirectories": [
       "\\tmp"

@@ -588,7 +588,8 @@ I added the stats to the active zip workflow only; the legacy struct-based workf
 有14万个像素点需要显示，导致MeshView界面及其卡顿。请优化顶点和像素点的绘制，提升执行速度
 把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Optimize MeshView canvas performance by claude code.
 
 ## Claude Code Session
 问题根因
@@ -614,8 +615,10 @@ canvas item 数	~140,000	1
 我做的验证是用合成的 14 万稠密像素跑新绘制路径，未跑实际的 zip case 全流程(那需要交互输入和 GUI 显示)——热路径逻辑和时序已经覆盖,但你最好用真实 case 实际操作一下确认手感。
 
 
-# 17
+# 17 增加regression test描述
 ## Prompts
+给claude.md增加一个regression test项目，要求每次claude code改动代码后需要执行一组regression test，regression test的列表用文件Cases/regression_test_zip_files.csv描述
+把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -624,6 +627,58 @@ canvas item 数	~140,000	1
 
 
 # 18
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 19
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 20
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+# 21
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 22
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+# 23
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 24
 ## Prompts
 
 ## Git commit: 
