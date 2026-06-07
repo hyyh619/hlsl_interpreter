@@ -477,17 +477,49 @@ One follow-up worth flagging for §11 of your prompt doc: the lockstep model now
 rasterizer只支持solid绘制，请根据FillMode实现wireframe
 
 ## Git commit: 
+Add wireframe code of rasterizer by claude code.
 
 ## Claude Code Session
+What I changed
+In rasterizer.py, _rasterize_triangle previously always did a solid barycentric fill, ignoring the fill_mode that's already parsed from pipeline_state.csv (the FillMode enum and the CSV Rasterizer/FillMode reader at rasterizer.py:762-765 existed, but nothing consumed FillMode.LINE/POINT).
+
+I added a branch right after the cull test in rasterizer.py:408-423:
+
+FillMode.LINE (wireframe) → draws the 3 triangle edges (v0→v1, v1→v2, v2→v0) by reusing the existing _rasterize_line, which already does DDA traversal with perspective-correct attribute interpolation and viewport/scissor clipping.
+FillMode.POINT → rasterizes the 3 corner vertices via _rasterize_point.
+FillMode.SOLID → unchanged (falls through to the existing quad-aligned barycentric fill).
+Placing the branch after _should_cull_triangle means wireframe/point fills still honour back/front-face culling, matching D3D11 — it only rasterizes wireframe edges for triangles that survive the cull.
+
+One trade-off worth noting: wireframe pixels come from the line path, so they don't carry quad_lane/quad_inputs. That means ddx/ddy derivatives in the pixel shader won't be valid for wireframe fragments (same limitation the line/point topologies already have). For wireframe rendering that's normally acceptable, but flag it if a wireframe case relies on derivative-based texture LOD.
 
 
-
-# 13
+# 13 cull mode反了
 ## Prompts
+通过运行下面的case我发现背面剔除做反了。把正面需要显示的triangle剔除掉了，而背面的triangle被保留了。请调试该问题
+Collision-fix-constant-buffer-and-RdotV-zero_event516.zip
+Collision-fix-constant-buffer-and-RdotV-zero_event104.zip
 
-## Git commit: 
+## Git commit:
+
 
 ## Claude Code Session
+Root cause
+transform_to_screen (rasterizer.py:57) flips Y so screen-Y grows downward. In that Y-down space, the sign of the 2D cross product is inverted relative to the standard math (Y-up) convention that _should_cull_triangle was written for:
+
+cross_z > 0 → vertices wind clockwise on screen
+cross_z < 0 → counter-clockwise on screen
+D3D11's FrontCounterClockwise=FALSE (the captures use FrontFace=CW) means clockwise-on-screen is the front face. The old code did return cross_z > 0 for BACK + CW, so it culled exactly the cross_z > 0 front faces and kept the back faces — the symptom you saw. Both the BACK and FRONT branches had their comparisons inverted.
+
+Fixes (rasterizer.py:492-515)
+Swapped the four comparisons so winding is interpreted in screen space, with a comment documenting the Y-flip.
+
+I also found a latent parser bug at rasterizer.py:781: if 'CCW' in val.lower() compared uppercase 'CCW' against a lowercased string, so it could never match — any FrontFace,CCW capture would have been silently mis-parsed as CLOCKWISE. Fixed to 'ccw'. (Your two cases are CW, so they hit the else correctly before — but a CCW capture would have been wrong.)
+
+Verification
+Unit check of _should_cull_triangle: all four combinations (BACK×{CW,CCW} × {front,back}) now match D3D semantics.
+event516 (1 triangle): now renders 1108 pixels — previously culled to 0.
+event104 (1149-vertex mesh): renders 142,984 pixels — front faces survive.
+Worth a visual confirmation in the mesh viewer on your end, but the front/back faces are now culled the correct way around.
 
 
 

@@ -501,16 +501,23 @@ class Rasterizer:
 
         cross_z = edge1_x * edge2_y - edge1_y * edge2_x
 
+        # NOTE: v0/v1/v2 are screen-space coords AFTER the viewport Y-flip
+        # (transform_to_screen: screen_y grows downward). In this Y-down space
+        # the 2D cross product's sign is inverted vs. the math (Y-up) convention:
+        #   cross_z > 0  <=>  vertices wind CLOCKWISE on screen
+        #   cross_z < 0  <=>  vertices wind COUNTER-CLOCKWISE on screen
+        # D3D11 FrontCounterClockwise=FALSE (FrontFace=CW) => CW-on-screen is the
+        # front face, so front <=> cross_z > 0 (and CCW front <=> cross_z < 0).
         if self.config.cull_mode == CullMode.BACK:
             if self.config.front_face == FrontFace.COUNTER_CLOCKWISE:
-                return cross_z < 0
+                return cross_z > 0   # front is CCW (cross_z<0); cull the CW back faces
             else:
-                return cross_z > 0
+                return cross_z < 0   # front is CW (cross_z>0); cull the CCW back faces
         elif self.config.cull_mode == CullMode.FRONT:
             if self.config.front_face == FrontFace.COUNTER_CLOCKWISE:
-                return cross_z > 0
-            else:
                 return cross_z < 0
+            else:
+                return cross_z > 0
 
         return False
 
@@ -778,7 +785,7 @@ class Rasterizer:
                     if mode is not None:
                         self.config.fill_mode = mode
                 elif prop == 'FrontFace':
-                    if 'CCW' in val.lower():
+                    if 'ccw' in val.lower():
                         self.config.front_face = FrontFace.COUNTER_CLOCKWISE
                     else:
                         self.config.front_face = FrontFace.CLOCKWISE
