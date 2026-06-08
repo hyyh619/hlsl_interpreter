@@ -922,7 +922,7 @@ Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit:
-
+Add golden pixel dump to bitmap by claude code.
 
 ## Claude Code Session
 Summary
@@ -947,7 +947,60 @@ One note: I haven't committed anything — let me know if you'd like me to.
 
 # 27
 ## Prompts
-
+运行Collision-fix-constant-buffer-and-RdotV-zero_event399.zip有如下pixels颜色不匹配，请分析整个渲染流程，修复颜色不匹配问题
+Error [PixelDiff]: (355,348) color out=[0.0408, 0.0352, 0.0351, 1.0000] golden=[0.2353, 0.1961, 0.1922, 1.0000] cdiff=[0.1945, 0.1609, 0.1570, 0.0000] | depth out=0.993241 golden=0.993231 ddiff=0.000010
+Error [PixelDiff]: (368,351) color out=[0.3769, 0.3702, 0.3626, 1.0000] golden=[0.6000, 0.6039, 0.5882, 1.0000] cdiff=[0.2231, 0.2338, 0.2256, 0.0000] | depth out=0.992288 golden=0.992291 ddiff=0.000003
+Error [PixelDiff]: (367,352) color out=[0.2385, 0.1909, 0.1908, 1.0000] golden=[0.6667, 0.6667, 0.6549, 1.0000] cdiff=[0.4282, 0.4758, 0.4641, 0.0000] | depth out=0.992287 golden=0.992286 ddiff=0.000001
+Error [PixelDiff]: (368,352) color out=[0.2034, 0.1763, 0.1761, 1.0000] golden=[0.4667, 0.4510, 0.4471, 1.0000] cdiff=[0.2633, 0.2747, 0.2709, 0.0000] | depth out=0.992274 golden=0.992277 ddiff=0.000003
+Error [PixelDiff]: (369,352) color out=[0.1279, 0.1154, 0.1116, 1.0000] golden=[0.2980, 0.2471, 0.2431, 1.0000] cdiff=[0.1701, 0.1316, 0.1315, 0.0000] | depth out=0.992272 golden=0.992261 ddiff=0.000011
+Error [PixelDiff]: (367,353) color out=[0.2517, 0.2170, 0.2154, 1.0000] golden=[0.7059, 0.7059, 0.6941, 1.0000] cdiff=[0.4542, 0.4889, 0.4788, 0.0000] | depth out=0.992267 golden=0.992272 ddiff=0.000005
+Error [PixelDiff]: (379,353) missing in output (golden color=[0.1333, 0.1098, 0.1098, 1.0000] depth=0.991806)
+Error [PixelDiff]: (366,354) color out=[0.2811, 0.2315, 0.2315, 1.0000] golden=[0.8118, 0.8118, 0.8000, 1.0000] cdiff=[0.5306, 0.5803, 0.5685, 0.0000] | depth out=0.992271 golden=0.992268 ddiff=0.000003
+Error [PixelDiff]: (367,354) color out=[0.2916, 0.2417, 0.2416, 1.0000] golden=[0.6471, 0.6314, 0.6196, 1.0000] cdiff=[0.3554, 0.3897, 0.3780, 0.0000] | depth out=0.992248 golden=0.992258 ddiff=0.000010
+Error [PixelDiff]: (376,354) color out=[0.1523, 0.1326, 0.1312, 1.0000] golden=[0.3098, 0.2627, 0.2588, 1.0000] cdiff=[0.1575, 0.1302, 0.1276, 0.0000] | depth out=0.991768 golden=0.991776 ddiff=0.000008
+Error [PixelDiff]: (383,354) missing in output (golden color=[0.1216, 0.1020, 0.1020, 1.0000] depth=0.991552)
+Error [PixelDiff]: (366,355) color out=[0.2982, 0.2489, 0.2489, 1.0000] golden=[0.7843, 0.7843, 0.7804, 1.0000] cdiff=[0.4862, 0.5354, 0.5315, 0.0000] | depth out=0.992266 golden=0.992264 ddiff=0.000002
+Error [PixelDiff]: (367,355) color out=[0.1699, 0.1241, 0.1240, 1.0000] golden=[0.5804, 0.5608, 0.5529, 1.0000] cdiff=[0.4105, 0.4367, 0.4289, 0.0000] | depth out=0.992250 golden=0.992251 ddiff=0.000001
+Error [PixelDiff]: (380,355) color out=[0.1240, 0.1053, 0.1048, 1.0000] golden=[0.2980, 0.2510, 0.2510, 1.0000] cdiff=[0.1741, 0.1456, 0.1462, 0.0000] | depth out=0.991490 golden=0.991505 ddiff=0.000015
+Error [PixelDiff]: (386,355) missing in output (golden color=[0.1490, 0.1216, 0.1216, 1.0000] depth=0.991324)
+Error [PixelDiff]: (366,356) color out=[0.2702, 0.2209, 0.2209, 1.0000] golden=[0.7216, 0.7294, 0.7294, 1.0000] cdiff=[0.4513, 0.5085, 0.5085, 0.0000] | depth out=0.992262 golden=0.992262 ddiff=0.000000
+Error [PixelDiff]: (367,356) color out=[0.2357, 0.1994, 0.1986, 1.0000] golden=[0.6078, 0.6000, 0.5961, 1.0000] cdiff=[0.3721, 0.4006, 0.3975, 0.0000] | depth out=0.992251 golden=0.992249 ddiff=0.000002
+Error [PixelDiff]: (390,356) missing in output (golden color=[0.1333, 0.1098, 0.1098, 1.0000] depth=0.991070)
+Error [PixelDiff]: (367,357) color out=[0.3783, 0.3574, 0.3544, 1.0000] golden=[0.6392, 0.6353, 0.6275, 1.0000] cdiff=[0.2609, 0.2779, 0.2730, 0.0000] | depth out=0.992247 golden=0.992247 ddiff=0.000000
+Error [PixelDiff]: (367,358) color out=[0.4403, 0.4308, 0.4256, 1.0000] golden=[0.6510, 0.6549, 0.6510, 1.0000] cdiff=[0.2107, 0.2241, 0.2254, 0.0000] | depth out=0.992243 golden=0.992244 ddiff=0.000001
+Error [PixelDiff]: (368,358) color out=[0.2644, 0.2157, 0.2155, 1.0000] golden=[0.4275, 0.4039, 0.3961, 1.0000] cdiff=[0.1631, 0.1882, 0.1806, 0.0000] | depth out=0.992232 golden=0.992233 ddiff=0.000001
+Error [PixelDiff]: (369,359) color out=[0.1442, 0.1016, 0.1010, 1.0000] golden=[0.2824, 0.2627, 0.2588, 1.0000] cdiff=[0.1381, 0.1612, 0.1578, 0.0000] | depth out=0.992235 golden=0.992236 ddiff=0.000001
+Error [PixelDiff]: (370,361) color out=[0.0828, 0.0653, 0.0653, 1.0000] golden=[0.2275, 0.2353, 0.2314, 1.0000] cdiff=[0.1447, 0.1700, 0.1660, 0.0000] | depth out=0.992251 golden=0.992249 ddiff=0.000002
+Error [PixelDiff]: (371,361) missing in output (golden color=[0.1608, 0.1686, 0.1647, 1.0000] depth=0.992257)
+Error [PixelDiff]: (411,361) color out=[0.4983, 0.4989, 0.4943, 1.0000] golden=[0.3020, 0.3059, 0.2941, 1.0000] cdiff=[0.1963, 0.1930, 0.2001, 0.0000] | depth out=0.989372 golden=0.989395 ddiff=0.000023
+Error [PixelDiff]: (409,364) color out=[0.4433, 0.4390, 0.4321, 1.0000] golden=[0.5922, 0.5922, 0.5804, 1.0000] cdiff=[0.1488, 0.1531, 0.1483, 0.0000] | depth out=0.989338 golden=0.989341 ddiff=0.000003
+Error [PixelDiff]: (410,364) color out=[0.2492, 0.2298, 0.2284, 1.0000] golden=[0.4078, 0.4000, 0.3922, 1.0000] cdiff=[0.1586, 0.1702, 0.1638, 0.0000] | depth out=0.989346 golden=0.989347 ddiff=0.000001
+Error [PixelDiff]: (411,364) color out=[0.2253, 0.2252, 0.2253, 1.0000] golden=[0.3804, 0.3608, 0.3608, 1.0000] cdiff=[0.1551, 0.1356, 0.1355, 0.0000] | depth out=0.989356 golden=0.989350 ddiff=0.000006
+Error [PixelDiff]: (385,365) missing in output (golden color=[0.1333, 0.1098, 0.1098, 1.0000] depth=0.991239)
+Error [PixelDiff]: (409,365) color out=[0.3874, 0.3766, 0.3715, 1.0000] golden=[0.5490, 0.5451, 0.5373, 1.0000] cdiff=[0.1616, 0.1685, 0.1657, 0.0000] | depth out=0.989332 golden=0.989333 ddiff=0.000001
+Error [PixelDiff]: (388,366) missing in output (golden color=[0.1255, 0.1059, 0.1059, 1.0000] depth=0.991020)
+Error [PixelDiff]: (408,366) color out=[0.4906, 0.4853, 0.4783, 1.0000] golden=[0.6627, 0.6627, 0.6510, 1.0000] cdiff=[0.1721, 0.1775, 0.1726, 0.0000] | depth out=0.989319 golden=0.989319 ddiff=0.000000
+Error [PixelDiff]: (409,366) color out=[0.2770, 0.2528, 0.2513, 1.0000] golden=[0.5020, 0.4863, 0.4824, 1.0000] cdiff=[0.2250, 0.2335, 0.2311, 0.0000] | depth out=0.989325 golden=0.989325 ddiff=0.000000
+Error [PixelDiff]: (408,367) color out=[0.4366, 0.4216, 0.4149, 1.0000] golden=[0.7098, 0.7059, 0.6941, 1.0000] cdiff=[0.2732, 0.2843, 0.2792, 0.0000] | depth out=0.989312 golden=0.989311 ddiff=0.000001
+Error [PixelDiff]: (409,367) color out=[0.1670, 0.1264, 0.1264, 1.0000] golden=[0.3412, 0.3020, 0.2980, 1.0000] cdiff=[0.1742, 0.1756, 0.1716, 0.0000] | depth out=0.989318 golden=0.989318 ddiff=0.000000
+Error [PixelDiff]: (411,367) color out=[0.1156, 0.0718, 0.0736, 1.0000] golden=[0.4000, 0.3569, 0.3569, 1.0000] cdiff=[0.2844, 0.2851, 0.2833, 0.0000] | depth out=0.989213 golden=0.989220 ddiff=0.000007
+Error [PixelDiff]: (408,368) color out=[0.3979, 0.3796, 0.3737, 1.0000] golden=[0.7137, 0.7098, 0.6980, 1.0000] cdiff=[0.3158, 0.3302, 0.3244, 0.0000] | depth out=0.989305 golden=0.989304 ddiff=0.000001
+Error [PixelDiff]: (410,368) color out=[0.1354, 0.0933, 0.0912, 1.0000] golden=[0.4706, 0.4353, 0.4353, 1.0000] cdiff=[0.3352, 0.3420, 0.3441, 0.0000] | depth out=0.989200 golden=0.989234 ddiff=0.000034
+Error [PixelDiff]: (408,369) color out=[0.3653, 0.3487, 0.3470, 1.0000] golden=[0.6902, 0.6941, 0.6863, 1.0000] cdiff=[0.3249, 0.3454, 0.3392, 0.0000] | depth out=0.989295 golden=0.989296 ddiff=0.000001
+Error [PixelDiff]: (408,370) color out=[0.4714, 0.4627, 0.4595, 1.0000] golden=[0.7020, 0.7098, 0.7059, 1.0000] cdiff=[0.2306, 0.2471, 0.2464, 0.0000] | depth out=0.989287 golden=0.989288 ddiff=0.000001
+Error [PixelDiff]: (409,370) color out=[0.1473, 0.1021, 0.1019, 1.0000] golden=[0.3882, 0.3608, 0.3569, 1.0000] cdiff=[0.2409, 0.2587, 0.2549, 0.0000] | depth out=0.989293 golden=0.989295 ddiff=0.000002
+Error [PixelDiff]: (408,371) color out=[0.5267, 0.5238, 0.5198, 1.0000] golden=[0.6667, 0.6745, 0.6706, 1.0000] cdiff=[0.1400, 0.1507, 0.1507, 0.0000] | depth out=0.989279 golden=0.989281 ddiff=0.000002
+Error [PixelDiff]: (409,371) color out=[0.2985, 0.2670, 0.2648, 1.0000] golden=[0.5098, 0.4941, 0.4902, 1.0000] cdiff=[0.2113, 0.2271, 0.2254, 0.0000] | depth out=0.989284 golden=0.989287 ddiff=0.000003
+Error [PixelDiff]: (411,371) color out=[0.1591, 0.1056, 0.1056, 1.0000] golden=[0.3569, 0.3255, 0.3216, 1.0000] cdiff=[0.1977, 0.2199, 0.2160, 0.0000] | depth out=0.989184 golden=0.989183 ddiff=0.000001
+Error [PixelDiff]: (411,372) color out=[0.1482, 0.0965, 0.0965, 1.0000] golden=[0.3490, 0.3216, 0.3137, 1.0000] cdiff=[0.2008, 0.2250, 0.2172, 0.0000] | depth out=0.989176 golden=0.989192 ddiff=0.000016
+Error [PixelDiff]: (411,373) color out=[0.1765, 0.1337, 0.1316, 1.0000] golden=[0.3686, 0.3490, 0.3373, 1.0000] cdiff=[0.1921, 0.2153, 0.2057, 0.0000] | depth out=0.989169 golden=0.989226 ddiff=0.000057
+Error [PixelDiff]: (408,374) color out=[0.3238, 0.3281, 0.3200, 1.0000] golden=[0.4902, 0.5020, 0.4980, 1.0000] cdiff=[0.1664, 0.1739, 0.1781, 0.0000] | depth out=0.989257 golden=0.989258 ddiff=0.000001
+Error [PixelDiff]: (419,382) missing in output (golden color=[0.1020, 0.1020, 0.1059, 1.0000] depth=0.989289)
+Error [PixelDiff]: (396,383) color out=[0.1334, 0.1360, 0.1297, 1.0000] golden=[0.3098, 0.3176, 0.3059, 1.0000] cdiff=[0.1764, 0.1816, 0.1762, 0.0000] | depth out=0.990551 golden=0.990548 ddiff=0.000003
+Error [PixelDiff]: (410,383) color out=[0.2993, 0.3030, 0.2949, 1.0000] golden=[0.4392, 0.4549, 0.4392, 1.0000] cdiff=[0.1399, 0.1519, 0.1443, 0.0000] | depth out=0.989526 golden=0.989523 ddiff=0.000003
+  ... (317 more mismatch/missing line(s) suppressed)
+  Golden pixels: 2548 | matched: 2181 | mismatched: 349 | missing: 18 | extra (ours not in golden): 45
+==================================================
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
