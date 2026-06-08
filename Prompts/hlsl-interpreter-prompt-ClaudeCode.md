@@ -780,9 +780,38 @@ FLOAT → 不 clamp（可存 >1、负数甚至 inf）
 
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Clamp PS output color based on RT/DS format by claude code.
 
 ## Claude Code Session
+改动
+rasterizer.py（pipeline_state.csv 的解析点）
+
+RasterizerConfig 新增字段 render_target_format。
+load_config_from_pipeline_state_csv 新增解析 RenderTarget,Target[0]_Format（PS 写入的、也就是 dump 成 diff_ps_output_rt0.csv 的那个 RT）。
+render.py
+
+新增纯函数 _rt_format_to_clamp_mode(fmt)：格式字符串 → unorm/snorm/float/none 或 None（子串匹配，兼容各种通道布局；SRGB 按 UNORM 处理，TYPELESS 返回 None）。
+_execute_pipeline 在解析完 state 后决策：
+
+effective_clamp = 格式推导模式  if 有RT格式  else  output_color_clamp 配置
+即 RT 格式优先决定，配置仅作旧 capture（无格式行）的回退——保持向后兼容。决策写入日志。
+_clamp_output_colors 改用 effective_clamp。
+边界对应
+RT 格式	clamp
+UNORM / UNORM_SRGB	[0,1]
+SNORM	[−1,1]
+FLOAT	不 clamp
+UINT / SINT	不 clamp（整数 RT，浮点钳制不适用）
+TYPELESS / 缺失	回退到 config（默认 [0,1]）
+验证
+映射函数逐项核对正确（见上表，已实测）。
+端到端日志：Render target format: R8G8B8A8_UNORM → output-merger clamp mode: unorm；event104 仍正确钳制 399126 个越界像素，event371 钳制 0 个。
+回归 6/6 PASS，全行匹配。
+说明
+仅读取 Target[0]（解释器单 RT）；MRT、整数 RT 的精确范围掩码、以及 alpha 混合阶段仍是后续项。
+
+思考/执行/结果已写入 Sessions/hlsl-interpreter-step93-rt-format-driven-clamp.md。改动未提交。
 
 
 # 23
@@ -795,6 +824,222 @@ FLOAT → 不 clamp（可存 >1、负数甚至 inf）
 
 
 # 24
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 25
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 26
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 27
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 28
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 29
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 30
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 31
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 32
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 33
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 34
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 35
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 36
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 37
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 38
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 39
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 40
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 41
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 42
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 43
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 44
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 45
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 46
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 47
+## Prompts
+
+## Git commit: 
+
+## Claude Code Session
+
+
+
+# 48
 ## Prompts
 
 ## Git commit: 
