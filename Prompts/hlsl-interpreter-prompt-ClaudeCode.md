@@ -886,7 +886,8 @@ _execute_pipeline执行完pixel compare后，直接把输出的Pixel color存成
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Dump pixel color to output bitmap by claude code.
 
 ## Claude Code Session
 What I did
@@ -913,17 +914,35 @@ Full write-up in Sessions/hlsl-interpreter-step96-save-output-pixels-bitmap.md.
 
 
 
-# 26
+# 26 Dump golden output pixels to bitmap
 ## Prompts
-
+_execute_pipeline执行完pixel compare后，直接把golden pixel color存成一个bitmap图片，bitmap的大小根据viewport大小设置
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+
 
 ## Claude Code Session
+Summary
+After _execute_pipeline runs the pixel compare, it now saves the golden pixel colors (diff_ps_output_rt0.csv) to a viewport-sized bitmap, alongside the existing output-merger bitmap from step 96.
 
+What I did:
+
+Refactored the BMP encoder (render.py:340) — pulled the 24-bit BMP writer and the color quantizer out of _save_output_pixels_bitmap into shared _write_bmp24(frame, w, h, path, log) and _color_to_byte(v) helpers (no behavior change for the output bitmap).
+
+Added _save_golden_pixels_bitmap — builds a viewport-sized frame from the golden {(x,y): {'color':[r,g,b,a]}} dict (already one color per pixel, no depth collapse), places each at (x−viewport.x, y−viewport.y), and writes it via the shared encoder — pixel-aligned with the output bitmap for side-by-side comparison.
+
+Wired it into _execute_pipeline (render.py:932) — runs right after _compare_ps_output, only when golden data exists. Path comes from golden_bitmap_path in config, else <zip-stem>_golden.bmp beside the log file (the step-96 convention).
+
+Verification:
+
+event351: 988 pixels written = the 988 golden pixels from the compare; 640×480; 921654 bytes (= 54 + 640·480·3); round-trips through the project's own Texture._parse_bmp_pixels.
+Regression suite: 6/6 PASS, each case now dropping a _golden.bmp next to its log.
+Session log written to hlsl-interpreter-step97-save-golden-pixels-bitmap.md.
+
+One note: I haven't committed anything — let me know if you'd like me to.
 
 
 # 27

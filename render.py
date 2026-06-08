@@ -337,55 +337,23 @@ def _clamp_output_colors(pixels, mode, log) -> None:
         f"channel outside range (clamped).")
 
 
-def _save_output_pixels_bitmap(pixels, viewport, path, log) -> bool:
-    """Save the pipeline's final output-merger pixel colors to a 24-bit BMP.
+def _color_to_byte(v):
+    """Quantize a float color component in [0,1] to an 8-bit value, clamped."""
+    try:
+        return max(0, min(255, int(round(float(v) * 255.0))))
+    except (TypeError, ValueError):
+        return 0
 
-    The image is sized to the viewport (width × height). Each output pixel is
-    placed at (x − viewport.x, y − viewport.y); where several fragments land on
-    the same pixel the nearest (smallest depth) wins, matching the standard LESS
-    depth test (and the golden PixelDiff collapse). Pixels never written stay
-    black. Color is taken from ``ps_output_color`` (falling back to the
-    interpolated ``color``), clamped to [0,1] and quantized to 8-bit BGR.
 
-    Returns True on success.
+def _write_bmp24(frame, width, height, path, log) -> bool:
+    """Write a top-down ``height × width`` frame of (r, g, b) byte triples to a
+    24-bit BI_RGB BMP at ``path``.
+
+    BMP stores scanlines bottom-up, so the last frame row is written first
+    (the Y-flip), and each row is padded to a 4-byte boundary. Returns True on
+    success.
     """
     import struct
-
-    width = int(round(viewport.width))
-    height = int(round(viewport.height))
-    if width <= 0 or height <= 0:
-        log(f"Output bitmap skipped: invalid viewport size {width}x{height}.")
-        return False
-    x0 = int(round(viewport.x))
-    y0 = int(round(viewport.y))
-
-    # Collapse to one winner per (x, y): nearest depth wins.
-    winners = {}
-    for p in pixels:
-        key = (int(p.x), int(p.y))
-        prev = winners.get(key)
-        if prev is None or p.depth < prev.depth:
-            winners[key] = p
-
-    # Framebuffer: height rows (top-down) of width (r, g, b) byte triples.
-    black = (0, 0, 0)
-    frame = [[black] * width for _ in range(height)]
-
-    def to_byte(v):
-        try:
-            return max(0, min(255, int(round(float(v) * 255.0))))
-        except (TypeError, ValueError):
-            return 0
-
-    written = 0
-    for (x, y), p in winners.items():
-        px, py = x - x0, y - y0
-        if not (0 <= px < width and 0 <= py < height):
-            continue
-        c = p.ps_output_color if p.ps_output_color else (p.color or black)
-        c = (list(c) + [0.0, 0.0, 0.0])[:3]
-        frame[py][px] = (to_byte(c[0]), to_byte(c[1]), to_byte(c[2]))
-        written += 1
 
     row_bytes = width * 3
     padding = (4 - (row_bytes % 4)) % 4
@@ -408,10 +376,92 @@ def _save_output_pixels_bitmap(pixels, viewport, path, log) -> bool:
                 f.write(b''.join(bytes((b, g, r)) for (r, g, b) in row))
                 f.write(pad)
     except Exception as e:
-        log(f"Failed to write output bitmap {path}: {e}")
+        log(f"Failed to write bitmap {path}: {e}")
         return False
+    return True
 
+
+def _save_output_pixels_bitmap(pixels, viewport, path, log) -> bool:
+    """Save the pipeline's final output-merger pixel colors to a 24-bit BMP.
+
+    The image is sized to the viewport (width × height). Each output pixel is
+    placed at (x − viewport.x, y − viewport.y); where several fragments land on
+    the same pixel the nearest (smallest depth) wins, matching the standard LESS
+    depth test (and the golden PixelDiff collapse). Pixels never written stay
+    black. Color is taken from ``ps_output_color`` (falling back to the
+    interpolated ``color``), clamped to [0,1] and quantized to 8-bit BGR.
+
+    Returns True on success.
+    """
+    width = int(round(viewport.width))
+    height = int(round(viewport.height))
+    if width <= 0 or height <= 0:
+        log(f"Output bitmap skipped: invalid viewport size {width}x{height}.")
+        return False
+    x0 = int(round(viewport.x))
+    y0 = int(round(viewport.y))
+
+    # Collapse to one winner per (x, y): nearest depth wins.
+    winners = {}
+    for p in pixels:
+        key = (int(p.x), int(p.y))
+        prev = winners.get(key)
+        if prev is None or p.depth < prev.depth:
+            winners[key] = p
+
+    # Framebuffer: height rows (top-down) of width (r, g, b) byte triples.
+    black = (0, 0, 0)
+    frame = [[black] * width for _ in range(height)]
+
+    written = 0
+    for (x, y), p in winners.items():
+        px, py = x - x0, y - y0
+        if not (0 <= px < width and 0 <= py < height):
+            continue
+        c = p.ps_output_color if p.ps_output_color else (p.color or black)
+        c = (list(c) + [0.0, 0.0, 0.0])[:3]
+        frame[py][px] = (_color_to_byte(c[0]), _color_to_byte(c[1]), _color_to_byte(c[2]))
+        written += 1
+
+    if not _write_bmp24(frame, width, height, path, log):
+        return False
     log(f"Saved output-merger bitmap: {path} ({width}x{height}, {written} pixel(s) written)")
+    return True
+
+
+def _save_golden_pixels_bitmap(golden, viewport, path, log) -> bool:
+    """Save the golden output-merger pixel colors (diff_ps_output_rt0.csv) to a
+    24-bit BMP, sized to the viewport (width × height).
+
+    ``golden`` is the dict from :func:`_load_golden_ps_output`:
+    ``{(x, y): {'color': [r, g, b, a], 'depth': f}}`` — one color per screen
+    pixel already (no depth collapse needed). Each entry is placed at
+    (x − viewport.x, y − viewport.y); untouched pixels stay black. Colors are
+    clamped to [0,1] and quantized to 8-bit BGR. Returns True on success.
+    """
+    width = int(round(viewport.width))
+    height = int(round(viewport.height))
+    if width <= 0 or height <= 0:
+        log(f"Golden bitmap skipped: invalid viewport size {width}x{height}.")
+        return False
+    x0 = int(round(viewport.x))
+    y0 = int(round(viewport.y))
+
+    black = (0, 0, 0)
+    frame = [[black] * width for _ in range(height)]
+
+    written = 0
+    for (x, y), g in golden.items():
+        px, py = x - x0, y - y0
+        if not (0 <= px < width and 0 <= py < height):
+            continue
+        c = (list(g.get('color') or black) + [0.0, 0.0, 0.0])[:3]
+        frame[py][px] = (_color_to_byte(c[0]), _color_to_byte(c[1]), _color_to_byte(c[2]))
+        written += 1
+
+    if not _write_bmp24(frame, width, height, path, log):
+        return False
+    log(f"Saved golden bitmap: {path} ({width}x{height}, {written} pixel(s) written)")
     return True
 
 
@@ -929,6 +979,20 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         os.path.join(data_folder, 'diff_ps_output_rt0.csv'))
     if golden_ps:
         _compare_ps_output(golden_ps, pixels, pixel_tolerance, vs_interp.log_output)
+        # Save the golden pixel colors as a viewport-sized bitmap so the
+        # reference image can be eyeballed next to our rendered output. Path:
+        # 'golden_bitmap_path' from config, else '<zip-stem>_golden.bmp' beside
+        # the log file (matching the output-bitmap convention below).
+        _gdir = os.path.dirname(os.path.abspath(config_path))
+        golden_bmp = config.get('golden_bitmap_path', '')
+        if golden_bmp:
+            golden_bmp = golden_bmp if os.path.isabs(golden_bmp) else os.path.join(_gdir, golden_bmp)
+        else:
+            _data_path = config.get('data_path', '')
+            _stem = os.path.splitext(os.path.basename(_data_path))[0] if _data_path else 'output'
+            _out_dir = os.path.dirname(log_file_path) if log_file_path else _gdir
+            golden_bmp = os.path.join(_out_dir, f"{_stem}_golden.bmp")
+        _save_golden_pixels_bitmap(golden_ps, rast.config.viewport, golden_bmp, vs_interp.log_output)
 
     # ============================================================
     # Save the final output-merger pixel colors as a viewport-sized bitmap.
