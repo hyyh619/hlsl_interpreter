@@ -337,6 +337,84 @@ def _clamp_output_colors(pixels, mode, log) -> None:
         f"channel outside range (clamped).")
 
 
+def _save_output_pixels_bitmap(pixels, viewport, path, log) -> bool:
+    """Save the pipeline's final output-merger pixel colors to a 24-bit BMP.
+
+    The image is sized to the viewport (width × height). Each output pixel is
+    placed at (x − viewport.x, y − viewport.y); where several fragments land on
+    the same pixel the nearest (smallest depth) wins, matching the standard LESS
+    depth test (and the golden PixelDiff collapse). Pixels never written stay
+    black. Color is taken from ``ps_output_color`` (falling back to the
+    interpolated ``color``), clamped to [0,1] and quantized to 8-bit BGR.
+
+    Returns True on success.
+    """
+    import struct
+
+    width = int(round(viewport.width))
+    height = int(round(viewport.height))
+    if width <= 0 or height <= 0:
+        log(f"Output bitmap skipped: invalid viewport size {width}x{height}.")
+        return False
+    x0 = int(round(viewport.x))
+    y0 = int(round(viewport.y))
+
+    # Collapse to one winner per (x, y): nearest depth wins.
+    winners = {}
+    for p in pixels:
+        key = (int(p.x), int(p.y))
+        prev = winners.get(key)
+        if prev is None or p.depth < prev.depth:
+            winners[key] = p
+
+    # Framebuffer: height rows (top-down) of width (r, g, b) byte triples.
+    black = (0, 0, 0)
+    frame = [[black] * width for _ in range(height)]
+
+    def to_byte(v):
+        try:
+            return max(0, min(255, int(round(float(v) * 255.0))))
+        except (TypeError, ValueError):
+            return 0
+
+    written = 0
+    for (x, y), p in winners.items():
+        px, py = x - x0, y - y0
+        if not (0 <= px < width and 0 <= py < height):
+            continue
+        c = p.ps_output_color if p.ps_output_color else (p.color or black)
+        c = (list(c) + [0.0, 0.0, 0.0])[:3]
+        frame[py][px] = (to_byte(c[0]), to_byte(c[1]), to_byte(c[2]))
+        written += 1
+
+    row_bytes = width * 3
+    padding = (4 - (row_bytes % 4)) % 4
+    pad = b'\x00' * padding
+    pixel_array_size = (row_bytes + padding) * height
+    try:
+        with open(path, 'wb') as f:
+            # BITMAPFILEHEADER (14 bytes)
+            f.write(b'BM')
+            f.write(struct.pack('<I', 54 + pixel_array_size))
+            f.write(struct.pack('<HH', 0, 0))
+            f.write(struct.pack('<I', 54))
+            # BITMAPINFOHEADER (40 bytes); positive height → bottom-up rows
+            f.write(struct.pack('<IiiHHIIiiII',
+                                40, width, height, 1, 24, 0,
+                                pixel_array_size, 2835, 2835, 0, 0))
+            # BMP scanlines are bottom-up: emit the last screen row first.
+            for py in range(height - 1, -1, -1):
+                row = frame[py]
+                f.write(b''.join(bytes((b, g, r)) for (r, g, b) in row))
+                f.write(pad)
+    except Exception as e:
+        log(f"Failed to write output bitmap {path}: {e}")
+        return False
+
+    log(f"Saved output-merger bitmap: {path} ({width}x{height}, {written} pixel(s) written)")
+    return True
+
+
 def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
     """Ordered BMP paths for a texture's view mip range (mip0, mip1, ...).
 
@@ -845,12 +923,30 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         os.path.join(data_folder, 'pipeline_statistics.csv'))
     if golden_stats:
         _compare_pipeline_statistics(golden_stats, pipeline_stats, vs_interp.log_output,
-                                     samples_passed_tolerance=samples_passed_tolerance)
+                                    samples_passed_tolerance=samples_passed_tolerance)
 
     golden_ps = _load_golden_ps_output(
         os.path.join(data_folder, 'diff_ps_output_rt0.csv'))
     if golden_ps:
         _compare_ps_output(golden_ps, pixels, pixel_tolerance, vs_interp.log_output)
+
+    # ============================================================
+    # Save the final output-merger pixel colors as a viewport-sized bitmap.
+    # Path: 'output_bitmap_path' from config (resolved relative to the config
+    # file). Otherwise default to '<zip-stem>_output.bmp' next to the log file
+    # (so headless/regression runs keep their output beside the case log)
+    # falling back to the config directory when no log path is set.
+    # ============================================================
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    out_bmp = config.get('output_bitmap_path', '')
+    if out_bmp:
+        out_bmp = out_bmp if os.path.isabs(out_bmp) else os.path.join(config_dir, out_bmp)
+    else:
+        data_path = config.get('data_path', '')
+        stem = os.path.splitext(os.path.basename(data_path))[0] if data_path else 'output'
+        out_dir = os.path.dirname(log_file_path) if log_file_path else config_dir
+        out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
+    _save_output_pixels_bitmap(pixels, rast.config.viewport, out_bmp, vs_interp.log_output)
 
     # ============================================================
     # Mesh view: feed rasterizer/PS/output-merger pixels and stay open

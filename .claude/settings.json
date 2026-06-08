@@ -47,7 +47,9 @@
       "Bash(grep -E \"failed depth|Golden pixels:\" \"Cases/Cases/regression_logs/_baseline371.log\")",
       "Bash(rm -f Cases/.bl371.json Cases/regression_logs/_baseline371.log)",
       "Bash(rm -rf Cases/Cases)",
-      "Bash(ls Cases/.bl371.json)"
+      "Bash(ls Cases/.bl371.json)",
+      "Bash(python render.py Cases/.bmp104.json)",
+      "Bash(xargs -I{} sh -c 'echo \"$\\(basename {}\\) $\\(stat -c%s {} 2>/dev/null || wc -c <{}\\) bytes\"')"
     ],
     "additionalDirectories": [
       "\\tmp"

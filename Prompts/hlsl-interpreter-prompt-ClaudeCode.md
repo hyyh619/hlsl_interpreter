@@ -854,7 +854,8 @@ Error [PipelineStats]: SamplesPassed mismatch: output=42906 golden=42726 (mapped
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Add tolerance for SamplesPassed pixel count of pipeline statistic by claude code.
 
 ## Claude Code Session
 What I did
@@ -878,17 +879,46 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 
 
-# 25
+# 25 增加Output_merger执行完毕后color buffer输出
 ## Prompts
+_execute_pipeline执行完pixel compare后，直接把输出的Pixel color存成一个bitmap图片，bitmap的大小根据viewport大小设置
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
 ## Claude Code Session
+What I did
+After the pixel compare in _execute_pipeline, the pipeline now writes the final output-merger pixel colors to a viewport-sized 24-bit BMP.
+
+1. render.py — new _save_output_pixels_bitmap()
+A from-scratch BMP encoder (no new dependencies — only struct). It:
+
+Sizes the image to rast.config.viewport (width × height).
+Collapses overlapping fragments per pixel with nearest-depth-wins (same rule as the golden PixelDiff), so the image reflects what the depth test keeps.
+Takes color from ps_output_color (falls back to interpolated color), clamps to [0,1], quantizes to 8-bit BGR, writes a standard bottom-up BI_RGB BMP with 4-byte-padded scanlines (the bottom-up write is the Y-flip). Untouched pixels stay black.
+2. render.py — wiring
+Resolves the output path: output_bitmap_path from config if set, otherwise <zip-stem>_output.bmp next to the log file (so headless/regression runs don't clutter Cases/), falling back to the config dir.
+
+Verification
+event104: emitted 640×480 BMP, 921654 bytes = 54 + 640·480·3 (exact), round-trips through the project's own Texture._parse_bmp_pixels.
+Orientation/placement: spot-checked against golden RT colors — hues and locations agree (a wrong Y-flip would scatter unrelated colors). Magnitude gaps are the pre-existing PS-accuracy issue from step 94, not a bitmap defect.
+Regression: 6/6 PASS, each producing a valid 640×480 BMP in regression_logs/.
+Config
+New optional key — omit to default to <zip-stem>_output.bmp beside the log:
+
+"output_bitmap_path": "my_render.bmp"
+Full write-up in Sessions/hlsl-interpreter-step96-save-output-pixels-bitmap.md.
 
 
 
 # 26
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -899,6 +929,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 27
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -907,6 +941,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 28
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -917,6 +955,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 29
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -925,6 +967,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 30
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -935,6 +981,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 31
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -943,6 +993,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 32
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -953,6 +1007,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 33
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -961,6 +1019,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 34
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -971,6 +1033,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 35
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -979,6 +1045,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 36
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -989,6 +1059,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 37
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -997,6 +1071,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 38
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -1007,6 +1085,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 39
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -1015,6 +1097,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 40
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -1025,6 +1111,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 41
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -1033,6 +1123,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 42
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -1043,6 +1137,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 43
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -1051,6 +1149,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 44
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -1061,6 +1163,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 45
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -1069,6 +1175,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 46
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
@@ -1079,6 +1189,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 # 47
 ## Prompts
 
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+
 ## Git commit: 
 
 ## Claude Code Session
@@ -1087,6 +1201,10 @@ Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 # 48
 ## Prompts
+
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
