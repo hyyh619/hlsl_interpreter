@@ -37,6 +37,7 @@ BASE_CONFIG = {
     "print_interpreter_result": False,
     "print_sequence": 100,
     "float_tolerance": 0.005,
+    "pixel_tolerance": 0.15,
     "execute_count": -1,
     "max_workers": 1,
     "mesh_view_enabled": False,

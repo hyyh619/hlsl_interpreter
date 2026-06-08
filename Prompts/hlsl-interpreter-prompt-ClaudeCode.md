@@ -823,7 +823,8 @@ TYPELESS / 缺失	回退到 config（默认 [0,1]）
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Load pre-draw depth buffer before depth test by claude code.
 
 ## Claude Code Session
 What I did
@@ -845,12 +846,35 @@ The residual SamplesPassed gap is rasterizer overdraw/fragment-ordering — a se
 Full write-up of thinking, execution, and results is in Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.md.
 
 
-# 24
+# 24 Pipeline statistic compare增加
 ## Prompts
+对于SamplesPassed的对比，需要增加一个容错值，该值可以通过输入的json配置，如果没有配置，默认值使用500
+Error [PipelineStats]: SamplesPassed mismatch: output=42906 golden=42726 (mapped from pipeline_stats['depth_passed'])
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
 ## Claude Code Session
+What I did
+Added a configurable tolerance for the SamplesPassed comparison, applied only to that counter (all other pipeline statistics keep exact-match semantics).
+
+1. render.py — _compare_pipeline_statistics
+New samples_passed_tolerance: int = 500 parameter. After the exact-match check, a SamplesPassed-specific branch treats a difference within tolerance as OK, logging the diff and the active tolerance; only larger diffs fall through to the Error [PipelineStats]: line.
+
+2. render.py — _execute_pipeline
+Reads config.get('samples_passed_tolerance', 500) (default 500 when the JSON omits it) and forwards it to the comparison.
+
+Verification
+Unit check: the exact example from the task (output=42906, golden=42726, diff=180) now reports OK ... within tolerance 500; tightening the config to tol=100 makes it fail again; exact matches unaffected.
+Regression: 6/6 PASS (these [PipelineStats] lines are non-gating diagnostics, so the suite result is unchanged — this step only affects OK-vs-error reporting in the log).
+Config
+New optional key — omit for the default of 500:
+
+
+"samples_passed_tolerance": 500
+Full write-up in Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md.
 
 
 
