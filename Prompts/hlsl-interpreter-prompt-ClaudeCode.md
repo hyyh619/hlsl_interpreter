@@ -814,13 +814,35 @@ TYPELESS / 缺失	回退到 config（默认 [0,1]）
 思考/执行/结果已写入 Sessions/hlsl-interpreter-step93-rt-format-driven-clamp.md。改动未提交。
 
 
-# 23
+# 23 增加depth buffer的加载
 ## Prompts
+1. zip文件增加了draw执行前的depth buffer数据文件pre_draw_depth_stencil.csv
+2. 请执行depth compare前加载pre_draw_depth_stencil.csv来初始化depth buffer的值。
+3. depth compare需要用这个Pre-draw的depth value与当前pixel的depth value比较
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 ## Git commit: 
 
 ## Claude Code Session
+What I did
+1. Loader — output_merger.py
+Added Depth.load_pre_draw_depth_stencil(path), which reads the new per-pixel pre_draw_depth_stencil.csv (X,Y,Depth,Stencil) and seeds _depth_buffer[(x,y)] and _stencil_buffer[(x,y)]. The existing _pass_depth_stencil_test already compares incoming fragments against _depth_buffer, so this is exactly the data it needed.
 
+2. Wiring — render.py:703-722
+In _execute_pipeline, before the depth test runs: load the pre-draw buffer when the CSV is present, then enable the depth test. Since pipeline_state.csv doesn't capture the depth state for these dumps, I applied D3D's standard depth state (LESS, depth-write on) — which is what the captured SamplesPassed counter reflects. Older zips without the file are untouched (depth stays disabled → backward compatible).
+
+Key finding
+The depth test was previously a no-op (Depth() defaulted to depth_enable=False, so every pixel passed). Now it genuinely tests current pixel depth against the pre-draw depth value, as requested.
+
+Verification
+Regression: 6/6 PASS (VS-vs-golden unaffected).
+depth_passed now moves toward golden SamplesPassed in every case (event28 matches exactly, 0/0); PS-output spurious "extra" pixels dropped.
+Confirmed event371's matched: 0 is pre-existing (verified against a stashed pre-change baseline) — not a regression from this change.
+The residual SamplesPassed gap is rasterizer overdraw/fragment-ordering — a separate accuracy problem outside this task's scope (loading + comparing against the pre-draw buffer, which is fully delivered).
+
+Full write-up of thinking, execution, and results is in Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.md.
 
 
 # 24

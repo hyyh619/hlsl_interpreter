@@ -11,7 +11,7 @@ import shutil
 from hlsl_interpreter import HLSLInterpreter
 from rasterizer import Rasterizer
 from d3d import D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
-from output_merger import Depth
+from output_merger import Depth, ComparisonFunc
 import d3d
 
 
@@ -700,8 +700,27 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     ps_pixel_count = 0
     depth_failed = 0
 
-    # Depth/stencil
+    # Depth/stencil. The zip ships the depth/stencil buffer contents from
+    # *before* this draw (pre_draw_depth_stencil.csv). Loading it lets the
+    # depth test compare each fragment against the real pre-existing depth
+    # (geometry already on screen) rather than a synthetic clear value, so
+    # fragments occluded by earlier draws are correctly rejected.
     depth = Depth()
+    pre_draw_ds_csv = os.path.join(data_folder, 'pre_draw_depth_stencil.csv')
+    if os.path.exists(pre_draw_ds_csv):
+        loaded = depth.load_pre_draw_depth_stencil(pre_draw_ds_csv)
+        # Enable the depth test now that there is a real depth buffer to test
+        # against. pipeline_state.csv does not capture DepthEnable/DepthFunc for
+        # these dumps, so use D3D's standard depth state (LESS, depth-write on),
+        # which is what the captured SamplesPassed counter reflects.
+        depth.config.depth_enable = True
+        depth.config.depth_write_mask = True
+        depth.config.depth_func = ComparisonFunc.LESS
+        vs_interp.log_output(
+            f"Loaded pre-draw depth buffer: {loaded} pixels; "
+            f"depth test enabled (func=LESS, write=on)"
+        )
+
     if early_z:
         pixels = depth.execute(pixels, early_z=True)
         depth_failed = rast_pixel_count - len(pixels)

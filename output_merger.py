@@ -160,6 +160,51 @@ class Depth:
         self._depth_buffer.clear()
         self._stencil_buffer.clear()
 
+    def load_pre_draw_depth_stencil(self, path: str) -> int:
+        """Initialize the depth/stencil buffers from a pre-draw capture CSV.
+
+        The capture file (``pre_draw_depth_stencil.csv``) holds the depth and
+        stencil buffer contents *before* this draw call is executed — one row
+        per framebuffer pixel with columns ``X,Y,Depth,Stencil``. Most pixels
+        are the clear value (1.0), but pixels already covered by previously
+        drawn geometry carry that geometry's depth (< 1.0).
+
+        Seeding ``_depth_buffer`` with these real values makes the depth test
+        compare each incoming fragment against what is already on screen,
+        instead of the synthetic ``depth_init_value``, so fragments occluded
+        by earlier draws are correctly rejected.
+
+        Returns the number of pixels loaded (0 if the file is absent/unreadable).
+        """
+        import csv as _csv
+        count = 0
+        try:
+            with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+                reader = _csv.DictReader(f)
+                for row in reader:
+                    try:
+                        x = int(float(row['X']))
+                        y = int(float(row['Y']))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    try:
+                        depth = float(row.get('Depth'))
+                    except (TypeError, ValueError):
+                        depth = self.config.depth_init_value
+                    try:
+                        stencil = int(float(row.get('Stencil')))
+                    except (TypeError, ValueError):
+                        stencil = self.config.stencil_init_value
+                    self._depth_buffer[(x, y)] = depth
+                    self._stencil_buffer[(x, y)] = stencil
+                    count += 1
+        except FileNotFoundError:
+            return 0
+        except Exception as e:
+            print(f"Warning: Failed to load pre-draw depth/stencil from {path}: {e}")
+            return 0
+        return count
+
     def execute(self, pixels: List[Pixel], early_z: bool = True) -> List[Pixel]:
         """
         Execute depth/stencil operations on pixels.

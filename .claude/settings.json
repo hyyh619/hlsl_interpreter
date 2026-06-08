@@ -35,7 +35,19 @@
       "Read(//c/c/Development/Graphics/hlsl_interpreter/Cases/**)",
       "Bash(unzip -p Collision-fix-constant-buffer-and-RdotV-zero_event104.zip */PS_shader.hlsl)",
       "Bash(grep -vE \"^//|^$\")",
-      "Bash(unzip -p \"Collision-fix-constant-buffer-and-RdotV-zero_event104.zip\" \"*/PS_shader.hlsl\")"
+      "Bash(unzip -p \"Collision-fix-constant-buffer-and-RdotV-zero_event104.zip\" \"*/PS_shader.hlsl\")",
+      "Bash(python -c \"import zipfile,glob; z=glob.glob\\('Cases/*.zip'\\)[0]; print\\(z\\); print\\('\\\\n'.join\\(zipfile.ZipFile\\(z\\).namelist\\(\\)\\)\\)\")",
+      "PowerShell($tmp = \"C:\\\\Temp\\\\zc104\"; if \\(Test-Path $tmp\\) { Remove-Item -Recurse -Force $tmp }; New-Item -ItemType Directory -Force $tmp | Out-Null; Add-Type -A System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory\\(\"C:\\\\Development\\\\Graphics\\\\hlsl_interpreter\\\\Cases\\\\Collision-fix-constant-buffer-and-RdotV-zero_event104.zip\", $tmp\\); $d = \\(Get-ChildItem $tmp -Directory\\)[0].FullName; \"DIR=$d\"; \"==== pre_draw_depth_stencil.csv \\(first 15 lines\\) ====\"; Get-Content \"$d\\\\pre_draw_depth_stencil.csv\" -TotalCount 15; \"==== total lines ====\"; \\(Get-Content \"$d\\\\pre_draw_depth_stencil.csv\" | Measure-Object -Line\\).Lines)",
+      "PowerShell($d = \"C:\\\\Temp\\\\zc104\\\\Collision-fix-constant-buffer-and-RdotV-zero_event104\"; \"==== distinct Depth values \\(count\\) ====\"; Import-Csv \"$d\\\\pre_draw_depth_stencil.csv\" | Group-Object Depth | Select-Object Count,Name | Sort-Object Count -Descending | Select-Object -First 10; \"==== distinct Stencil ====\"; Import-Csv \"$d\\\\pre_draw_depth_stencil.csv\" | Group-Object Stencil | Select-Object Count,Name -First 5; \"==== max X,Y ====\"; $rows = Import-Csv \"$d\\\\pre_draw_depth_stencil.csv\"; \"maxX=\" + \\(\\($rows | Measure-Object -Property X -Maximum\\).Maximum\\); \"maxY=\" + \\(\\($rows | Measure-Object -Property Y -Maximum\\).Maximum\\))",
+      "PowerShell($d = \"C:\\\\Temp\\\\zc104\\\\Collision-fix-constant-buffer-and-RdotV-zero_event104\"; Get-Content \"$d\\\\pipeline_state.csv\" | Select-String -Pattern \"depth|Depth|stencil|Stencil|DEPTH\")",
+      "PowerShell($d = \"C:\\\\Temp\\\\zc104\\\\Collision-fix-constant-buffer-and-RdotV-zero_event104\"; Get-Content \"$d\\\\pipeline_state.csv\" | Select-String -Pattern \"^DepthStencil|^OM|DepthEnable|DepthWrite|DepthFunc|StencilEnable|StencilRef|OMDepth\"; \"==== ALL categories ====\"; Get-Content \"$d\\\\pipeline_state.csv\" | ForEach-Object { \\($_ -split \",\"\\)[0] } | Group-Object | Select-Object Name,Count)",
+      "PowerShell($d = \"C:\\\\Temp\\\\zc104\\\\Collision-fix-constant-buffer-and-RdotV-zero_event104\"; \"==== pipeline_statistics.csv ====\"; Get-Content \"$d\\\\pipeline_state.csv\" | Select-String \"RenderTarget,Format\"; Import-Csv \"$d\\\\pipeline_statistics.csv\" | Where-Object { $_.RawCounter -in @\\('SamplesPassed','PSInvocations','RasterizedPrimitives','RasterizerInvocations'\\) } | Format-Table RawCounter,Value -Auto; \"==== current regression log: depth/SamplesPassed/PixelDiff summary ====\"; $log = \"C:\\\\Development\\\\Graphics\\\\hlsl_interpreter\\\\Cases\\\\regression_logs\\\\Collision-fix-constant-buffer-and-RdotV-zero_event104.log\"; if \\(Test-Path $log\\) { Get-Content $log | Select-String \"Rasterizer pixels|failed depth|SamplesPassed|Output-Merger Pixels vs Golden|Golden pixels:|Total PASSED\" } else { \"NO LOG YET\" })",
+      "Bash(python render.py Cases/.bl371.json)",
+      "Bash(ls Cases/Cases/regression_logs/)",
+      "Bash(grep -E \"failed depth|Golden pixels:\" \"Cases/Cases/regression_logs/_baseline371.log\")",
+      "Bash(rm -f Cases/.bl371.json Cases/regression_logs/_baseline371.log)",
+      "Bash(rm -rf Cases/Cases)",
+      "Bash(ls Cases/.bl371.json)"
     ],
     "additionalDirectories": [
       "\\tmp"
