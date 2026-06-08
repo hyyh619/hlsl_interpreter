@@ -90,6 +90,10 @@ class RasterizerConfig:
     multisample_enable: bool = False
     antialiasing_line_enable: bool = False
     depth_clip_enable: bool = True
+    # Render-target 0 format string from pipeline_state.csv (e.g.
+    # "R8G8B8A8_UNORM"). Drives the output-merger write clamp (see render.py
+    # _rt_format_to_clamp_mode). None when the capture predates the format row.
+    render_target_format: Optional[str] = None
     viewport: Viewport = None
 
     def __post_init__(self):
@@ -988,6 +992,12 @@ class Rasterizer:
                         self.config.front_face = FrontFace.CLOCKWISE
                 elif prop in ('DepthClip', 'DepthClipEnable'):
                     self.config.depth_clip_enable = val.lower() in ('true', '1', 'yes')
+
+            elif section == 'RenderTarget':
+                # Target[0]_Format is the RT0 format that the PS writes; it
+                # determines the output-merger write clamp range.
+                if prop == 'Target[0]_Format' and val:
+                    self.config.render_target_format = val
 
             elif section == 'Topology':
                 if prop == 'Primitive':

@@ -27,7 +27,15 @@
       "Bash(git -C /c/Development/Graphics/hlsl_interpreter status --short)",
       "Bash(sort -t p -k2 -n)",
       "Bash(python -c \"import rasterizer; print\\('import OK'\\)\")",
-      "Bash(python _depthclip_check.py)"
+      "Bash(python _depthclip_check.py)",
+      "Bash(unzip -p Collision-fix-constant-buffer-and-RdotV-zero_event371.zip */PS_shader.hlsl)",
+      "Bash(unzip -p Collision-fix-constant-buffer-and-RdotV-zero_event371.zip */diff_ps_output_rt0.csv)",
+      "Bash(awk -F, 'NR>1{for\\(i=3;i<=6;i++\\){v=$i+0; if\\(v>mx\\)mx=v; if\\(mn==\"\"||v<mn\\)mn=v}} END{print \"min=\"mn\" max=\"mx}')",
+      "Bash(cd /c/Development/Graphics/hlsl_interpreter && grep -i \"Output-Merger write clamp\" Cases/regression_logs/*event371*.log Cases/regression_logs/*event104*.log)",
+      "Read(//c/c/Development/Graphics/hlsl_interpreter/Cases/**)",
+      "Bash(unzip -p Collision-fix-constant-buffer-and-RdotV-zero_event104.zip */PS_shader.hlsl)",
+      "Bash(grep -vE \"^//|^$\")",
+      "Bash(unzip -p \"Collision-fix-constant-buffer-and-RdotV-zero_event104.zip\" \"*/PS_shader.hlsl\")"
     ],
     "additionalDirectories": [
       "\\tmp"

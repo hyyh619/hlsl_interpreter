@@ -272,6 +272,60 @@ def _compare_ps_output(golden: dict, pixels, tolerance: float, log, max_report: 
     log("=" * 50)
 
 
+def _rt_format_to_clamp_mode(fmt):
+    """Map a render-target format string (from pipeline_state.csv,
+    e.g. "R8G8B8A8_UNORM") to an output-merger write-clamp mode.
+
+    Returns one of 'unorm' / 'snorm' / 'float' / 'none', or None when the
+    format is absent/typeless/unrecognised (caller falls back to config).
+      UNORM, UNORM_SRGB → 'unorm' ([0,1])
+      SNORM             → 'snorm' ([-1,1])
+      FLOAT             → 'float' (no clamp)
+      UINT, SINT        → 'none'  (integer RT; float clamp doesn't apply)
+    """
+    if not fmt:
+        return None
+    u = fmt.upper()
+    if 'TYPELESS' in u:
+        return None
+    if 'SNORM' in u:
+        return 'snorm'
+    if 'UNORM' in u or 'SRGB' in u:
+        return 'unorm'
+    if 'FLOAT' in u:
+        return 'float'
+    if 'UINT' in u or 'SINT' in u:
+        return 'none'
+    return None
+
+
+def _clamp_output_colors(pixels, mode, log) -> None:
+    """Output-merger write: clamp each pixel's PS output color to the render
+    target's representable range, modelling D3D11's format conversion on write.
+
+    D3D clamps the shader output when converting to a fixed-point target
+    (UNORM → [0,1], SNORM → [-1,1]) and leaves FLOAT targets unclamped. The
+    capture RTs here are R8G8B8A8_UNORM, so the default clamps to [0,1].
+      mode True / "unorm" → [0,1] (default)
+      mode "snorm"        → [-1,1]
+      mode False / "float"/"none" → no clamp (HDR / float RT)
+    """
+    if mode in (False, 'float', 'none', 'None') or mode is None:
+        return
+    lo, hi = (-1.0, 1.0) if str(mode).lower() == 'snorm' else (0.0, 1.0)
+    clamped = 0
+    for p in pixels:
+        c = p.ps_output_color
+        if not c:
+            continue
+        new = [max(lo, min(hi, v)) if isinstance(v, (int, float)) else v for v in c]
+        if new != list(c):
+            clamped += 1
+        p.ps_output_color = new
+    log(f"Output-Merger write clamp [{lo},{hi}]: {clamped} pixel(s) had a "
+        f"channel outside range (clamped).")
+
+
 def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
     """Ordered BMP paths for a texture's view mip range (mip0, mip1, ...).
 
@@ -468,6 +522,10 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     primitive_topology = config.get('primitive_topology', D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
     # Tolerance for the golden output-merger pixel comparison (color + depth).
     pixel_tolerance = config.get('pixel_tolerance', 0.01)
+    # Output-merger write clamp. D3D converts the PS output to the render-target
+    # format on write: fixed-point targets clamp (UNORM→[0,1], SNORM→[-1,1]),
+    # FLOAT targets don't. These captures use R8G8B8A8_UNORM → default [0,1].
+    output_color_clamp = config.get('output_color_clamp', True)
 
     # Resolve log path relative to config
     if log_file_path:
@@ -605,6 +663,18 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         if 'primitive_topology' not in config and topo_from_csv is not None:
             primitive_topology = topo_from_csv
 
+    # Output-merger write clamp mode: prefer the RT0 format from
+    # pipeline_state.csv (UNORM→[0,1], SNORM→[-1,1], FLOAT/UINT→no clamp); fall
+    # back to the output_color_clamp config when no format row is present.
+    rt_format = rast.config.render_target_format
+    fmt_clamp_mode = _rt_format_to_clamp_mode(rt_format)
+    effective_clamp = fmt_clamp_mode if fmt_clamp_mode is not None else output_color_clamp
+    vs_interp.log_output(
+        f"Render target format: {rt_format or 'unknown'} "
+        f"→ output-merger clamp mode: {effective_clamp}"
+        + ("" if fmt_clamp_mode is not None else "  (from config fallback)")
+    )
+
     # Mesh view: display input + VS output meshes (topology now finalized)
     if mesh_view_enabled and vs_interp._mesh_view:
         vs_interp.primitive_topology = primitive_topology
@@ -690,6 +760,10 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             )
             ps_time = time.time() - ps_start
             ps_interp.log_output(f"PS executed in {ps_time:.4f}s")
+
+    # Output-merger write: clamp PS output to the render-target's range
+    # (mode derived from the RT0 format when available).
+    _clamp_output_colors(pixels, effective_clamp, vs_interp.log_output)
 
     if not early_z:
         pixels = depth.execute(pixels, early_z=False)
