@@ -12,6 +12,7 @@ from hlsl_interpreter import HLSLInterpreter
 from rasterizer import Rasterizer
 from d3d import D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
 from output_merger import Depth, ComparisonFunc
+from debug_trace import TRACE
 import d3d
 
 
@@ -675,6 +676,14 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         config_dir = os.path.dirname(os.path.abspath(config_path))
         log_file_path = log_file_path if os.path.isabs(log_file_path) else os.path.join(config_dir, log_file_path)
 
+    # Optional intermediate-data tracing (PS pixels / texture LOD / quad
+    # derivatives) to a file. No-op unless the config has a "debug_trace" block
+    # with "enabled": true. Debug file is written next to the log file (or the
+    # config dir when no log is set); see debug_trace.py for config keys.
+    _trace_dir = os.path.dirname(log_file_path) if log_file_path else os.path.dirname(os.path.abspath(config_path))
+    _trace_stem = os.path.splitext(os.path.basename(config.get('data_path', '')))[0] or 'pipeline'
+    TRACE.configure(config, base_dir=_trace_dir, default_stem=_trace_stem)
+
     # Data file paths
     vs_hlsl = os.path.join(data_folder, 'VS_shader.hlsl')
     ps_hlsl = os.path.join(data_folder, 'PS_shader.hlsl')
@@ -1011,6 +1020,11 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         out_dir = os.path.dirname(log_file_path) if log_file_path else config_dir
         out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
     _save_output_pixels_bitmap(pixels, rast.config.viewport, out_bmp, vs_interp.log_output)
+
+    # Flush/close the optional debug trace file (no-op when tracing was off).
+    if TRACE.enabled:
+        vs_interp.log_output(f"Debug trace written: {getattr(TRACE, 'path', '?')}")
+    TRACE.close()
 
     # ============================================================
     # Mesh view: feed rasterizer/PS/output-merger pixels and stay open

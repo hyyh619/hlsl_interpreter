@@ -39,6 +39,7 @@ from d3d import (
     D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
     D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN
 )
+from debug_trace import TRACE
 
 
 @dataclass
@@ -3420,6 +3421,7 @@ class HLSLInterpreter:
         saved_counter = self._eval_counter
         saved_print = self._should_print
         self._in_derivative_eval = True
+        TRACE.set_phase('deriv')
         try:
             self._execute_void_main(
                 self._ps_code, self._ps_main_func, self._ps_input_params,
@@ -3427,6 +3429,7 @@ class HLSLInterpreter:
             )
         finally:
             self._in_derivative_eval = False
+            TRACE.set_phase('main')
             self._eval_counter = saved_counter
             self._should_print = saved_print
         cache[lane_idx] = captured
@@ -3455,6 +3458,10 @@ class HLSLInterpreter:
             return None, None
         ddx_uv = [uv_tr[0] - uv_tl[0], uv_tr[1] - uv_tl[1]]
         ddy_uv = [uv_bl[0] - uv_tl[0], uv_bl[1] - uv_tl[1]]
+        if TRACE.derivatives:
+            TRACE.deriv(f"tl=({uv_tl[0]:.5f},{uv_tl[1]:.5f}) "
+                        f"tr=({uv_tr[0]:.5f},{uv_tr[1]:.5f}) "
+                        f"bl=({uv_bl[0]:.5f},{uv_bl[1]:.5f})", ddx_uv, ddy_uv)
         return ddx_uv, ddy_uv
 
     def executePS_with_params(self, main_func: str, ps_input_params: list,
@@ -3484,6 +3491,8 @@ class HLSLInterpreter:
             pixel.ps_output_color = None
             self._quad_inputs = pixel.quad_inputs
             self._quad_lane = pixel.quad_lane
+            TRACE.set_pixel(pixel.x, pixel.y)
+            TRACE.set_phase('main')
             # Neighbor-lane locals are shared by all covered pixels of one quad
             # (same quad_inputs object emitted consecutively by the rasterizer),
             # so only reset the cache when we cross into a new quad.
@@ -3524,6 +3533,9 @@ class HLSLInterpreter:
                     break
             if pixel.ps_output_color is None and result_params:
                 pixel.ps_output_color = next(iter(result_params.values()))
+
+            if TRACE.ps_pixels:
+                TRACE.ps_pixel(pixel.quad_lane, input_data, pixel.ps_output_color)
 
         # Clear quad context so VS / non-quad paths don't see stale state.
         self._quad_inputs = None

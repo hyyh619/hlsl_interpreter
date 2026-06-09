@@ -1031,11 +1031,9 @@ One note worth flagging: run_regression.py only counts lines starting with liter
 
 
 
-
-
-# 28
+# 28 增加调试代码
 ## Prompts
-
+把修复这次问题添加的debug的代码（输出中间数据到文件的代码）保留在源代码中，并用控制变量来控制开启，方便以后的调试。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -1043,6 +1041,37 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+What I built
+New module debug_trace.py — a process-wide TRACE singleton with three independent channels under a master switch, OFF by default:
+
+ps_pixels — per-pixel PS inputs (v1 color, v2 texcoord, …) + output color
+texture_lod — per-Texture.Sample u/v, LOD, ddx/ddy, result
+derivatives — the 2×2 quad lane UVs and computed gradients
+Plus per-pixel filtering (target_pixels) and phase tagging (main vs deriv neighbor-lane re-execution) so the output is actually readable.
+
+Wiring (all guarded by cheap boolean checks — zero cost when off):
+
+render.py — TRACE.configure(...) after the log path resolves; TRACE.close() at the end (logs the trace path)
+hlsl_interpreter.py — sets pixel/phase context per PS pixel; emits PS-pixel and derivative traces
+texture.py — emits per-Sample LOD traces
+How to use it
+Add to the run JSON (debug file lands next to the log file):
+
+
+"debug_trace": {
+    "enabled": true,
+    "file": "pipeline_debug.log",
+    "ps_pixels": true,
+    "texture_lod": true,
+    "derivatives": true,
+    "target_pixels": ["366,354", "408,367"]
+}
+Omit the block (or "enabled": false) — the default — and it's a complete no-op.
+
+Verification
+Ran event399 with tracing on: channels, phase tags, and pixel filtering all work; reproduces exactly the data that cracked step 98.
+Regression 6/6 PASS with tracing off, and no *_debug.log files produced — confirming the facility costs nothing when disabled.
+Session log: hlsl-interpreter-step99-debug-trace-facility.md. Changes are uncommitted — let me know if you'd like me to commit.
 
 
 

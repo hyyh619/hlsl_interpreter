@@ -4,6 +4,8 @@ import json
 import os
 from typing import List, Optional, Tuple, Dict
 
+from debug_trace import TRACE
+
 
 D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT = 0x10
 
@@ -631,10 +633,11 @@ class Texture:
         lod = max(sampler.MinLOD, min(sampler.MaxLOD, lod))
 
         if level_count == 1:
-            if mag_filter == 0:
-                return self._sample_nearest(mip_levels[0], tu, tv)
-            else:
-                return self._sample_linear(mip_levels[0], tu, tv)
+            single = (self._sample_nearest(mip_levels[0], tu, tv) if mag_filter == 0
+                      else self._sample_linear(mip_levels[0], tu, tv))
+            if TRACE.texture_lod:
+                TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, single)
+            return single
 
         lod_level = max(0.0, min(lod, float(level_count - 1)))
         level0 = int(lod_level)
@@ -661,4 +664,7 @@ class Texture:
         color1 = _within(level1)
         result = [color0[i] * (1 - s) + color1[i] * s for i in range(4)]
 
-        return [max(0.0, min(1.0, c)) for c in result]
+        out = [max(0.0, min(1.0, c)) for c in result]
+        if TRACE.texture_lod:
+            TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, out)
+        return out
