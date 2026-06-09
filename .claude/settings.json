@@ -49,7 +49,15 @@
       "Bash(rm -rf Cases/Cases)",
       "Bash(ls Cases/.bl371.json)",
       "Bash(python render.py Cases/.bmp104.json)",
-      "Bash(xargs -I{} sh -c 'echo \"$\\(basename {}\\) $\\(stat -c%s {} 2>/dev/null || wc -c <{}\\) bytes\"')"
+      "Bash(xargs -I{} sh -c 'echo \"$\\(basename {}\\) $\\(stat -c%s {} 2>/dev/null || wc -c <{}\\) bytes\"')",
+      "Bash(cp Cases/Default.json Cases/_event399.json)",
+      "Bash(LOD_DEBUG=1 python render.py ./Cases/_event399.json)",
+      "Bash(python render.py ./Cases/_event399.json)",
+      "Bash(DERIV_DEBUG=1 python render.py ./Cases/_event399.json)",
+      "Bash(python -c \"import json,sys; c=json.load\\(sys.stdin\\); print\\('execute_count=',c.get\\('execute_count'\\),'early_z=',c.get\\('early_z'\\),'pixel_tol=',c.get\\('pixel_tolerance'\\)\\)\")",
+      "Bash(rm -f _event399_d3.txt _event399_lod.txt _event399_lod2.txt _event399_ps.txt _event399_ps2.txt _event399_deriv.txt)",
+      "Bash(rm -f Cases/_event399.json Cases/_event399_run.log)",
+      "Bash(rm -rf Cases/_event399_extract)"
     ],
     "additionalDirectories": [
       "\\tmp"

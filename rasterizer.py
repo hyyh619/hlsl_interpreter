@@ -766,29 +766,26 @@ class Rasterizer:
                 min_len = min(len(v) for v in vals if isinstance(v, list))
                 interpolated = []
 
-                if attr_lower in ['color', 'normal']:
-                    for i in range(min_len):
-                        comp0 = vals[0][i] if len(vals[0]) > i else 0.0
-                        comp1 = vals[1][i] if len(vals[1]) > i else 0.0
-                        comp2 = vals[2][i] if len(vals[2]) > i else 0.0
-                        val = bary_x * comp0 + bary_y * comp1 + bary_z * comp2
-                        if attr_lower == 'color':
-                            val = max(0.0, min(1.0, val))
-                        interpolated.append(val)
-                else:
-                    for i in range(min_len):
-                        comp0 = vals[0][i] if len(vals[0]) > i else 0.0
-                        comp1 = vals[1][i] if len(vals[1]) > i else 0.0
-                        comp2 = vals[2][i] if len(vals[2]) > i else 0.0
+                # All PS-input attributes are perspective-correct by default
+                # (DXBC `dcl_input_ps linear ...`). COLOR is no exception: D3D
+                # neither clamps the interpolant nor drops perspective for it —
+                # the VS may legitimately output HDR vertex colors (>1) that the
+                # PS scales, and clamping/affine-interpolating here would darken
+                # and skew the result. The output-merger clamp (post-PS) is the
+                # only place values are clamped to the RT range.
+                for i in range(min_len):
+                    comp0 = vals[0][i] if len(vals[0]) > i else 0.0
+                    comp1 = vals[1][i] if len(vals[1]) > i else 0.0
+                    comp2 = vals[2][i] if len(vals[2]) > i else 0.0
 
-                        attr0_normalized = comp0 * inv_w0
-                        attr1_normalized = comp1 * inv_w1
-                        attr2_normalized = comp2 * inv_w2
+                    attr0_normalized = comp0 * inv_w0
+                    attr1_normalized = comp1 * inv_w1
+                    attr2_normalized = comp2 * inv_w2
 
-                        attr_interpolated_normalized = bary_x * attr0_normalized + bary_y * attr1_normalized + bary_z * attr2_normalized
+                    attr_interpolated_normalized = bary_x * attr0_normalized + bary_y * attr1_normalized + bary_z * attr2_normalized
 
-                        attr_interpolated = attr_interpolated_normalized / interpolated_inv_w
-                        interpolated.append(attr_interpolated)
+                    attr_interpolated = attr_interpolated_normalized / interpolated_inv_w
+                    interpolated.append(attr_interpolated)
 
                 result[attr_name] = interpolated
             elif all(isinstance(v, (int, float)) and v is not None for v in vals):
@@ -843,23 +840,16 @@ class Rasterizer:
                 min_len = min(len(val0), len(val1))
                 interpolated = []
 
-                if attr_lower in ['color', 'normal']:
-                    for i in range(min_len):
-                        v0_comp = val0[i] if i < len(val0) else 0.0
-                        v1_comp = val1[i] if i < len(val1) else 0.0
-                        val = one_minus_t * v0_comp + t * v1_comp
-                        if attr_lower == 'color':
-                            val = max(0.0, min(1.0, val))
-                        interpolated.append(val)
-                else:
-                    for i in range(min_len):
-                        v0_comp = val0[i] if i < len(val0) else 0.0
-                        v1_comp = val1[i] if i < len(val1) else 0.0
-                        v0_normalized = v0_comp * inv_w0
-                        v1_normalized = v1_comp * inv_w1
-                        val_normalized = one_minus_t * v0_normalized + t * v1_normalized
-                        val = val_normalized / interpolated_inv_w
-                        interpolated.append(val)
+                # Perspective-correct for all attributes incl. COLOR, with no
+                # clamp (see the triangle path for rationale).
+                for i in range(min_len):
+                    v0_comp = val0[i] if i < len(val0) else 0.0
+                    v1_comp = val1[i] if i < len(val1) else 0.0
+                    v0_normalized = v0_comp * inv_w0
+                    v1_normalized = v1_comp * inv_w1
+                    val_normalized = one_minus_t * v0_normalized + t * v1_normalized
+                    val = val_normalized / interpolated_inv_w
+                    interpolated.append(val)
                 result[attr_name] = interpolated
             elif isinstance(val0, (int, float)) and isinstance(val1, (int, float)):
                 v0_normalized = val0 * inv_w0

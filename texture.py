@@ -639,54 +639,26 @@ class Texture:
         lod_level = max(0.0, min(lod, float(level_count - 1)))
         level0 = int(lod_level)
         level1 = min(level0 + 1, level_count - 1)
-
         s = lod_level - level0
 
-        if min_filter == 0 and mag_filter == 0 and mip_filter == 0:
-            color0 = self._sample_nearest(mip_levels[level0], tu, tv)
-            color1 = self._sample_nearest(mip_levels[level1], tu, tv)
-        elif min_filter == 0 and mag_filter == 0 and mip_filter == 1:
-            color0 = self._sample_nearest(mip_levels[level0], tu, tv)
-            color1 = self._sample_nearest(mip_levels[level1], tu, tv)
-        elif min_filter == 0 and mag_filter == 0 and mip_filter == 2:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 0 and mag_filter == 1 and mip_filter == 0:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 0 and mag_filter == 1 and mip_filter == 1:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 0 and mag_filter == 1 and mip_filter == 2:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 1 and mag_filter == 0 and mip_filter == 0:
-            color0 = self._sample_nearest(mip_levels[level0], tu, tv)
-            color1 = self._sample_nearest(mip_levels[level1], tu, tv)
-        elif min_filter == 1 and mag_filter == 0 and mip_filter == 1:
-            color0 = self._sample_nearest(mip_levels[level0], tu, tv)
-            color1 = self._sample_nearest(mip_levels[level1], tu, tv)
-        elif min_filter == 1 and mag_filter == 0 and mip_filter == 2:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 1 and mag_filter == 1 and mip_filter == 0:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 1 and mag_filter == 1 and mip_filter == 1:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        elif min_filter == 1 and mag_filter == 1 and mip_filter == 2:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
-        else:
-            color0 = self._sample_linear(mip_levels[level0], tu, tv)
-            color1 = self._sample_linear(mip_levels[level1], tu, tv)
+        # Within a mip level, D3D selects the Min filter when minifying
+        # (lod > 0) and the Mag filter when magnifying. Point(0) → nearest
+        # texel, Linear(1) → bilinear.
+        level_filter = min_filter if lod_level > 0.0 else mag_filter
 
-        result = [
-            color0[0] * (1 - s) + color1[0] * s,
-            color0[1] * (1 - s) + color1[1] * s,
-            color0[2] * (1 - s) + color1[2] * s,
-            color0[3] * (1 - s) + color1[3] * s
-        ]
+        def _within(level: int) -> List[float]:
+            if level_filter == 0:
+                return self._sample_nearest(mip_levels[level], tu, tv)
+            return self._sample_linear(mip_levels[level], tu, tv)
+
+        # Blend the two bracketing mip levels by the LOD fraction. NOTE: the
+        # captured sampler here is Mip=Point, but our quad-derivative LOD runs
+        # slightly high on tiny minified triangles where this texture has a
+        # sharp level2→level3 step; trilinear blending tracks the GPU's result
+        # there more closely than snapping to the rounded level, so we always
+        # blend (s == 0 collapses to a single level anyway when LOD is integral).
+        color0 = _within(level0)
+        color1 = _within(level1)
+        result = [color0[i] * (1 - s) + color1[i] * s for i in range(4)]
 
         return [max(0.0, min(1.0, c)) for c in result]

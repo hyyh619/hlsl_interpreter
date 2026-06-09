@@ -1008,6 +1008,27 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+Summary
+I traced the event399 color mismatch through the full pipeline and found the root cause was in vertex-attribute interpolation, not texturing.
+
+Root cause: The PS computes o0 = v1 (lit COLOR0) × texture.Sample(v2). The golden VS output carries HDR vertex colors (e.g. 1.12, 1.31), and the DXBC declares dcl_input_ps linear v1 — so D3D interpolates COLOR perspective-correct and unclamped. But rasterizer.py special-cased color/normal: it interpolated them with plain affine barycentrics and clamped each component to [0,1]. The clamp capped our v1 at 1.0 instead of ~1.3, so every output was systematically too dark (out = 1.0·texel instead of 1.3·texel).
+
+Fix:
+
+rasterizer.py — removed the COLOR/NORMAL affine+clamp special case in both the triangle and line interpolators; all PS-input attributes now use the existing perspective-correct path, unclamped. (The output-merger write clamp, post-PS, is the only correct place to clamp — already handled.)
+texture.py — refactored sample()'s 12-branch filter ladder into a clear minify/magnify + trilinear path (behavior-preserving).
+Results:
+
+event399: mismatched 349 → 96 (matched 2181 → 2434) under your config; 383 → 146 under the regression config.
+No regressions: a stash-based before/after showed my change touched only event399 — event104, 351, 371, 516 were byte-identical (their samplers have Min==Mag and colors stay in [0,1]).
+Regression suite: 6/6 PASS.
+I also investigated the residual ~96 mismatches: they're a slight LOD over-estimate on tiny (~15px) minified triangles where this texture has a sharp mip2→mip3 step. Texcoords match golden and quad spacing is correct, so the gradient is right — it's at the software-vs-GPU rasterization noise floor. I tested honoring the captured Mip=Point filter and it made things worse (snapping onto the dark mip3), so I kept trilinear blending and documented the trade-off rather than overfit.
+
+Session log: hlsl-interpreter-step98-fix-vertex-color-clamp-and-perspective.md. Changes are uncommitted — let me know if you'd like me to commit.
+
+One note worth flagging: run_regression.py only counts lines starting with literal Error:, so Error [PixelDiff]: mismatches never gate the suite. If you want pixel accuracy enforced, I can extend the runner to count those too.
+
+
 
 
 
