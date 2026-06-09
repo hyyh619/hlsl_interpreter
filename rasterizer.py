@@ -904,11 +904,11 @@ class Rasterizer:
         Returns the primitive topology value if found, else None.
 
         CSV format:
-          Section,Property,Value
-          Viewport,X,0.0
-          Viewport,Width,640.0
-          Topology,Primitive,4
-          ...
+            Section,Property,Value
+            Viewport,X,0.0
+            Viewport,Width,640.0
+            Topology,Primitive,4
+            ...
         """
         try:
             import csv as csv_mod
@@ -923,7 +923,7 @@ class Rasterizer:
             return None
 
         vp = {'x': 0.0, 'y': 0.0, 'width': 800.0, 'height': 600.0,
-              'min_depth': 0.0, 'max_depth': 1.0}
+                'min_depth': 0.0, 'max_depth': 1.0}
         sc = {'x': 0, 'y': 0, 'width': 0, 'height': 0}
         has_viewport = False
         has_scissor = False

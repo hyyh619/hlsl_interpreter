@@ -1172,9 +1172,29 @@ Session log: hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md. Ch
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Fix wrong pixel color of event104 of collision by claude code.
 
 ## Claude Code Session
+Root cause
+The PS is o0 = 4 · Diffuse.Sample(v2) · Lightmap.Sample(w2). Using the step-99 trace facility (after threading the texture name through Texture.sample so I could tell the two textures apart), I found the color math was exact — the real problem was depth: our top-row fragments sat at ~0.978 vs golden ~0.998, and we had 147800 extra pixels.
+
+The pipeline stats nailed it: IAPrimitives output=1147 vs golden=383. With 1149 vertices, 1147 = strip (1149−2) but 383 = list (1149/3). I checked all 6 captures — golden IAPrimitives equals verts/3 for every one, so they're all triangle lists. But every pipeline_state.csv says Topology,Primitive,5 (= D3D TRIANGLESTRIP), which we mapped verbatim → we assembled strips → ~3× triangles → overdraw → wrong fragments winning → wrong colors.
+
+Fix
+The capture's topology enum is unreliable, but its captured primitive count is ground truth. Added _resolve_triangle_topology which disambiguates list-vs-strip from golden IAPrimitives (golden == verts/3 → list; == verts−2 → strip; ambiguous/absent → keep CSV). A JSON primitive_topology override still wins.
+
+Results — 6/6 PASS, no regressions, broad improvement
+event104: mismatched 13867→2773, extra 147800→465 (matched 26839→37684 — exactly the user's reference numbers)
+event351: extra 5589→25
+event399: matched 2391→2434, extra 400→45
+event516 identical (list==strip for 1 triangle); event371 unchanged (separate issue)
+event104's remaining 2773 residual are all depth-matched, cdiff < 0.3 — the same LOD/edge noise floor documented for event399, not a new bug.
+
+Debug code (per request, all in debug_trace.py)
+Texture.sample(..., name=...) forwards the texture name into TRACE.texture_sample so multi-texture shaders show which texture each sample came from.
+The trace now flushes per line so it's inspectable mid-run.
+Session log: hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md. Changes are uncommitted — let me know if you'd like me to commit.
 
 
 

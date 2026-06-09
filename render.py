@@ -170,13 +170,13 @@ def _resolve_triangle_topology(csv_topo, vertex_count: int, golden_iaprim: int, 
 
     So when the CSV claims a triangle topology and the golden IAPrimitives is
     available, pick the interpretation whose primitive count matches:
-      list  → vertex_count // 3 triangles
-      strip → vertex_count - 2 triangles
+        list  → vertex_count // 3 triangles
+        strip → vertex_count - 2 triangles
     If the count is ambiguous (matches both, e.g. a single triangle) or matches
     neither (no golden / partial capture), keep the CSV value unchanged.
     """
     tri_topos = (D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-                 d3d.D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)
+                d3d.D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)
     if csv_topo not in tri_topos or vertex_count <= 0 or golden_iaprim <= 0:
         return csv_topo
     list_tris = vertex_count // 3
@@ -197,7 +197,7 @@ def _resolve_triangle_topology(csv_topo, vertex_count: int, golden_iaprim: int, 
 
 
 def _compare_pipeline_statistics(golden: dict, pipeline_stats: dict, log,
-                                 samples_passed_tolerance: int = 500) -> None:
+                                samples_passed_tolerance: int = 500) -> None:
     """Compare our pipeline_stats against the golden capture, counter by counter.
 
     VSInvocations / SamplesPassed mismatches log an error-level line; every
