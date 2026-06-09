@@ -1198,9 +1198,24 @@ Session log: hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md. Ch
 
 
 
-# 31
+# 31 Rasterizer算法检查
 ## Prompts
+请检查光栅化算法对于三角形的遍历是否符合下面D3D11 Spec描述的rasterizer rule，如果不符合，请修复代码
+3.4.1 Coordinate Snapping
 
+Consider a set of vertices going through the Rasterizer, after having gone through clipping, perspective divide and viewport scale. Suppose that any further primitive expansion has been done (e.g. rectangular lines can be drawn by implementations as 2 triangles, described later). After the final primitives to be rasterized have been obtained, the x and y positions of the vertices are snapped to exactly n.8 fixed point integers. Any front/back culling is applied (if applicable) after vertices have been snapped. Interpolation of pixel attributes is set up based on the snapped vertex positions of primitives being rasterized.
+
+3.4.2 Triangle Rasterization Rules
+
+Any pixel sample locations which fall inside the triangle are drawn. An example with a single sample per pixel (at the center) is shown below. If a sample location falls exactly on the edge of the triangle, the Top-Left Rule applies, to ensure that adjacent triangles do not overdraw. The Top-Left rule is described below.
+
+3.4.2.1 Top-Left Rule
+
+Top edge: If an edge is exactly horizontal, and it is above the other edges of the triangle in pixel space, then it is a "top" edge.
+
+Left edge: If an edge is not exactly horizontal, and it is on the left side of the triangle in pixel space, then it is a "left" edge. A triangle can have one or two left edges.
+
+Top-Left Rule: If a sample location falls exactly on the edge of a triangle, the sample is inside the triangle if the edge is a "top" edge or a "left" edge. If two edges from the same triangle touch the pixel center, then if both edges are "top" or "left" then the sample is inside the triangle.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -1208,6 +1223,21 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+What I found
+The triangle traversal in rasterizer.py violated both cited rules:
+
+§3.4.1 Coordinate Snapping — transform_to_screen truncated vertices to whole pixels with int(...) (no n.8/256 sub-pixel grid), and _shade_lane tested coverage at the integer corner (x, y) instead of the pixel center (x+0.5, y+0.5).
+§3.4.2.1 Top-Left Rule — the coverage test was w0 >= 0 and w1 >= 0 and w2 >= 0 (every edge inclusive). Samples exactly on a shared edge were drawn by both adjacent triangles → overdraw, the exact thing the rule prevents.
+What I changed
+Added Viewport.transform_to_screen_subpixel — float projection snapped to the 1/256 grid (round(v*256)/256). Kept the integer transform_to_screen for the point/line paths.
+_raster_triangle_core: projects via the sub-pixel transform (snapped geometry drives area/cull/edge-functions/interpolation per spec), floor/ceil bounding box, and precomputes per-edge top-left flags using a winding-normalized edge_sign so one rule handles both windings in y-down screen space.
+_shade_lane: samples the pixel center and applies the Top-Left coverage test (interior on every edge; on-edge samples included only for top/left edges). The on-edge == 0.0 test is exact because snapped coords + the 0.5 center are exact dyadic rationals.
+Verification
+Regression suite: 6/6 pass (VS comparison is pre-rasterization, so unaffected; no crashes).
+Direct coverage test: an 8×8 quad split along its diagonal into two triangles produced union = 64, 0 double-covered pixels — watertight tiling with no overdraw, proving the Top-Left rule works.
+Thinking, execution, and results are written to Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.md.
+
+One note: the regression suite only validates VS output, so pixel-level changes here aren't covered by it — that's why I added the standalone coverage test as the real evidence.
 
 
 

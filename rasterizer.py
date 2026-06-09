@@ -57,13 +57,36 @@ class Viewport:
                 self.y <= y < self.y + self.height)
 
     def transform_to_screen(self, clip_x: float, clip_y: float, clip_w: float) -> Tuple[int, int]:
-        """Transform clip coordinates to screen coordinates"""
+        """Transform clip coordinates to integer screen pixel coordinates.
+
+        Used by the point/line paths, which walk whole pixels. The triangle path
+        uses transform_to_screen_subpixel instead (D3D11 §3.4.1 snapping)."""
         if abs(clip_w) < 1e-8:
             return (int(self.x + self.width / 2), int(self.y + self.height / 2))
         ndc_x = clip_x / clip_w
         ndc_y = clip_y / clip_w
         screen_x = int((ndc_x + 1.0) * 0.5 * self.width + self.x)
         screen_y = int((1.0 - (ndc_y + 1.0) * 0.5) * self.height + self.y)
+        return (screen_x, screen_y)
+
+    def transform_to_screen_subpixel(self, clip_x: float, clip_y: float, clip_w: float) -> Tuple[float, float]:
+        """Transform clip coordinates to sub-pixel screen coordinates per the
+        D3D11 rasterizer rule §3.4.1 Coordinate Snapping.
+
+        After the perspective divide and viewport scale, the x/y positions are
+        snapped to n.8 fixed point — 8 fractional bits, i.e. a 1/256 sub-pixel
+        grid. Unlike transform_to_screen this keeps the fractional position
+        (does NOT truncate to whole pixels), so triangle edge functions and the
+        Top-Left rule operate on the same snapped geometry the hardware uses."""
+        if abs(clip_w) < 1e-8:
+            return (self.x + self.width / 2.0, self.y + self.height / 2.0)
+        ndc_x = clip_x / clip_w
+        ndc_y = clip_y / clip_w
+        screen_x = (ndc_x + 1.0) * 0.5 * self.width + self.x
+        screen_y = (1.0 - (ndc_y + 1.0) * 0.5) * self.height + self.y
+        # Snap to the 1/256 sub-pixel grid (8 fractional bits = n.8 fixed point).
+        screen_x = round(screen_x * 256.0) / 256.0
+        screen_y = round(screen_y * 256.0) / 256.0
         return (screen_x, screen_y)
 
 
@@ -584,14 +607,23 @@ class Rasterizer:
         if abs(clip_w0) < 1e-8 or abs(clip_w1) < 1e-8 or abs(clip_w2) < 1e-8:
             return 'clipped'
 
-        screen_v0 = self.config.viewport.transform_to_screen(v0_pos[0], v0_pos[1], clip_w0)
-        screen_v1 = self.config.viewport.transform_to_screen(v1_pos[0], v1_pos[1], clip_w1)
-        screen_v2 = self.config.viewport.transform_to_screen(v2_pos[0], v2_pos[1], clip_w2)
+        # §3.4.1 Coordinate Snapping: snap x/y to the n.8 (1/256) sub-pixel grid
+        # AFTER perspective divide + viewport scale, keeping the fractional
+        # position. Culling and interpolation are set up on these snapped
+        # positions (per spec: "front/back culling is applied after vertices
+        # have been snapped"; "interpolation ... is set up based on the snapped
+        # vertex positions").
+        screen_v0 = self.config.viewport.transform_to_screen_subpixel(v0_pos[0], v0_pos[1], clip_w0)
+        screen_v1 = self.config.viewport.transform_to_screen_subpixel(v1_pos[0], v1_pos[1], clip_w1)
+        screen_v2 = self.config.viewport.transform_to_screen_subpixel(v2_pos[0], v2_pos[1], clip_w2)
 
-        min_x = min(screen_v0[0], screen_v1[0], screen_v2[0])
-        max_x = max(screen_v0[0], screen_v1[0], screen_v2[0])
-        min_y = min(screen_v0[1], screen_v1[1], screen_v2[1])
-        max_y = max(screen_v0[1], screen_v1[1], screen_v2[1])
+        # Pixel bounding box: the integer pixels whose CENTER sample (x+0.5,y+0.5)
+        # could fall inside the snapped triangle. floor/ceil over the sub-pixel
+        # extents is conservative; the per-sample coverage test trims the edges.
+        min_x = int(math.floor(min(screen_v0[0], screen_v1[0], screen_v2[0])))
+        max_x = int(math.ceil(max(screen_v0[0], screen_v1[0], screen_v2[0])))
+        min_y = int(math.floor(min(screen_v0[1], screen_v1[1], screen_v2[1])))
+        max_y = int(math.ceil(max(screen_v0[1], screen_v1[1], screen_v2[1])))
 
         min_x = max(min_x, int(self.config.viewport.x))
         max_x = min(max_x, int(self.config.viewport.x + self.config.viewport.width - 1))
@@ -612,6 +644,28 @@ class Rasterizer:
         if self._should_cull_triangle(screen_v0, screen_v1, screen_v2):
             return 'culled'
 
+        # §3.4.2.1 Top-Left Rule setup. Normalize by sign(area) so the triangle
+        # interior is the e_i >= 0 half-space for every edge regardless of
+        # winding. An edge whose direction (oriented to that canonical winding)
+        # points straight left is the "top" edge; one that points downward (in
+        # screen y-down space) is a "left" edge. A sample lying exactly on an
+        # edge (e_i == 0) is inside only if that edge is top or left — so a
+        # shared edge is drawn by exactly one of the two adjacent triangles.
+        edge_sign = 1.0 if area > 0 else -1.0
+
+        def _is_top_left(p_start, p_end):
+            dx = (p_end[0] - p_start[0]) * edge_sign
+            dy = (p_end[1] - p_start[1]) * edge_sign
+            is_top = (dy == 0.0 and dx < 0.0)
+            is_left = (dy > 0.0)
+            return is_top or is_left
+
+        # Edge i is the one opposite vertex i, matching the w_i below:
+        #   w0 uses edge v1->v2, w1 uses edge v2->v0, w2 uses edge v0->v1.
+        tl0 = _is_top_left(screen_v1, screen_v2)
+        tl1 = _is_top_left(screen_v2, screen_v0)
+        tl2 = _is_top_left(screen_v0, screen_v1)
+
         # FillMode.WIREFRAME: draw the triangle as its 3 edges. Culling above
         # still applies, matching D3D11 which only rasterizes wireframe fills for
         # triangles that survive the cull.
@@ -623,8 +677,11 @@ class Rasterizer:
 
         def _shade_lane(x: int, y: int):
             """Interpolate one lane unconditionally (helpers included so derivatives
-            stay valid at triangle edges). Returns (interpolated, depth, covered)."""
-            p = (x, y)
+            stay valid at triangle edges). Returns (interpolated, depth, covered).
+
+            §3.4.2: the coverage test samples the PIXEL CENTER (x+0.5, y+0.5),
+            not the integer corner."""
+            p = (x + 0.5, y + 0.5)
             w0 = self._edge_function(screen_v1, screen_v2, p)
             w1 = self._edge_function(screen_v2, screen_v0, p)
             w2 = self._edge_function(screen_v0, screen_v1, p)
@@ -645,8 +702,24 @@ class Rasterizer:
             ndc_z = bary_x * v0_ndc[2] + bary_y * v1_ndc[2] + bary_z * v2_ndc[2]
             depth = self._map_depth(ndc_z)
 
-            inside = (area > 0 and w0 >= 0 and w1 >= 0 and w2 >= 0) or \
-                     (area < 0 and w0 <= 0 and w1 <= 0 and w2 <= 0)
+            # §3.4.2 + §3.4.2.1: a sample is inside when it is in the interior
+            # half-space of every edge (e_i > 0), AND for any edge it lies
+            # exactly on (e_i == 0) that edge is a top or left edge. e_i is the
+            # winding-normalized edge value (interior is e_i >= 0). All inputs
+            # are exact multiples of 1/256 (snapped verts) plus the 0.5 center,
+            # so the products/sums are exact dyadic rationals and "== 0.0" is a
+            # reliable on-edge test, not a floating-point gamble.
+            e0 = w0 * edge_sign
+            e1 = w1 * edge_sign
+            e2 = w2 * edge_sign
+            inside = e0 >= 0.0 and e1 >= 0.0 and e2 >= 0.0
+            if inside:
+                if e0 == 0.0 and not tl0:
+                    inside = False
+                elif e1 == 0.0 and not tl1:
+                    inside = False
+                elif e2 == 0.0 and not tl2:
+                    inside = False
             covered = (
                 inside
                 and min_x <= x <= max_x and min_y <= y <= max_y
