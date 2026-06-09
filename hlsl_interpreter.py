@@ -1661,7 +1661,7 @@ class HLSLInterpreter:
                             texture_desc = self._texture_desc_list[reg_id]
                             sampler = self._resolve_sampler(sampler_name, reg_id)
                             ddx_uv, ddy_uv = self._compute_uv_derivatives(coords_node, local_vars)
-                            result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv)
+                            result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=texture_name)
                             self.debug_print(f"[FUNC] {texture_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                             return result
             return None
@@ -1700,7 +1700,7 @@ class HLSLInterpreter:
                         texture_desc = self._texture_desc_list[reg_id]
                         sampler = self._resolve_sampler(sampler_name, reg_id)
                         ddx_uv, ddy_uv = self._compute_uv_derivatives(args[1], local_vars)
-                        result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv)
+                        result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=obj_name)
                         self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                         return result
             return None

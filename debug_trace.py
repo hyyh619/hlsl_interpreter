@@ -153,6 +153,9 @@ class _DebugTrace:
             return
         with self._lock:
             self._fh.write(line)
+            # Flush each line so a trace is inspectable mid-run (these runs can
+            # take a while) and survives an interrupted/killed process.
+            self._fh.flush()
 
 
 def _fmt(v) -> str:

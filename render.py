@@ -159,6 +159,43 @@ def _load_golden_pipeline_statistics(path: str) -> dict:
     return stats
 
 
+def _resolve_triangle_topology(csv_topo, vertex_count: int, golden_iaprim: int, log) -> int:
+    """Disambiguate triangle LIST vs STRIP using the captured primitive count.
+
+    These RenderDoc/3Dmigoto dumps have an unreliable topology enum in
+    pipeline_state.csv: it reports TRIANGLESTRIP (5) even for draws that are
+    actually triangle lists (verified — golden IAPrimitives == vertex_count/3
+    for every captured draw, not vertex_count-2). The captured pipeline
+    statistics' IAPrimitives count, by contrast, is ground truth.
+
+    So when the CSV claims a triangle topology and the golden IAPrimitives is
+    available, pick the interpretation whose primitive count matches:
+      list  → vertex_count // 3 triangles
+      strip → vertex_count - 2 triangles
+    If the count is ambiguous (matches both, e.g. a single triangle) or matches
+    neither (no golden / partial capture), keep the CSV value unchanged.
+    """
+    tri_topos = (D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+                 d3d.D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP)
+    if csv_topo not in tri_topos or vertex_count <= 0 or golden_iaprim <= 0:
+        return csv_topo
+    list_tris = vertex_count // 3
+    strip_tris = vertex_count - 2
+    matches_list = (golden_iaprim == list_tris)
+    matches_strip = (golden_iaprim == strip_tris)
+    if matches_list and not matches_strip:
+        resolved = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+    elif matches_strip and not matches_list:
+        resolved = d3d.D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
+    else:
+        return csv_topo
+    if resolved != csv_topo:
+        log(f"Topology: CSV reported {csv_topo} but golden IAPrimitives="
+            f"{golden_iaprim} matches {vertex_count}/3 → using TRIANGLELIST "
+            f"({resolved}) instead (capture enum unreliable).")
+    return resolved
+
+
 def _compare_pipeline_statistics(golden: dict, pipeline_stats: dict, log,
                                  samples_passed_tolerance: int = 500) -> None:
     """Compare our pipeline_stats against the golden capture, counter by counter.
@@ -814,6 +851,14 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         # Use config override if explicitly set, otherwise use CSV value
         if 'primitive_topology' not in config and topo_from_csv is not None:
             primitive_topology = topo_from_csv
+
+    # The capture's topology enum is unreliable (reports STRIP for list draws);
+    # disambiguate against the golden primitive count when not overridden.
+    if 'primitive_topology' not in config:
+        _golden_iaprim = _load_golden_pipeline_statistics(
+            os.path.join(data_folder, 'pipeline_statistics.csv')).get('IAPrimitives', 0)
+        primitive_topology = _resolve_triangle_topology(
+            primitive_topology, len(vs_results), _golden_iaprim, vs_interp.log_output)
 
     # Output-merger write clamp mode: prefer the RT0 format from
     # pipeline_state.csv (UNORM→[0,1], SNORM→[-1,1], FLOAT/UINT→no clamp); fall

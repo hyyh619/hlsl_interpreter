@@ -606,7 +606,8 @@ class Texture:
         return self._sample_nearest(mip_level, u, v)
 
     def sample(self, u: float, v: float, w: float, texture_desc: TextureDesc, sampler: Sampler,
-               ddx_uv: Optional[List[float]] = None, ddy_uv: Optional[List[float]] = None) -> List[float]:
+               ddx_uv: Optional[List[float]] = None, ddy_uv: Optional[List[float]] = None,
+               name: str = '') -> List[float]:
         tu, tv, tw = sampler.transform_coordinates(u, v, w)
 
         min_filter, mag_filter, mip_filter = sampler._get_filter_mode()
@@ -636,7 +637,7 @@ class Texture:
             single = (self._sample_nearest(mip_levels[0], tu, tv) if mag_filter == 0
                       else self._sample_linear(mip_levels[0], tu, tv))
             if TRACE.texture_lod:
-                TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, single)
+                TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, single, name)
             return single
 
         lod_level = max(0.0, min(lod, float(level_count - 1)))
@@ -666,5 +667,5 @@ class Texture:
 
         out = [max(0.0, min(1.0, c)) for c in result]
         if TRACE.texture_lod:
-            TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, out)
+            TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, out, name)
         return out

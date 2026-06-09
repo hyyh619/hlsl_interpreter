@@ -60,7 +60,16 @@
       "Bash(rm -rf Cases/_event399_extract)",
       "Bash(python render.py ./Cases/_trace_test.json)",
       "Bash(grep -cE \"^# [0-9]+$\" Prompts/hlsl-interpreter-prompt-ClaudeCode.md)",
-      "Bash(grep -E \"^# [0-9]+$\" Prompts/hlsl-interpreter-prompt-ClaudeCode.md)"
+      "Bash(grep -E \"^# [0-9]+$\" Prompts/hlsl-interpreter-prompt-ClaudeCode.md)",
+      "Bash(python render.py ./Cases/_e104.json)",
+      "Bash(ls -la Cases/_e104.log)",
+      "Bash(tail -5 Cases/_e104.log)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(rm -f Cases/_e104.log Cases/_e104_trace.log)",
+      "Bash(timeout 300 python render.py ./Cases/_e104b.json)",
+      "Bash(timeout 300 python render.py ./Cases/_e104c.json)",
+      "Bash(rm -rf Cases/_event104_extract)",
+      "Bash(rm -f Cases/_e104*.json Cases/_e104*.log Cases/_e104*trace.log)"
     ],
     "additionalDirectories": [
       "\\tmp"
