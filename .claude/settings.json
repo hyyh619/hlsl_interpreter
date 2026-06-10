@@ -79,7 +79,9 @@
       "Bash(ls -la Cases/frag_all.csv)",
       "Bash(ls -la frag_all.csv)",
       "Bash(find . -name frag_all.csv)",
-      "Bash(FRAG_DUMP=VS python render.py ./Cases/Default.json)"
+      "Bash(FRAG_DUMP=VS python render.py ./Cases/Default.json)",
+      "Bash(python render.py ./Cases/_depthtol_test.json)",
+      "Bash(git check-ignore *)"
     ],
     "additionalDirectories": [
       "\\tmp"

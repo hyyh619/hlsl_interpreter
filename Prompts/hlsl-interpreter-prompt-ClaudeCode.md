@@ -1328,7 +1328,9 @@ Notice:
 
 # 34
 ## Prompts
-
+1. case如果开启了depth增加了depth value的输出，保存在这个文件里diff_depth_output.csv。
+2. 如果depth test开启，请比较输出的depth value和保存在diff_depth_output.csv里面的golden值。
+3. depth value compare也需要添加一个tolerance，该tolerance通过输入的json文件配置
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写

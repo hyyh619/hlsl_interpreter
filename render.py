@@ -321,6 +321,80 @@ def _compare_ps_output(golden: dict, pixels, tolerance: float, log, max_report: 
     log("=" * 50)
 
 
+# ----------------------------------------------------------------------------
+# Golden depth comparison (diff_depth_output.csv)
+# ----------------------------------------------------------------------------
+def _load_golden_depth_output(path: str) -> dict:
+    """Parse diff_depth_output.csv → {(x, y): depth}.
+
+    Columns are ``X,Y,Depth,Stencil`` — the captured post-draw depth buffer for
+    every pixel this draw wrote. Used to validate the interpreter's per-pixel
+    output depth when the depth test is enabled."""
+    golden = {}
+    for row in _read_csv_rows(path):
+        try:
+            x = int(float(row['X']))
+            y = int(float(row['Y']))
+            depth = float(row['Depth'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        golden[(x, y)] = depth
+    return golden
+
+
+def _compare_depth_output(golden: dict, pixels, tolerance: float, log, max_report: int = 50) -> None:
+    """Compare final per-pixel output depth against the golden depth dump.
+
+    Only depth is compared, within ``tolerance``. As in the RT0 comparison,
+    several rendered fragments may land on the same (x, y); the nearest (smallest
+    depth) is taken as the winner, matching a standard LESS depth test."""
+    log("\n" + "=" * 50)
+    log(f"Output Depth vs Golden (diff_depth_output.csv, tolerance={tolerance}):")
+    log("=" * 50)
+    if not golden:
+        log("  No golden depth data (diff_depth_output.csv empty or absent) — skipped.")
+        log("=" * 50)
+        return
+
+    # Collapse rendered pixels to one winner per (x, y): nearest depth wins.
+    ours = {}
+    for p in pixels:
+        key = (int(p.x), int(p.y))
+        prev = ours.get(key)
+        if prev is None or p.depth < prev.depth:
+            ours[key] = p
+
+    matched = mismatched = missing = 0
+    reported = 0
+    for key, g_depth in golden.items():
+        p = ours.get(key)
+        if p is None:
+            missing += 1
+            if reported < max_report:
+                log(f"Error [DepthDiff]: ({key[0]},{key[1]}) missing in output "
+                    f"(golden depth={g_depth:.6f})")
+                reported += 1
+            continue
+        ddiff = abs(float(p.depth) - g_depth)
+        if ddiff <= tolerance:
+            matched += 1
+        else:
+            mismatched += 1
+            if reported < max_report:
+                log(f"Error [DepthDiff]: ({key[0]},{key[1]}) "
+                    f"depth out={float(p.depth):.6f} golden={g_depth:.6f} ddiff={ddiff:.6f}")
+                reported += 1
+
+    extra = sum(1 for k in ours if k not in golden)
+    suppressed = (mismatched + missing) - reported
+    if suppressed > 0:
+        log(f"  ... ({suppressed} more mismatch/missing line(s) suppressed)")
+    log(f"  Golden depth pixels: {len(golden)} | matched: {matched} | "
+        f"mismatched: {mismatched} | missing: {missing} | "
+        f"extra (ours not in golden): {extra}")
+    log("=" * 50)
+
+
 def _rt_format_to_clamp_mode(fmt):
     """Map a render-target format string (from pipeline_state.csv,
     e.g. "R8G8B8A8_UNORM") to an output-merger write-clamp mode.
@@ -699,6 +773,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     primitive_topology = config.get('primitive_topology', D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
     # Tolerance for the golden output-merger pixel comparison (color + depth).
     pixel_tolerance = config.get('pixel_tolerance', 0.01)
+    # Tolerance for the golden depth comparison (diff_depth_output.csv). Separate
+    # from pixel_tolerance so depth can be validated more tightly than color.
+    depth_tolerance = config.get('depth_tolerance', 0.01)
     # Tolerance (in samples) for the golden SamplesPassed/depth_passed compare.
     # Our rasterizer's fragment count/ordering differs slightly from the GPU, so
     # an exact match is unrealistic; differences within this band are accepted.
@@ -1047,6 +1124,15 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             _out_dir = os.path.dirname(log_file_path) if log_file_path else _gdir
             golden_bmp = os.path.join(_out_dir, f"{_stem}_golden.bmp")
         _save_golden_pixels_bitmap(golden_ps, rast.config.viewport, golden_bmp, vs_interp.log_output)
+
+    # Golden depth comparison (diff_depth_output.csv). Only meaningful when the
+    # depth test ran (a pre-draw depth buffer was loaded), since otherwise the
+    # interpreter's per-pixel depth was never resolved against real occlusion.
+    if depth.config.depth_enable:
+        golden_depth = _load_golden_depth_output(
+            os.path.join(data_folder, 'diff_depth_output.csv'))
+        if golden_depth:
+            _compare_depth_output(golden_depth, pixels, depth_tolerance, vs_interp.log_output)
 
     # ============================================================
     # Save the final output-merger pixel colors as a viewport-sized bitmap.
