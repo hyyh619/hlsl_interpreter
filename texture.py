@@ -352,8 +352,12 @@ class TextureDesc:
         CPUAccessFlags: int = 0,
         MiscFlags: int = 0,
         DataPath: str = "",
-        MipDataPaths: Optional[List[str]] = None
+        MipDataPaths: Optional[List[str]] = None,
+        FormatStr: str = ""
     ):
+        # Raw DXGI format name (e.g. 'R8G8B8A8_UNORM', 'R32G32B32A32_FLOAT')
+        # used to decode raw .img texel data. Empty → rely on BMP / default.
+        self.FormatStr = FormatStr
         self.Width = Width
         self.Height = Height
         self.MipLevels = MipLevels
@@ -418,13 +422,21 @@ class Texture:
                         texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
         """Load the mip chain.
 
-        When more than one mip BMP was captured, load each level directly so
-        sampling reflects the real captured data. With a single image, parse
-        the base level and regenerate the rest (legacy behaviour)."""
+        Prefers raw .img data (decoded per the texture's DXGI format), falling
+        back to the sibling .bmp when a level is a block-compressed format the
+        raw decoder doesn't support. When more than one level was captured,
+        load each directly so sampling reflects real captured data; with a
+        single image, parse the base level and regenerate the rest."""
+        base_w = max(1, int(texture_desc.Width or 1))
+        base_h = max(1, int(texture_desc.Height or 1))
+        fmt = getattr(texture_desc, 'FormatStr', '') or ''
+
         if len(mip_paths) > 1:
             levels = []
-            for path in mip_paths:
-                pixels = self._load_bmp_pixels(path)
+            for i, path in enumerate(mip_paths):
+                w = max(1, base_w >> i)
+                h = max(1, base_h >> i)
+                pixels = self._load_level_pixels(path, fmt, w, h)
                 if pixels is None:
                     # A missing/invalid level truncates the chain; stop here so
                     # we never index past a real captured level.
@@ -435,12 +447,115 @@ class Texture:
             return self._create_placeholder_texture(texture_desc)
 
         # Single source image: parse base + regenerate mips.
-        base = self._load_bmp_pixels(mip_paths[0]) if mip_paths else None
+        base = self._load_level_pixels(mip_paths[0], fmt, base_w, base_h) if mip_paths else None
         if base is None:
             return self._create_placeholder_texture(texture_desc)
         mip_levels = [base]
         mip_levels.extend(self._generate_mipmaps(base))
         return mip_levels
+
+    def _load_level_pixels(self, path: str, fmt: str, width: int, height: int):
+        """Load one mip level. Raw .img is decoded by DXGI format; on an
+        unsupported (e.g. block-compressed) format it falls back to the sibling
+        .bmp. Non-.img paths are parsed as BMP."""
+        if path.lower().endswith('.img'):
+            pixels = self._load_img_pixels(path, fmt, width, height)
+            if pixels is not None:
+                return pixels
+            # Unsupported raw format → use the sibling BMP (RenderDoc's decode).
+            sibling_bmp = path[:-4] + '.bmp'
+            if os.path.exists(sibling_bmp):
+                return self._load_bmp_pixels(sibling_bmp)
+            return None
+        return self._load_bmp_pixels(path)
+
+    def _load_img_pixels(self, path: str, fmt: str, width: int,
+                         height: int) -> Optional[List[List[List[float]]]]:
+        """Read a raw .img texel dump and decode it per its DXGI format into a
+        top-left-origin RGBA-float grid. Returns None for unsupported formats
+        (so the caller can fall back to the BMP)."""
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except Exception:
+            return None
+        return self._decode_raw_texels(data, fmt, width, height)
+
+    # DXGI format (name without DXGI_FORMAT_ prefix) → (component type,
+    # channel order). Block-compressed formats are intentionally absent so the
+    # loader falls back to the captured BMP for those.
+    _FMT_SPECS = {
+        'R8G8B8A8_UNORM': ('unorm8', 'RGBA'),
+        'R8G8B8A8_UNORM_SRGB': ('unorm8', 'RGBA'),
+        'R8G8B8A8_SNORM': ('snorm8', 'RGBA'),
+        'B8G8R8A8_UNORM': ('unorm8', 'BGRA'),
+        'B8G8R8A8_UNORM_SRGB': ('unorm8', 'BGRA'),
+        'B8G8R8X8_UNORM': ('unorm8', 'BGRX'),
+        'R8G8_UNORM': ('unorm8', 'RG'),
+        'R8_UNORM': ('unorm8', 'R'),
+        'A8_UNORM': ('unorm8', 'A'),
+        'R16G16B16A16_FLOAT': ('float16', 'RGBA'),
+        'R16G16B16A16_UNORM': ('unorm16', 'RGBA'),
+        'R16G16_FLOAT': ('float16', 'RG'),
+        'R16_FLOAT': ('float16', 'R'),
+        'R32G32B32A32_FLOAT': ('float32', 'RGBA'),
+        'R32G32B32_FLOAT': ('float32', 'RGB'),
+        'R32G32_FLOAT': ('float32', 'RG'),
+        'R32_FLOAT': ('float32', 'R'),
+    }
+    _COMP_SIZE = {'unorm8': 1, 'snorm8': 1, 'float16': 2, 'unorm16': 2, 'float32': 4}
+
+    def _decode_raw_texels(self, data: bytes, fmt: str, width: int,
+                           height: int) -> Optional[List[List[List[float]]]]:
+        """Decode raw row-major (top-left origin) texel bytes for an
+        uncompressed DXGI format into an RGBA-float grid."""
+        if not fmt:
+            return None
+        name = fmt.strip().upper()
+        if name.startswith('DXGI_FORMAT_'):
+            name = name[len('DXGI_FORMAT_'):]
+        spec = self._FMT_SPECS.get(name)
+        if spec is None and name.endswith('_TYPELESS'):
+            spec = self._FMT_SPECS.get(name[:-len('_TYPELESS')] + '_FLOAT') \
+                or self._FMT_SPECS.get(name[:-len('_TYPELESS')] + '_UNORM')
+        if spec is None:
+            return None  # unsupported (e.g. block-compressed) → BMP fallback
+
+        comp_type, order = spec
+        csize = self._COMP_SIZE[comp_type]
+        nch = len(order)
+        bpt = csize * nch
+        if len(data) < width * height * bpt:
+            return None
+
+        def read_comp(off: int) -> float:
+            if comp_type == 'unorm8':
+                return data[off] / 255.0
+            if comp_type == 'snorm8':
+                v = data[off]
+                v = v - 256 if v >= 128 else v
+                return max(-1.0, v / 127.0)
+            if comp_type == 'unorm16':
+                return struct.unpack_from('<H', data, off)[0] / 65535.0
+            if comp_type == 'float16':
+                return struct.unpack_from('<e', data, off)[0]
+            if comp_type == 'float32':
+                return struct.unpack_from('<f', data, off)[0]
+            return 0.0
+
+        pixels = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                base = (y * width + x) * bpt
+                ch = {'R': 0.0, 'G': 0.0, 'B': 0.0, 'A': 1.0}
+                for i, c in enumerate(order):
+                    val = read_comp(base + i * csize)
+                    if c != 'X':
+                        ch[c] = val
+                row.append([ch['R'], ch['G'], ch['B'], ch['A']])
+            pixels.append(row)
+        return pixels
 
     def _load_bmp_pixels(self, path: str) -> Optional[List[List[List[float]]]]:
         """Read one BMP file and return its pixels as a single mip level, or

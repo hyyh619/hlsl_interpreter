@@ -650,16 +650,21 @@ def _save_depth_bitmap(pixels, viewport, path, log) -> bool:
 
 
 def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
-    """Ordered BMP paths for a texture's view mip range (mip0, mip1, ...).
+    """Ordered texture data paths for a texture's view mip range (mip0, mip1,
+    ...). Prefers raw .img data (decoded per the texture's DXGI format),
+    falling back to the .bmp for a level when no .img was dumped.
 
-    Stops at the first missing level so the chain never indexes past real
-    captured data."""
+    Stops at the first level with neither .img nor .bmp so the chain never
+    indexes past real captured data."""
     paths = []
     for m in range(first_mip, first_mip + max(1, num_mips)):
-        name = f"{stage}_slot_{slot}_res_{resource_id}_mip{m}_arr0.bmp"
-        full = os.path.join(data_folder, name)
-        if os.path.exists(full):
-            paths.append(full)
+        stem = f"{stage}_slot_{slot}_res_{resource_id}_mip{m}_arr0"
+        img = os.path.join(data_folder, stem + '.img')
+        bmp = os.path.join(data_folder, stem + '.bmp')
+        if os.path.exists(img):
+            paths.append(img)
+        elif os.path.exists(bmp):
+            paths.append(bmp)
         else:
             break
     return paths
@@ -760,6 +765,7 @@ def _load_stage_textures(data_folder, stage, log=None):
             ArraySize=_as_int(row.get('ArraySize'), 1) or 1,
             DataPath=mip_paths[0],
             MipDataPaths=mip_paths,
+            FormatStr=(row.get('Format') or '').strip(),
         )
         if log:
             log(f"  {stage} texture t{slot}: res {resource_id}, "
