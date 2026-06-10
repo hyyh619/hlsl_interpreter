@@ -1397,6 +1397,26 @@ locally). Residual depth diffs are the known sub-pixel edge limitation
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 ## Claude Code Session
+Summary
+I ran each witcher3_countryside case, diagnosed pipeline failures via root-cause analysis, fixed them, kept the regression suite green, and committed each with a session doc (steps 104–112 in Sessions/).
+
+Result: 8 of 9 pass the project gate; 1 is blocked by a capture-data limitation.
+
+Case	Outcome	Root cause / fix
+event895	✅ fixed	Array cbuffers (float4 cb1[4]) + instanced vertex inputs loaded from binary VBs at the bound ByteOffset (step104)
+event907	✅ fixed	Golden *_vs_mesh.csv dumps SV_Position columns first regardless of header order; map positionally (step105)
+event994	✅ fixed	StructuredBuffer skinning (t0[i].val[k]); also fixed a NaN-masking comparison bug and []-depth in the expression parser (step106)
+event1269	✅ clean	No fix needed — fully-occluded draw (golden also 0 pixels) (step107)
+event1294	✅ clean	No fix needed (step108)
+event1341	✅ clean	No fix needed (step109)
+event1399	⛔ blocked	Needs t1.Load, but t1 (RGBA32F) was dumped only as a lossy 8-bit BMP — can't reproduce bit-exact. Skinning itself is correct: the 1737 failing rows are exactly the COLOR.w==0 vertices. Documented; not added to regression (step110)
+event1433	✅ fixed	Golden component counts derived from header (TEXCOORD0 dumped as 3, not declared 4) + TEXCOORD2/3 key collision fixed (step111)
+event1450	✅ clean	No fix needed (step112)
+Regression: 14/14 passing (6 original Collision cases + 8 witcher3 cases added).
+
+The one outstanding item — event1399 — is not an interpreter bug; it requires a re-capture with the t1 SRV dumped as raw R32G32B32A32_FLOAT instead of a BMP. Everything the available data supports is correct (its 3921 pure-skinning vertices match golden exactly).
+
+Note: Cases/ is gitignored, so my regression_test_zip_files.csv additions and Default.json edits are local-only by design; the committed changes are the interpreter/parser fixes and the session docs.
 
 
 
@@ -1430,17 +1450,74 @@ BMP byte-inspection confirmed valid 24-bit grayscale with real contrast.
 One note for honesty: the run shows pre-existing Error [DepthDiff] lines (13 golden depth pixels missing in output). Those come from the earlier depth-compare commit, not from this change — my edits only touch bitmap dumping, and the output pixel count (403) is unchanged.
 
 
-
-# 37
+# 37 纹理数据变成raw data，加载raw data。
 ## Prompts
-
+1. case的zip包里的纹理数据从bitmap格式改变为raw data格式，文件后缀名变为.img。请改变纹理数据的加载方式，使用raw data数据。
+2. raw data数据的解析需要参考纹理的format
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit:
+Load textures from raw .img data (format-aware) instead of BMP
+
+The case zips now ship raw .img texel dumps alongside the .bmp previews. Decode
+.img per the texture's DXGI format instead of reading the lossy 8-bit BMP.
+
+- texture.py: TextureDesc.FormatStr; _decode_raw_texels decodes uncompressed
+  formats (unorm8/snorm8/unorm16/float16/float32; RGBA/BGRA/BGRX/RG/R/A) from a
+  _FMT_SPECS table into the existing top-left RGBA-float grid. _load_level_pixels
+  routes .img -> raw decode, falling back to the sibling .bmp for unsupported
+  (block-compressed) formats. Per-mip dims derived by halving the base.
+- render.py: _collect_mip_paths prefers .img per level; _load_stage_textures
+  passes the Format string into TextureDesc.
+
+Findings: R8G8B8A8 .img is authoritative R,G,B,A order (the BMP path had a
+latent R/B swap, now fixed); R0G0B0A0_UNORM is BC7 (16 B/block, not BC3) so it
+falls back to the BMP. event1399's t1 (R32G32B32A32_FLOAT) now loads exact
+floats from .img (it was the lossy-BMP blocker in step110) — fully passing it
+now only needs VS Texture2D.Load support.
+
+Regression 14/14 (PS-color diffs are non-gating). See Sessions/step113.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 ## Claude Code Session
+Summary
+The case zips now ship texture data as raw .img dumps (alongside the old .bmp
+previews). I switched texture loading to read the raw .img and decode it per the
+texture's DXGI format (from texture_params.csv), instead of parsing the lossy
+8-bit BMP.
+
+Implementation:
+- texture.py — TextureDesc gains FormatStr. New _decode_raw_texels() decodes
+  uncompressed formats from a _FMT_SPECS table (component type × channel order):
+  unorm8/snorm8/unorm16/float16/float32 across RGBA/BGRA/BGRX/RG/R/A layouts,
+  into the existing top-left-origin RGBA-float grid (raw .img is row-major
+  top-left, so no vertical flip — unlike BMP). _load_level_pixels routes .img →
+  raw decode and falls back to the sibling .bmp for unsupported formats;
+  _load_mip_levels derives each mip's dimensions by halving the base.
+- render.py — _collect_mip_paths prefers .img per mip level (then .bmp);
+  _load_stage_textures passes the Format string into TextureDesc.
+
+Key findings:
+- The raw R8G8B8A8 .img is authoritative R,G,B,A order. The old BMP path decoded
+  it with R/B swapped (e.g. texel (8,10,11) read back as (11,10,8)); using .img
+  fixes that latent channel swap.
+- R0G0B0A0_UNORM is a block-compressed BC7 texture (16 B/block; a trial BC3
+  decode produced nonsensical alpha). BC7 is complex and these are PS-only
+  (non-gating), so the raw decoder returns None for block formats and the loader
+  falls back to the captured .bmp (RenderDoc's correct decompression).
+- event1399's t1 SRV (R32G32B32A32_FLOAT) — the step110 lossy-BMP blocker — now
+  loads exact floats from .img (e.g. (0.5549, 0.0959, 1.3417, 1.0), values > 1.0
+  that the 8-bit BMP could never hold). The data limitation is lifted; fully
+  passing event1399 now only needs interpreter support for VS Texture2D.Load.
+
+Verification: regression suite 14/14 passing. PS-color differences are reported
+as non-gating Error [PixelDiff], and the raw decode was confirmed correct for
+R8G8B8A8 (matches the format byte order) and R32G32B32A32_FLOAT (exact floats),
+with BC7 correctly falling back to the BMP. See Sessions/hlsl-interpreter-step113-raw-img-texture-loading.md.
 
 
 
