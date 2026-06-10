@@ -69,7 +69,17 @@
       "Bash(timeout 300 python render.py ./Cases/_e104b.json)",
       "Bash(timeout 300 python render.py ./Cases/_e104c.json)",
       "Bash(rm -rf Cases/_event104_extract)",
-      "Bash(rm -f Cases/_e104*.json Cases/_e104*.log Cases/_e104*trace.log)"
+      "Bash(rm -f Cases/_e104*.json Cases/_e104*.log Cases/_e104*trace.log)",
+      "Bash(python render.py ./Cases/trace399.json)",
+      "Bash(git checkout *)",
+      "Bash(FRAG_DUMP=\"413,364;367,352;368,353;420,395;396,385\" python render.py ./Cases/Default.json)",
+      "Bash(FRAG_DUMP=\"x\" python render.py ./Cases/Default.json)",
+      "Bash(cat)",
+      "Bash(FRAG_DUMP=ALL python render.py ./Cases/Default.json)",
+      "Bash(ls -la Cases/frag_all.csv)",
+      "Bash(ls -la frag_all.csv)",
+      "Bash(find . -name frag_all.csv)",
+      "Bash(FRAG_DUMP=VS python render.py ./Cases/Default.json)"
     ],
     "additionalDirectories": [
       "\\tmp"
