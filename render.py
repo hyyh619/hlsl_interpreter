@@ -924,6 +924,7 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
 
     # Parse cbuffers, texture/sampler bindings, and functions from VS code
     vs_interp._parse_texture_and_sampler_bindings(vs_code)
+    vs_interp._parse_structured_buffers(vs_code)
     for cb_match in vs_interp.patterns['cbuffer_finditer'].finditer(vs_code):
         cb_def = vs_interp.parse_cbuffer(cb_match.group())
         if cb_def:
@@ -933,6 +934,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # Load cbuffer data
     if os.path.exists(vs_cb_csv):
         vs_interp.load_all_cbuffers_from_combined_csv(vs_cb_csv)
+
+    # Load StructuredBuffer data (e.g. skinning bone palette t0)
+    vs_interp.load_structured_buffer_data(data_folder)
 
     # Load VS signature
     vs_sig = vs_interp.load_signature_from_csv(vs_sig_csv)

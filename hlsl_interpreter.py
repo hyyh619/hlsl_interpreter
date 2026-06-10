@@ -336,6 +336,10 @@ class HLSLInterpreter:
         self._log_cache_size = log_cache_size                # 日志缓存大小(字节)
         self._log_cache_bytes = 0                            # 当前缓存已用字节数
 
+        # StructuredBuffer绑定 (如 StructuredBuffer<t0_t> t0 : register(t0))
+        # name -> {register, element_type, members:[(name,base_type,count)], stride, data(bytes)}
+        self.structured_buffers: Dict[str, dict] = {}
+
         # VS/PS纹理和采样器绑定
         self.texture_bindings: List[TextureBinding] = []     # VS/PS中的纹理绑定列表
         self.sampler_bindings: List[SamplerBinding] = []     # VS/PS中的采样器绑定列表
@@ -1770,18 +1774,32 @@ class HLSLInterpreter:
         except ValueError:
             pass
 
-        # 数组下标访问: cb1[0], cb2[8].xyz, cb1[i].w
+        # 数组下标访问: cb1[0], cb2[8].xyz, cb1[i].w, t0[i].val[k]
         if '[' in name:
             arr_m = re.match(r'^(\w+)\[([^\]]+)\](.*)$', name)
             if arr_m:
                 arr_base = arr_m.group(1)
                 idx_expr = arr_m.group(2).strip()
-                rest = arr_m.group(3)  # '' 或 '.xyz'
-                try:
-                    idx = int(idx_expr)
-                except ValueError:
-                    idx_val = self.get_value(idx_expr, local_vars)
-                    idx = int(idx_val) if idx_val is not None else 0
+                rest = arr_m.group(3)  # '' 或 '.xyz' 或 '.val[k]'
+
+                # StructuredBuffer access: t0[i].member or t0[i].member[k]
+                if arr_base in self.structured_buffers:
+                    sb = self.structured_buffers[arr_base]
+                    idx = self._eval_subscript(idx_expr, local_vars)
+                    if rest.startswith('.'):
+                        rm = re.match(r'^(\w+)(?:\[([^\]]+)\])?(.*)$', rest[1:])
+                        if rm:
+                            member = rm.group(1)
+                            vals = self._structured_buffer_member(sb, idx, member)
+                            if vals is None:
+                                return 0
+                            if rm.group(2) is not None:
+                                k = self._eval_subscript(rm.group(2), local_vars)
+                                return vals[k] if 0 <= k < len(vals) else 0.0
+                            return vals[0] if len(vals) == 1 else vals
+                    return 0
+
+                idx = self._eval_subscript(idx_expr, local_vars)
                 arr = local_vars.get(arr_base)
                 if arr is None:
                     arr = self.variables.get(arr_base)
@@ -2517,6 +2535,114 @@ class HLSLInterpreter:
                         binding.texture = self._texture_exec
                         binding.texture_desc = self._texture_desc_list[reg_id]
                         binding.sampler = self._sampler_list[reg_id]
+
+    _SB_COMPONENTS = {
+        'float': 1, 'float2': 2, 'float3': 3, 'float4': 4,
+        'int': 1, 'int2': 2, 'int3': 3, 'int4': 4,
+        'uint': 1, 'uint2': 2, 'uint3': 3, 'uint4': 4,
+    }
+
+    def _parse_structured_buffers(self, code: str):
+        """
+        Parse StructuredBuffer<T> declarations and the struct layouts they use,
+        e.g.  struct t0_t { float val[16]; };
+              StructuredBuffer<t0_t> t0 : register(t0);
+        Records register, element member layout and byte stride for later
+        binary loading + indexed access (t0[i].val[k]).
+        """
+        # struct layouts: name -> [(member_name, base_type, array_count)]
+        struct_layouts = {}
+        for m in re.finditer(r'struct\s+(\w+)\s*\{([^}]*)\}', code, re.DOTALL):
+            sname = m.group(1)
+            members = []
+            for fld in m.group(2).split(';'):
+                fld = fld.strip()
+                if not fld:
+                    continue
+                fm = re.match(r'(\w+)\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?$', fld)
+                if fm:
+                    base_type = fm.group(1)
+                    member = fm.group(2)
+                    count = int(fm.group(3)) if fm.group(3) else 1
+                    members.append((member, base_type, count))
+            struct_layouts[sname] = members
+
+        for m in re.finditer(
+            r'StructuredBuffer\s*<\s*(\w+)\s*>\s*(\w+)\s*:\s*register\s*\(\s*t(\d+)\s*\)', code
+        ):
+            elem_type, name, reg = m.group(1), m.group(2), int(m.group(3))
+            members = struct_layouts.get(elem_type, [])
+            stride = sum(self._SB_COMPONENTS.get(bt, 1) * cnt for (_, bt, cnt) in members) * 4
+            self.structured_buffers[name] = {
+                'register': reg, 'element_type': elem_type,
+                'members': members, 'stride': stride, 'data': None,
+            }
+
+    def load_structured_buffer_data(self, data_folder: str):
+        """
+        Load each parsed StructuredBuffer's contents from the captured binary
+        (VS_slot_{reg}_res_*_buffer.bin). Keeps the raw bytes; elements are
+        decoded on demand to avoid materialising large palettes.
+        """
+        import glob
+        for name, sb in self.structured_buffers.items():
+            if sb['stride'] <= 0:
+                continue
+            reg = sb['register']
+            candidates = (
+                glob.glob(os.path.join(data_folder, f'VS_slot_{reg}_res_*_buffer.bin'))
+                or glob.glob(os.path.join(data_folder, f'*slot_{reg}_res_*_buffer.bin'))
+                or glob.glob(os.path.join(data_folder, f'*slot{reg}_res_*buffer.bin'))
+            )
+            if not candidates:
+                self.log_output(f"Warning: StructuredBuffer '{name}' (t{reg}) data file not found")
+                continue
+            with open(candidates[0], 'rb') as f:
+                sb['data'] = f.read()
+            n = len(sb['data']) // sb['stride'] if sb['stride'] else 0
+            self.log_output(
+                f"Loaded StructuredBuffer '{name}' (t{reg}): {n} elements, "
+                f"stride {sb['stride']}B from {os.path.basename(candidates[0])}"
+            )
+
+    def _structured_buffer_member(self, sb: dict, index: int, member_name: str):
+        """Decode one member of structured-buffer element `index` on demand.
+        Returns a list (vectors/arrays) or None if out of range / unknown."""
+        raw = sb['data']
+        if raw is None:
+            return None
+        stride = sb['stride']
+        base = index * stride
+        if base < 0 or base + stride > len(raw):
+            return None
+        offset_floats = 0
+        for (mname, btype, cnt) in sb['members']:
+            comps = self._SB_COMPONENTS.get(btype, 1) * cnt
+            if mname == member_name:
+                fmt = 'f' if 'float' in btype else ('I' if 'uint' in btype else 'i')
+                try:
+                    return list(struct.unpack_from(f'<{comps}{fmt}', raw, base + offset_floats * 4))
+                except struct.error:
+                    return None
+            offset_floats += comps
+        return None
+
+    def _eval_subscript(self, expr: str, local_vars: Dict[str, Any]) -> int:
+        """Evaluate an array-subscript expression to an int. Handles plain
+        literals (`12`), constant arithmetic (`48/4`, `48/4+1`) and variable
+        references (`r1.y`)."""
+        expr = expr.strip()
+        try:
+            return int(expr)
+        except ValueError:
+            pass
+        try:
+            v = self.evaluate_expression(expr, local_vars)
+            if isinstance(v, list):
+                v = v[0] if v else 0
+            return int(v)
+        except (ValueError, TypeError, IndexError):
+            return 0
 
     def get_pixel_shader_output(self, pixels: List['Pixel']) -> List[List[float]]:
         """
@@ -3807,7 +3933,11 @@ class HLSLInterpreter:
                         if gv is None:
                             continue
                         if isinstance(ov, float) and isinstance(gv, float):
-                            if abs(ov - gv) > float_tolerance:
+                            # `not (diff <= tol)` (rather than `diff > tol`) so a
+                            # NaN/inf output — where every comparison is False —
+                            # is correctly flagged as a mismatch instead of
+                            # silently counting as a pass.
+                            if not (abs(ov - gv) <= float_tolerance):
                                 self.log_output(
                                     f"Error: Row {row_idx} {key}[{comp_idx}]: "
                                     f"output={ov:.6f} golden={gv:.6f} diff={abs(ov-gv):.6f}"
@@ -3817,7 +3947,7 @@ class HLSLInterpreter:
                             self.log_output(f"Error: Row {row_idx} {key}[{comp_idx}]: output={ov} golden={gv}")
                             row_match = False
                 elif isinstance(output_val, (int, float)) and isinstance(golden_val, (int, float)):
-                    if abs(float(output_val) - float(golden_val)) > float_tolerance:
+                    if not (abs(float(output_val) - float(golden_val)) <= float_tolerance):
                         self.log_output(f"Error: Row {row_idx} {key}: output={output_val:.6f} golden={golden_val:.6f}")
                         row_match = False
 

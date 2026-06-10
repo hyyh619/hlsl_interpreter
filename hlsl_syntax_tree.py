@@ -29,10 +29,10 @@ def _split_args_cached(args_str: str) -> Tuple[str, ...]:
     depth = 0
     current = ''
     for char in args_str:
-        if char == '(':
+        if char == '(' or char == '[':
             depth += 1
             current += char
-        elif char == ')':
+        elif char == ')' or char == ']':
             depth -= 1
             current += char
         elif char == ',' and depth == 0:
@@ -53,10 +53,10 @@ def _find_top_level_operator_cached(expr: str) -> Optional[Tuple[int, str]]:
     while i < len(expr):
         char = expr[i]
 
-        if char == '(':
+        if char == '(' or char == '[':
             depth += 1
 
-        elif char == ')':
+        elif char == ')' or char == ']':
             depth -= 1
 
         elif depth == 0:
@@ -110,9 +110,9 @@ def _find_ternary_colon(expr: str, start: int) -> int:
     depth = 0
     for i in range(start, len(expr)):
         char = expr[i]
-        if char == '(':
+        if char == '(' or char == '[':
             depth += 1
-        elif char == ')':
+        elif char == ')' or char == ']':
             depth -= 1
         elif char == ':' and depth == 0:
             return i
