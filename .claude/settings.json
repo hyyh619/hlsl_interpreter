@@ -85,7 +85,11 @@
       "Bash(sort -t p -k3 -n)",
       "Bash(python3 -c ' *)",
       "Bash(git add *)",
-      "Bash(git commit -m '@ *)"
+      "Bash(git commit -m '@ *)",
+      "Bash(python /tmp/diag994.py)",
+      "Bash(cp /tmp/diag994.py ./_diag994.py)",
+      "Bash(python _diag994.py)",
+      "Bash(git commit *)"
     ],
     "additionalDirectories": [
       "\\tmp",
