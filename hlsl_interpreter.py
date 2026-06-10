@@ -3367,7 +3367,22 @@ class HLSLInterpreter:
 
     def load_vs_golden_from_mesh_csv(self, csv_path: str, vs_output_params: list) -> list:
         """
-        Load MeshOut_vs_mesh.csv golden data. Returns list of dicts with canonical keys.
+        Load *_vs_mesh.csv / MeshOut_vs_mesh.csv golden VS output.
+
+        RenderDoc's VS-output mesh export lays the data columns out with the
+        SV_Position attribute FIRST, then the remaining outputs in declared
+        order — even when the column *header* names follow declaration order.
+        So for a shader whose SV_Position is not output register 0 (e.g.
+        `out float2 TEXCOORD; out float4 SV_Position`), the header labels are
+        shifted relative to the actual data: the columns labelled TEXCOORD.x/y
+        actually hold SV_Position.x/y.
+
+        We therefore assign the physical component columns positionally in
+        [SV_Position, then the rest] order rather than trusting header labels.
+        When SV_Position is already the first output (the common case, e.g. the
+        Collision suite), this is identical to header-order mapping.
+
+        Returns list of dicts with canonical keys.
         """
         if not os.path.exists(csv_path):
             return []
@@ -3376,47 +3391,49 @@ class HLSLInterpreter:
             return []
 
         header = [col.strip() for col in rows[0]]
-        col_map = {col: i for i, col in enumerate(header)}
         sem_to_key = self._get_output_semantic_to_key_map()
+        type_comp = {'float': 1, 'float2': 2, 'float3': 3, 'float4': 4,
+                     'int': 1, 'int2': 2, 'int3': 3, 'int4': 4,
+                     'uint': 1, 'uint2': 2, 'uint3': 3, 'uint4': 4}
+
+        # Physical component-column indices, in file order (skips VTX/IDX/...).
+        comp_col_indices = [
+            i for i, name in enumerate(header)
+            if name.rsplit('.', 1)[-1].lower() in ('x', 'y', 'z', 'w')
+        ]
+
+        # Reorder outputs to match the data layout: SV_Position first.
+        def _is_sv_position(p):
+            return p['semantic_base'].upper().startswith('SV_POSITION')
+        ordered_params = (
+            [p for p in vs_output_params if _is_sv_position(p)]
+            + [p for p in vs_output_params if not _is_sv_position(p)]
+        )
+
+        # Assign a contiguous slice of physical columns to each output.
+        param_cols = []  # (canonical_key, [col_idx, ...])
+        cursor = 0
+        for param in ordered_params:
+            n = type_comp.get(param['type'], 4)
+            cols = comp_col_indices[cursor:cursor + n]
+            cursor += n
+            sem_base = param['semantic_base']
+            sem_idx = param['semantic_index']
+            sem_full = f'{sem_base.upper()}{sem_idx}' if sem_idx > 0 else sem_base.upper()
+            key = sem_to_key.get(sem_full, sem_to_key.get(sem_base.upper(), sem_base))
+            param_cols.append((key, cols))
 
         golden = []
         for row in rows[1:]:
             entry = {}
-            for param in vs_output_params:
-                sem_base = param['semantic_base']
-                sem_idx = param['semantic_index']
-
-                # Try both TEXCOORD0 style (with index) and SV_POSITION style (no index)
-                candidates = [f'{sem_base}{sem_idx}', sem_base]
-                comp = {}
-                for cand in candidates:
-                    for suffix in ['x', 'y', 'z', 'w']:
-                        c = f'{cand}.{suffix}'
-                        if c in col_map:
-                            comp[suffix] = col_map[c]
-                    if comp:
-                        break
-
-                # Choose canonical key
-                sem_full = f'{sem_base.upper()}{sem_idx}' if sem_idx > 0 else sem_base.upper()
-                key = sem_to_key.get(sem_full, sem_to_key.get(sem_base.upper(), sem_base))
-
+            for key, cols in param_cols:
                 try:
-                    if 'w' in comp:
-                        val = [float(row[comp[s]]) for s in ['x','y','z','w']]
-                    elif 'z' in comp:
-                        val = [float(row[comp[s]]) for s in ['x','y','z']]
-                    elif 'y' in comp:
-                        val = [float(row[comp[s]]) for s in ['x','y']]
-                    elif 'x' in comp:
-                        val = float(row[comp['x']])
-                    else:
-                        val = None
-
-                    if val is not None:
-                        entry[key] = val
+                    vals = [float(row[c]) for c in cols]
                 except (ValueError, IndexError):
-                    pass
+                    continue
+                if not vals:
+                    continue
+                entry[key] = vals[0] if len(vals) == 1 else vals
             golden.append(entry)
 
         return golden

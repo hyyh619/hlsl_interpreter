@@ -1372,7 +1372,29 @@ One note: the MSAA / event399 color-mismatch question is still open — you inte
 6. 把步骤2~6过程中你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 7. 循环执行2~6直到witcher3_countryside_zip_files.csv中的所有case不会产生error为止。
 
-## Git commit: 
+## Git commit:
+Support array cbuffers and instanced vertex inputs (witcher3 event895)
+
+witcher3_countryside_event895 was the first capture to use float4[] array
+cbuffers (cb1[4]/cb2[10], stored as cb1_v0.. in the CSV) and per-instance
+vertex inputs (INSTANCE_TRANSFORM* from a separate PerInstance vertex buffer).
+Neither was supported: the run crashed in cbuffer logging on None field data,
+and once that was fixed the VS output was wrong because instance transforms
+defaulted to zero.
+
+- parse_cbuffer: strip [N] from array field names and record array_size.
+- load_cbuffer_data_from_csv: fill array fields from <name>_v<idx> rows.
+- get_value: resolve array subscripts cb1[0], cb2[8].xyz, arr[i].w.
+- cbuffer logging: print array fields element-wise (the crash site).
+- load_per_instance_data: decode PerInstance elements from the binary vertex
+  buffers (vb_slot{N}_res_{id}.bin) at the bound ByteOffset, map by semantic,
+  set SV_InstanceID. render.py merges instance-0 inputs into each vertex.
+
+VS now matches golden 4428/4428. Regression suite green (7/7, event895 added
+locally). Residual depth diffs are the known sub-pixel edge limitation
+(step102), not VS errors. See Sessions/hlsl-interpreter-step104-*.md.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 ## Claude Code Session
 
@@ -1388,7 +1410,8 @@ One note: the MSAA / event399 color-mismatch question is still open — you inte
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
-## Git commit: 
+## Git commit:
+Add depth value dump to bitmap by claude code.
 
 ## Claude Code Session
 What I changed (in render.py)
