@@ -2,6 +2,7 @@ import csv
 import math
 import re
 import os
+import struct
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Union, Optional
@@ -57,6 +58,7 @@ class FieldDefinition:
     name: str           # 字段名
     semantic: str       # 语义名称，如 POSITION, NORMAL
     data: List[Any] = None  # 字段数据值
+    array_size: int = 0  # 数组长度（0表示非数组，如 float4 cb1[4] → 4）
 
 
 @dataclass
@@ -860,7 +862,13 @@ class HLSLInterpreter:
                 if len(parts) >= 2:
                     field_type = parts[0]
                     field_name = parts[1]
-                    fields.append(FieldDefinition(field_type, field_name, ''))
+                    array_size = 0
+                    # 数组声明: float4 cb1[4] → name=cb1, array_size=4
+                    arr_match = re.match(r'(\w+)\[(\d+)\]', field_name)
+                    if arr_match:
+                        field_name = arr_match.group(1)
+                        array_size = int(arr_match.group(2))
+                    fields.append(FieldDefinition(field_type, field_name, '', array_size=array_size))
         return CbufferDefinition(name, fields)
 
     def parse_all_functions(self, code: str):
@@ -1762,6 +1770,37 @@ class HLSLInterpreter:
         except ValueError:
             pass
 
+        # 数组下标访问: cb1[0], cb2[8].xyz, cb1[i].w
+        if '[' in name:
+            arr_m = re.match(r'^(\w+)\[([^\]]+)\](.*)$', name)
+            if arr_m:
+                arr_base = arr_m.group(1)
+                idx_expr = arr_m.group(2).strip()
+                rest = arr_m.group(3)  # '' 或 '.xyz'
+                try:
+                    idx = int(idx_expr)
+                except ValueError:
+                    idx_val = self.get_value(idx_expr, local_vars)
+                    idx = int(idx_val) if idx_val is not None else 0
+                arr = local_vars.get(arr_base)
+                if arr is None:
+                    arr = self.variables.get(arr_base)
+                if arr is None:
+                    for cb_def in self.cbuffers.values():
+                        if isinstance(cb_def, CbufferDefinition):
+                            for field in cb_def.fields:
+                                if field.name == arr_base and field.data is not None:
+                                    arr = field.data
+                                    break
+                        if arr is not None:
+                            break
+                if isinstance(arr, list) and 0 <= idx < len(arr):
+                    elem = arr[idx]
+                    if rest.startswith('.'):
+                        return self.apply_swizzle(elem, rest[1:])
+                    return elem
+                return 0
+
         # 检查是否包含swizzle操作 (如 LightPos.xyz, LightPos.xxx, input.Pos.xy)
         if '.' in name:
             parts = name.split('.')
@@ -2634,7 +2673,19 @@ class HLSLInterpreter:
 
         # 填充字段数据
         for field in cb_def.fields:
-            if field.name in matrix_rows:
+            if getattr(field, 'array_size', 0) > 0:
+                # 数组cbuffer: 元素命名为 <name>_v0, <name>_v1, ...
+                elements = []
+                for i in range(field.array_size):
+                    key = f'{field.name}_v{i}'
+                    if key in scalar_vars:
+                        value_str, type_str = scalar_vars[key]
+                        et = type_str if type_str else field.field_type
+                        elements.append(self.parse_value_by_type(value_str, et))
+                    else:
+                        elements.append(None)
+                field.data = elements
+            elif field.name in matrix_rows:
                 row_dict = matrix_rows[field.name]
                 if all(i in row_dict for i in range(4)):
                     matrix = []
@@ -2654,6 +2705,16 @@ class HLSLInterpreter:
         for f in cb_d.fields:
             data = f.data
             ft = f.field_type
+            if getattr(f, 'array_size', 0) > 0:
+                self.log_output(f"  {f.name} ({ft}[{f.array_size}]):")
+                for i, elem in enumerate(data or []):
+                    if elem is None:
+                        self.log_output(f"    [{i}] <none>")
+                    elif isinstance(elem, list):
+                        self.log_output(f"    [{i}] [{', '.join(f'{v:.5f}' for v in elem)}]")
+                    else:
+                        self.log_output(f"    [{i}] {elem}")
+                continue
             if 'float4x4' in ft:
                 self.log_output(f"  {f.name} ({ft}):")
                 for row in data:
@@ -3151,6 +3212,158 @@ class HLSLInterpreter:
             vertices.append(vertex)
 
         return vertices
+
+    def _decode_vertex_element(self, raw: bytes, fmt: str, comp_count: int,
+                               comp_byte_width: int):
+        """
+        Decode `comp_count` components of a vertex-buffer element from raw bytes
+        according to its DXGI format string (e.g. R32G32B32A32_FLOAT,
+        R16G16B16A16_UNORM). Returns a float list (length comp_count), or a
+        single float when comp_count == 1.
+        """
+        fmt_u = fmt.upper()
+        vals = []
+        try:
+            if 'FLOAT' in fmt_u and comp_byte_width == 4:
+                vals = list(struct.unpack_from(f'<{comp_count}f', raw))
+            elif 'FLOAT' in fmt_u and comp_byte_width == 2:
+                # half float
+                ints = struct.unpack_from(f'<{comp_count}H', raw)
+                vals = [self._half_to_float(h) for h in ints]
+            elif 'UNORM' in fmt_u and comp_byte_width == 2:
+                ints = struct.unpack_from(f'<{comp_count}H', raw)
+                vals = [v / 65535.0 for v in ints]
+            elif 'UNORM' in fmt_u and comp_byte_width == 1:
+                ints = struct.unpack_from(f'<{comp_count}B', raw)
+                vals = [v / 255.0 for v in ints]
+            elif ('UINT' in fmt_u or 'SINT' in fmt_u) and comp_byte_width == 4:
+                code = 'i' if 'SINT' in fmt_u else 'I'
+                vals = list(struct.unpack_from(f'<{comp_count}{code}', raw))
+            else:
+                # Fallback: treat as float32
+                vals = list(struct.unpack_from(f'<{comp_count}f', raw))
+        except struct.error:
+            return [0.0] * comp_count if comp_count > 1 else 0.0
+        if comp_count == 1:
+            return vals[0]
+        return vals
+
+    @staticmethod
+    def _half_to_float(h: int) -> float:
+        """Convert a 16-bit half-float (as uint16) to a Python float."""
+        return struct.unpack('<e', struct.pack('<H', h))[0]
+
+    def load_per_instance_data(self, layouts_csv_path: str, data_folder: str,
+                               vs_input_params: list, instance_index: int = 0) -> dict:
+        """
+        Load per-instance VS inputs (PerInstance=True elements in
+        ia_input_layouts.csv) for `instance_index` from the captured binary
+        vertex buffers (vb_slot{N}_res_{resid}.bin) and map them to VS input
+        param names by semantic.
+
+        ia_vertex_data.csv only contains the per-vertex (slot 0) stream, so
+        instanced inputs such as INSTANCE_TRANSFORM* default to zero without
+        this. Returns {param_name: value}; empty if no per-instance elements.
+
+        NOTE: assumes a single instance draw (all vertices share instance
+        `instance_index`); multi-instance draws are not yet modelled.
+        """
+        if not os.path.exists(layouts_csv_path):
+            return {}
+        rows = self.load_csv(layouts_csv_path)
+        if not rows:
+            return {}
+
+        elements = []          # layout element dicts
+        vb_bindings = {}       # input_slot -> {byte_offset, byte_stride, resid}
+        section = None
+        for row in rows:
+            if not row or all(str(c).strip() == '' for c in row):
+                section = None
+                continue
+            c0 = str(row[0]).strip()
+            if c0 == 'Index':
+                section = 'elements'
+                continue
+            if c0 == 'VertexBuffer':
+                section = 'vbuffers'
+                continue
+            if c0 == 'IndexBuffer':
+                section = 'ibuffer'
+                continue
+            if section == 'elements':
+                # Index,Name,Format,CompCount,CompByteWidth,InputSlot,
+                #   VBufferResourceId,ByteOffset,PerInstance,InstanceRate
+                try:
+                    elements.append({
+                        'name': row[1].strip(),
+                        'format': row[2].strip(),
+                        'comp_count': int(row[3]),
+                        'comp_byte_width': int(row[4]),
+                        'input_slot': int(row[5]),
+                        'resid': self._extract_resid(row[6]),
+                        'byte_offset': int(row[7]),
+                        'per_instance': row[8].strip().lower() == 'true',
+                    })
+                except (ValueError, IndexError):
+                    pass
+            elif section == 'vbuffers':
+                # Data rows: Slot,ResourceId,ByteOffset,ByteStride,ByteSize
+                # (header has a leading 'VertexBuffer' label column the data omits)
+                try:
+                    slot = int(row[0])
+                    vb_bindings[slot] = {
+                        'resid': self._extract_resid(row[1]),
+                        'byte_offset': int(row[2]),
+                        'byte_stride': int(row[3]),
+                    }
+                except (ValueError, IndexError):
+                    pass
+
+        result = {}
+        for elem in elements:
+            if not elem['per_instance']:
+                continue
+            binding = vb_bindings.get(elem['input_slot'])
+            if binding is None:
+                continue
+            resid = elem['resid'] or binding['resid']
+            bin_path = os.path.join(
+                data_folder, f"vb_slot{elem['input_slot']}_res_{resid}.bin"
+            )
+            if not os.path.exists(bin_path):
+                continue
+            stride = binding['byte_stride']
+            file_off = binding['byte_offset'] + instance_index * stride + elem['byte_offset']
+            elem_bytes = elem['comp_count'] * elem['comp_byte_width']
+            with open(bin_path, 'rb') as f:
+                f.seek(file_off)
+                raw = f.read(elem_bytes)
+            if len(raw) < elem_bytes:
+                continue
+            value = self._decode_vertex_element(
+                raw, elem['format'], elem['comp_count'], elem['comp_byte_width']
+            )
+            # Map element semantic name -> VS input param
+            for param in vs_input_params:
+                base = param['semantic_base']
+                idx = param['semantic_index']
+                if elem['name'] == f'{base}{idx}' or (idx == 0 and elem['name'] == base):
+                    result[param['name']] = value
+                    break
+
+        # SV_InstanceID is a system value, not a buffer element.
+        for param in vs_input_params:
+            if param['semantic_base'].upper() == 'SV_INSTANCEID':
+                result[param['name']] = instance_index
+
+        return result
+
+    @staticmethod
+    def _extract_resid(resid_str: str):
+        """Extract the numeric id from a 'ResourceId::20417' style string."""
+        m = re.search(r'(\d+)', str(resid_str))
+        return m.group(1) if m else ''
 
     def load_vs_golden_from_mesh_csv(self, csv_path: str, vs_output_params: list) -> list:
         """

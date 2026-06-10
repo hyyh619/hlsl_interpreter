@@ -884,6 +884,21 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     vertex_data = vs_interp.load_ia_vertex_data(ia_vertex_csv, vs_input_params)
     vs_interp.log_output(f"Loaded {len(vertex_data)} vertices from ia_vertex_data.csv")
 
+    # Load per-instance inputs (INSTANCE_TRANSFORM*, etc.) from the binary
+    # vertex buffers. ia_vertex_data.csv only carries the per-vertex stream;
+    # instanced inputs come from a separate slot and would otherwise be zero.
+    ia_layouts_csv = os.path.join(data_folder, 'ia_input_layouts.csv')
+    instance_inputs = vs_interp.load_per_instance_data(
+        ia_layouts_csv, data_folder, vs_input_params, instance_index=0
+    )
+    if instance_inputs:
+        for vtx in vertex_data:
+            vtx.update(instance_inputs)
+        vs_interp.log_output(
+            f"Loaded per-instance inputs (instance 0): "
+            f"{ {k: (v if not isinstance(v, list) else [round(x, 4) for x in v]) for k, v in instance_inputs.items()} }"
+        )
+
     # Load golden VS output (optional)
     golden_vs_rows = []
     if os.path.exists(golden_vs_csv):
