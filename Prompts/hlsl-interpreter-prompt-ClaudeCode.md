@@ -1378,8 +1378,11 @@ One note: the MSAA / event399 color-mismatch question is still open — you inte
 
 
 
-# 36
+# 36 pipeline depth buffer value存成bitmap
 ## Prompts
+1. 如果Pipeline输出了depth buffer，请dump depth buffer为一个gray bitmap图。
+2. depth value的分布可能很接近0或者1，导致gray值全为0或者1。请自动判断depth value的接近程度，来做gray的值。
+3. 如果Pipeline没有输出pixel请不用dump pixel color到bitmap图capturename_eventid_output.bmp
 
 
 Notice:
@@ -1388,6 +1391,20 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+What I changed (in render.py)
+1. Depth buffer → grayscale BMP — Added _save_depth_bitmap() (render.py:580). It collapses fragments to one winner per pixel by nearest depth (same LESS-test rule as the color output), then writes a 24-bit grayscale BMP (r=g=b) sized to the viewport, named <stem>_depth.bmp (or a depth_bitmap_path config override).
+
+2. Auto-scaling for clustered depths — Instead of gray = depth*255, it finds the actual [min, max] of the written depths and maps that range linearly onto [0,255]. The witcher3 case proves the point: depths span only [0.496351, 0.496943] (all ≈0.5, which naive scaling would flatten to a single gray ≈126). After auto-scaling, the output has 134 distinct gray values from 5 to 255 — full contrast. A degenerate range (all depths effectively equal) falls back to flat mid-gray instead of dividing by zero.
+
+3. No pixels → no _output.bmp — The output-color and depth dumps are now guarded by if pixels: (render.py:1175). When the pipeline produces zero fragments, neither bitmap is written and it logs Output/depth bitmaps skipped: pipeline produced no pixels.
+
+Verification
+Ran the only case in this checkout (witcher3_countryside_event895, no regression_test_zip_files.csv is present here):
+
+Saved output-merger bitmap: …_output.bmp (1024x1024, 403 pixel(s))
+Saved depth bitmap: …_depth.bmp (… depth range [0.496351, 0.496943] auto-scaled to [0,255])
+BMP byte-inspection confirmed valid 24-bit grayscale with real contrast.
+One note for honesty: the run shows pre-existing Error [DepthDiff] lines (13 golden depth pixels missing in output). Those come from the earlier depth-compare commit, not from this change — my edits only touch bitmap dumping, and the output pixel count (403) is unchanged.
 
 
 

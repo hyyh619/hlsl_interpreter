@@ -577,6 +577,78 @@ def _save_golden_pixels_bitmap(golden, viewport, path, log) -> bool:
     return True
 
 
+def _save_depth_bitmap(pixels, viewport, path, log) -> bool:
+    """Save the pipeline's per-pixel depth buffer as a grayscale 24-bit BMP.
+
+    The image is sized to the viewport (width × height). As in
+    :func:`_save_output_pixels_bitmap`, fragments are collapsed to one winner
+    per (x, y) with the nearest (smallest) depth, matching the LESS depth test.
+
+    Depth values are commonly clustered very close to 0 (near plane) or 1 (far
+    plane), so a naive ``gray = depth * 255`` would collapse the whole image to
+    black or white. To keep contrast, the written depths are auto-scaled: the
+    actual [min, max] range across the buffer is mapped linearly onto [0, 255]
+    (min→black, max→white). When the range is degenerate (all depths
+    effectively equal) every covered pixel is rendered mid-gray. Pixels never
+    written stay black. Returns True on success.
+    """
+    width = int(round(viewport.width))
+    height = int(round(viewport.height))
+    if width <= 0 or height <= 0:
+        log(f"Depth bitmap skipped: invalid viewport size {width}x{height}.")
+        return False
+    x0 = int(round(viewport.x))
+    y0 = int(round(viewport.y))
+
+    # Collapse to one winner per (x, y): nearest depth wins.
+    winners = {}
+    for p in pixels:
+        d = p.depth
+        if not isinstance(d, (int, float)):
+            continue
+        key = (int(p.x), int(p.y))
+        prev = winners.get(key)
+        if prev is None or d < prev.depth:
+            winners[key] = p
+
+    # Keep only winners that land inside the viewport, with their depth.
+    covered = []  # (px, py, depth)
+    for (x, y), p in winners.items():
+        px, py = x - x0, y - y0
+        if 0 <= px < width and 0 <= py < height:
+            covered.append((px, py, float(p.depth)))
+
+    if not covered:
+        log("Depth bitmap skipped: no covered pixels with depth.")
+        return False
+
+    depths = [d for (_, _, d) in covered]
+    dmin, dmax = min(depths), max(depths)
+    rng = dmax - dmin
+
+    # Auto-scale: map [dmin, dmax] -> [0, 255] so a buffer whose depths all sit
+    # near 0 or near 1 still shows contrast. Degenerate range -> flat mid-gray.
+    EPS = 1e-9
+    black = (0, 0, 0)
+    frame = [[black] * width for _ in range(height)]
+    for (px, py, d) in covered:
+        if rng > EPS:
+            g = _color_to_byte((d - dmin) / rng)
+        else:
+            g = 128
+        frame[py][px] = (g, g, g)
+
+    if not _write_bmp24(frame, width, height, path, log):
+        return False
+    if rng > EPS:
+        log(f"Saved depth bitmap: {path} ({width}x{height}, {len(covered)} pixel(s) "
+            f"written; depth range [{dmin:.6g}, {dmax:.6g}] auto-scaled to [0,255])")
+    else:
+        log(f"Saved depth bitmap: {path} ({width}x{height}, {len(covered)} pixel(s) "
+            f"written; depth ~constant {dmin:.6g}, rendered mid-gray)")
+    return True
+
+
 def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
     """Ordered BMP paths for a texture's view mip range (mip0, mip1, ...).
 
@@ -1020,7 +1092,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # ============================================================
     # PS setup and execution
     # ============================================================
+    no_ps = True
     if os.path.exists(ps_hlsl) and pixels_for_ps:
+        no_ps = False
         ps_interp = _make_interpreter(config, d3d.SHADER_STAGE_PS, log_file_path)
 
         with open(ps_hlsl, 'r', encoding='utf-8') as f:
@@ -1157,15 +1231,32 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # falling back to the config directory when no log path is set.
     # ============================================================
     config_dir = os.path.dirname(os.path.abspath(config_path))
-    out_bmp = config.get('output_bitmap_path', '')
-    if out_bmp:
-        out_bmp = out_bmp if os.path.isabs(out_bmp) else os.path.join(config_dir, out_bmp)
+    data_path = config.get('data_path', '')
+    stem = os.path.splitext(os.path.basename(data_path))[0] if data_path else 'output'
+    out_dir = os.path.dirname(log_file_path) if log_file_path else config_dir
+    if pixels:
+        out_bmp = config.get('output_bitmap_path', '')
+        if out_bmp:
+            out_bmp = out_bmp if os.path.isabs(out_bmp) else os.path.join(config_dir, out_bmp)
+        else:
+            out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
+
+        if no_ps == False:
+            _save_output_pixels_bitmap(pixels, rast.config.viewport, out_bmp, vs_interp.log_output)
+
+        # Dump the per-pixel depth buffer as an auto-scaled grayscale BMP. Path:
+        # 'depth_bitmap_path' from config (resolved like output_bitmap_path),
+        # else '<zip-stem>_depth.bmp' beside the output bitmap.
+        depth_bmp = config.get('depth_bitmap_path', '')
+        if depth_bmp:
+            depth_bmp = depth_bmp if os.path.isabs(depth_bmp) else os.path.join(config_dir, depth_bmp)
+        else:
+            depth_bmp = os.path.join(out_dir, f"{stem}_depth.bmp")
+        _save_depth_bitmap(pixels, rast.config.viewport, depth_bmp, vs_interp.log_output)
     else:
-        data_path = config.get('data_path', '')
-        stem = os.path.splitext(os.path.basename(data_path))[0] if data_path else 'output'
-        out_dir = os.path.dirname(log_file_path) if log_file_path else config_dir
-        out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
-    _save_output_pixels_bitmap(pixels, rast.config.viewport, out_bmp, vs_interp.log_output)
+        # No fragments survived the pipeline: nothing to render, so skip both the
+        # output-color and depth bitmaps (no '<stem>_output.bmp' is written).
+        vs_interp.log_output("Output/depth bitmaps skipped: pipeline produced no pixels.")
 
     # Flush/close the optional debug trace file (no-op when tracing was off).
     if TRACE.enabled:

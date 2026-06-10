@@ -82,10 +82,14 @@
       "Bash(FRAG_DUMP=VS python render.py ./Cases/Default.json)",
       "Bash(python render.py ./Cases/_depthtol_test.json)",
       "Bash(git check-ignore *)",
-      "Bash(sort -t p -k3 -n)"
+      "Bash(sort -t p -k3 -n)",
+      "Bash(python3 -c ' *)",
+      "Bash(git add *)",
+      "Bash(git commit -m '@ *)"
     ],
     "additionalDirectories": [
-      "\\tmp"
+      "\\tmp",
+      "c:\\Users\\yinghuang\\.claude\\projects\\c--Development-Graphics-hlsl-interpreter\\memory"
     ]
   }
 }
