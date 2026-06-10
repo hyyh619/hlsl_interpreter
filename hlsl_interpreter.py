@@ -3518,9 +3518,6 @@ class HLSLInterpreter:
 
         header = [col.strip() for col in rows[0]]
         sem_to_key = self._get_output_semantic_to_key_map()
-        type_comp = {'float': 1, 'float2': 2, 'float3': 3, 'float4': 4,
-                     'int': 1, 'int2': 2, 'int3': 3, 'int4': 4,
-                     'uint': 1, 'uint2': 2, 'uint3': 3, 'uint4': 4}
 
         # Physical component-column indices, in file order (skips VTX/IDX/...).
         comp_col_indices = [
@@ -3528,7 +3525,28 @@ class HLSLInterpreter:
             if name.rsplit('.', 1)[-1].lower() in ('x', 'y', 'z', 'w')
         ]
 
-        # Reorder outputs to match the data layout: SV_Position first.
+        # Per-output *dumped* component count, derived from the header groups
+        # (consecutive .xyzw columns sharing a base name). The dump can carry
+        # FEWER components than the declared type — e.g. `out float4 o0 :
+        # TEXCOORD0` whose shader only writes o0.xyz appears as TEXCOORD0.x/y/z
+        # (3 columns). Trusting the declared type would mis-slice every later
+        # output, so the header is the source of truth for widths.
+        header_count = {}
+        for name in header:
+            base, _, comp = name.rpartition('.')
+            if comp.lower() in ('x', 'y', 'z', 'w') and base:
+                header_count[base.upper()] = header_count.get(base.upper(), 0) + 1
+
+        def _dumped_count(param):
+            base = param['semantic_base'].upper()
+            idx = param['semantic_index']
+            for cand in (f'{base}{idx}', base):
+                if cand in header_count:
+                    return header_count[cand]
+            return self._type_component_count(param['type'])
+
+        # Reorder outputs to match the data layout: SV_Position first, then the
+        # remaining outputs in declared order (== header order minus position).
         def _is_sv_position(p):
             return p['semantic_base'].upper().startswith('SV_POSITION')
         ordered_params = (
@@ -3540,7 +3558,7 @@ class HLSLInterpreter:
         param_cols = []  # (canonical_key, [col_idx, ...])
         cursor = 0
         for param in ordered_params:
-            n = type_comp.get(param['type'], 4)
+            n = _dumped_count(param)
             cols = comp_col_indices[cursor:cursor + n]
             cursor += n
             sem_base = param['semantic_base']
@@ -3573,6 +3591,8 @@ class HLSLInterpreter:
             'TEXCOORD': 'TexCoord',
             'TEXCOORD0': 'TexCoord',
             'TEXCOORD1': 'TexCoord2',
+            'TEXCOORD2': 'TexCoord3',
+            'TEXCOORD3': 'TexCoord4',
             'NORMAL': 'Normal',
             'NORMAL0': 'Normal',
             'WORLDPOS': 'WorldPos',
@@ -3737,6 +3757,7 @@ class HLSLInterpreter:
         'COLOR': 'Color', 'COLOR0': 'Color',
         'TEXCOORD': 'TexCoord', 'TEXCOORD0': 'TexCoord',
         'TEXCOORD1': 'TexCoord2',
+        'TEXCOORD2': 'TexCoord3', 'TEXCOORD3': 'TexCoord4',
         'NORMAL': 'Normal', 'NORMAL0': 'Normal',
         'WORLDPOS': 'WorldPos', 'WORLDPOS0': 'WorldPos',
     }
