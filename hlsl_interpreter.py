@@ -339,6 +339,9 @@ class HLSLInterpreter:
         # StructuredBuffer绑定 (如 StructuredBuffer<t0_t> t0 : register(t0))
         # name -> {register, element_type, members:[(name,base_type,count)], stride, data(bytes)}
         self.structured_buffers: Dict[str, dict] = {}
+        # Cached structured-buffer index for the DXBC split-vector-load hazard
+        # (see get_value). {'token': 't0[r1.x]', 'value': int} or None.
+        self._sb_index_burst: Optional[dict] = None
 
         # VS/PS纹理和采样器绑定
         self.texture_bindings: List[TextureBinding] = []     # VS/PS中的纹理绑定列表
@@ -1717,6 +1720,32 @@ class HLSLInterpreter:
                         return result
             return None
 
+        # Texture2D.Load: integer texel fetch, no filtering.
+        # Format: t1.Load(int3(x, y, mip)).  location.xy = texel coords,
+        # location.z = mip level.
+        if method_name == 'Load' and len(args) >= 1:
+            if obj_node is None:
+                return None
+            obj_name = obj_node.value if obj_node.node_type == 'value' else None
+            if obj_name is None:
+                return None
+            location = self.evaluate_syntax_tree(args[0], local_vars)
+            if not isinstance(location, list):
+                location = [location]
+            x = int(location[0]) if len(location) > 0 and location[0] is not None else 0
+            y = int(location[1]) if len(location) > 1 and location[1] is not None else 0
+            mip = int(location[2]) if len(location) > 2 and location[2] is not None else 0
+            binding = self._find_texture_binding(obj_name)
+            if binding and self._texture_exec and self._texture_desc_list:
+                reg_id = binding.register_id
+                if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
+                    texture_desc = self._texture_desc_list[reg_id]
+                    result = self._texture_exec.load(x, y, mip, texture_desc)
+                    self.debug_print(
+                        f"[METHOD] {obj_name}.Load(({x}, {y}, {mip})) = {self._format_float(result)}")
+                    return result
+            return None
+
         self.debug_print(f"[ERROR] Unknown method: {method_name}")
         return None
 
@@ -1785,7 +1814,21 @@ class HLSLInterpreter:
                 # StructuredBuffer access: t0[i].member or t0[i].member[k]
                 if arr_base in self.structured_buffers:
                     sb = self.structured_buffers[arr_base]
-                    idx = self._eval_subscript(idx_expr, local_vars)
+                    # DXBC split-vector-load hazard: a single
+                    #   ld_structured rN.xyz, rN.x, l(off), t0
+                    # reads the index rN.x ONCE, but 3Dmigoto decompiles it into
+                    # per-component lines (rN.x = t0[rN.x]…; rN.y = t0[rN.x]…),
+                    # so re-reading rN.x after the first write corrupts the
+                    # index. Cache the index across a consecutive run of loads
+                    # sharing the same textual index (reset between statements in
+                    # the executor) so it is resolved once, like the GPU.
+                    token = f'{arr_base}[{idx_expr}]'
+                    burst = self._sb_index_burst
+                    if burst is not None and burst['token'] == token:
+                        idx = burst['value']
+                    else:
+                        idx = self._eval_subscript(idx_expr, local_vars)
+                        self._sb_index_burst = {'token': token, 'value': idx}
                     if rest.startswith('.'):
                         rm = re.match(r'^(\w+)(?:\[([^\]]+)\])?(.*)$', rest[1:])
                         if rm:
@@ -3628,6 +3671,7 @@ class HLSLInterpreter:
 
         self._eval_counter += 1
         self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._sb_index_burst = None
 
         self.debug_print(f"\n=== ROW {row_index} (void main) ===")
 
@@ -3650,6 +3694,12 @@ class HLSLInterpreter:
             stmt_stripped = stmt.strip()
             if stmt_stripped == 'return' or stmt_stripped.startswith('return;'):
                 break
+
+            # End any active structured-buffer index burst (see get_value) when
+            # this statement no longer references that indexed load — so the
+            # next load re-reads the (now legitimately updated) index.
+            if self._sb_index_burst is not None and self._sb_index_burst['token'] not in stmt_stripped:
+                self._sb_index_burst = None
 
             if stmt_stripped.startswith('if'):
                 next_i = i + 1

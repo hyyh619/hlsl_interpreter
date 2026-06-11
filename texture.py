@@ -720,6 +720,23 @@ class Texture:
     def _sample_mip_point(self, mip_level: List[List[List[float]]], u: float, v: float) -> List[float]:
         return self._sample_nearest(mip_level, u, v)
 
+    def load(self, x: int, y: int, mip: int, texture_desc: TextureDesc) -> List[float]:
+        """HLSL Texture2D.Load: fetch the texel at integer coords (x, y) on mip
+        level `mip`, with NO filtering or address wrapping. Out-of-bounds reads
+        return 0 (D3D returns 0 for Load outside the resource). The decoded grid
+        is top-left origin, so [y][x] maps directly to D3D texel coords."""
+        mip_levels = self._get_mip_levels(texture_desc)
+        if not mip_levels:
+            return [0.0, 0.0, 0.0, 0.0]
+        if mip < 0 or mip >= len(mip_levels):
+            return [0.0, 0.0, 0.0, 0.0]
+        level = mip_levels[mip]
+        h = len(level)
+        w = len(level[0]) if h else 0
+        if y < 0 or y >= h or x < 0 or x >= w:
+            return [0.0, 0.0, 0.0, 0.0]
+        return list(level[y][x])
+
     def sample(self, u: float, v: float, w: float, texture_desc: TextureDesc, sampler: Sampler,
                 ddx_uv: Optional[List[float]] = None, ddy_uv: Optional[List[float]] = None,
                 name: str = '') -> List[float]:
