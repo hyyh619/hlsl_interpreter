@@ -99,11 +99,34 @@
       "Bash(awk 'NR>=1745 && NR<=1900 && /=> /' Cases/output.log)",
       "Bash(python -)",
       "Bash(grep -cE \"^# [0-9]+$\" \"Prompts/hlsl-interpreter-prompt-ClaudeCode.md\")",
-      "Bash(grep -E \"^# [0-9]+$\" \"Prompts/hlsl-interpreter-prompt-ClaudeCode.md\")"
+      "Bash(grep -E \"^# [0-9]+$\" \"Prompts/hlsl-interpreter-prompt-ClaudeCode.md\")",
+      "Bash(rm -rf /tmp/e1852)",
+      "Bash(mkdir -p /tmp/e1852)",
+      "Bash(unzip -o -q /c/Development/Graphics/hlsl_interpreter/Cases/witcher3_countryside_event1852.zip)",
+      "Read(//c/Development/Graphics/**)",
+      "Bash(python render.py Cases/.dbg1852.json)",
+      "Bash(awk '/ROW 0 \\\\\\(void main\\\\\\)/{f=1} f' Cases/regression_logs/dbg1852.log)",
+      "Bash(echo \"exit $?\")",
+      "Bash(python3)",
+      "Bash(python3 /tmp/probe.py)",
+      "Bash(python /tmp/probe.py)",
+      "Bash(cp /tmp/probe.py ./_probe.py)",
+      "Bash(python _probe.py)",
+      "Bash(cd /c/Development/Graphics/hlsl_interpreter; *)",
+      "Bash(rm -rf _e1852)",
+      "Bash(mkdir _e1852)",
+      "Bash(unzip -o -q ../Cases/witcher3_countryside_event1852.zip)",
+      "Bash(rm -f _probe.py)",
+      "Bash(awk '/ROW 0 \\\\\\(void main\\\\\\)/{f=1} /ROW 1/{if\\(f\\)exit} f' Cases/regression_logs/dbg1852.log)",
+      "Bash(python scan_witcher.py)",
+      "Bash(rm -rf _e1643)",
+      "Bash(mkdir _e1643)",
+      "Bash(unzip -o -q ../Cases/witcher3_countryside_event1643.zip)"
     ],
     "additionalDirectories": [
       "\\tmp",
-      "c:\\Users\\yinghuang\\.claude\\projects\\c--Development-Graphics-hlsl-interpreter\\memory"
+      "c:\\Users\\yinghuang\\.claude\\projects\\c--Development-Graphics-hlsl-interpreter\\memory",
+      "\\tmp\\e1852\\witcher3_countryside_event1852"
     ]
   }
 }
