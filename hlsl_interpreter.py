@@ -878,17 +878,46 @@ class HLSLInterpreter:
                     fields.append(FieldDefinition(field_type, field_name, '', array_size=array_size))
         return CbufferDefinition(name, fields)
 
+    # 控制流关键字: header 正则可能把 "else if (...)" 误判成函数定义，需排除
+    _CONTROL_KEYWORDS = frozenset({
+        'if', 'else', 'for', 'while', 'switch', 'do', 'return', 'case', 'default'
+    })
+
     def parse_all_functions(self, code: str):
         """
         解析代码中所有函数定义并存储到_all_functions字典
         code: HLSL代码
+
+        函数体用大括号配对(brace matching)提取，而非单条正则。早期版本用
+        r'...\{([^}]+(?:\{[^}]*\}[^}]*)*)\}' 捕获函数体，只能处理一层嵌套的
+        `{...}`；3Dmigoto 反编译出的着色器常有 3~4 层嵌套的 if/else，正则会在
+        第一个深层嵌套块处提前截断函数体，导致其后的语句(包括 o0 输出写入)整段丢失，
+        VS 输出全部塌成 0。改为定位函数头后逐字符配对大括号，可支持任意嵌套深度。
         """
-        func_pattern = re.compile(r'(\w+)\s+(\w+)\s*\(([^)]*)\)\s*[:\w\s]*\{([^}]+(?:\{[^}]*\}[^}]*)*)\}', re.DOTALL)
-        for match in func_pattern.finditer(code):
+        header_pattern = re.compile(r'(\w+)\s+(\w+)\s*\(([^)]*)\)\s*(?::\s*\w+)?\s*\{')
+        for match in header_pattern.finditer(code):
             ret_type = match.group(1)
             func_name = match.group(2)
             params_str = match.group(3)
-            body = match.group(4)
+            # 排除把控制流语句(如 "else if (cond) {")误当成函数定义
+            if ret_type in self._CONTROL_KEYWORDS or func_name in self._CONTROL_KEYWORDS:
+                continue
+            # 从匹配末尾的 '{' 起逐字符配对，找到对应的 '}'
+            brace_start = match.end() - 1
+            depth = 0
+            body_end = None
+            for i in range(brace_start, len(code)):
+                c = code[i]
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        body_end = i
+                        break
+            if body_end is None:
+                continue
+            body = code[brace_start + 1:body_end]
             params = {}
             if params_str.strip():
                 for param in params_str.split(','):
@@ -1492,6 +1521,34 @@ class HLSLInterpreter:
             else:
                 result = math.pow(2.0, val)
             self.debug_print(f"[FUNC] exp2({self._format_float(val)}) = {self._format_float(result)}")
+            return result
+
+        # floor/ceil/round/trunc/frac: 取整与小数部分函数
+        # HLSL frac(x) = x - floor(x)（始终返回 [0,1) 的小数部分，对负数也成立）。
+        # 这些在 3Dmigoto 反编译出的着色器里大量出现（如 frac() 周期函数、floor() 量化），
+        # 缺失时会让整条表达式塌成 None，进而让整个 VS 输出为 0。
+        elif func_name in ('floor', 'ceil', 'round', 'trunc', 'frac'):
+            if len(args) != 1:
+                return None
+            val = self.evaluate_syntax_tree(args[0], local_vars)
+            if val is None:
+                return None
+            if func_name == 'floor':
+                op = math.floor
+            elif func_name == 'ceil':
+                op = math.ceil
+            elif func_name == 'trunc':
+                op = math.trunc
+            elif func_name == 'round':
+                # HLSL round() 采用就近偶数舍入(banker's rounding)，与 Python round 一致
+                op = lambda v: float(round(v))
+            else:  # frac
+                op = lambda v: v - math.floor(v)
+            if isinstance(val, list):
+                result = [float(op(v)) for v in val]
+            else:
+                result = float(op(val))
+            self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # clamp: 限制范围函数
@@ -2129,13 +2186,54 @@ class HLSLInterpreter:
         local_vars: 局部变量字典
         """
         stmt = stmt.strip()
-
-        if_match = self.patterns['if_statement'].match(stmt)
-        if not if_match:
+        if not stmt.startswith('if'):
             return
 
-        condition_expr = if_match.group(1).strip()
-        then_branch = if_match.group(2).strip()
+        # 条件表达式: 用括号配对提取, 兼容条件内的嵌套括号(如 cmp() 预处理后的 -(...))
+        paren_start = stmt.find('(')
+        if paren_start < 0:
+            return
+        depth = 0
+        cond_end = None
+        for k in range(paren_start, len(stmt)):
+            if stmt[k] == '(':
+                depth += 1
+            elif stmt[k] == ')':
+                depth -= 1
+                if depth == 0:
+                    cond_end = k
+                    break
+        if cond_end is None:
+            return
+        condition_expr = stmt[paren_start + 1:cond_end].strip()
+        rest = stmt[cond_end + 1:].strip()
+
+        # then 分支与可选的 else 分支: then 用大括号配对切出, 其后剩余部分作为 else 候选
+        if rest.startswith('{'):
+            depth = 0
+            tb_end = None
+            for k in range(len(rest)):
+                if rest[k] == '{':
+                    depth += 1
+                elif rest[k] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        tb_end = k
+                        break
+            if tb_end is None:
+                then_branch = rest
+                after = ''
+            else:
+                then_branch = rest[:tb_end + 1]
+                after = rest[tb_end + 1:].strip()
+        else:
+            else_pos = self.find_else_branch(rest)
+            if else_pos >= 0:
+                then_branch = rest[:else_pos].strip()
+                after = rest[else_pos:].strip()
+            else:
+                then_branch = rest
+                after = ''
 
         cond_value = self.evaluate_expression(condition_expr, local_vars)
         self.debug_print(f"[IF] condition: {condition_expr} => {cond_value}")
@@ -2143,18 +2241,15 @@ class HLSLInterpreter:
         if cond_value:
             if then_branch.startswith('{'):
                 self.execute_block(then_branch, local_vars)
-            elif not then_branch.startswith('else'):
+            elif then_branch and not then_branch.startswith('else'):
                 self.execute_statement(then_branch, local_vars)
-        else:
-            else_pos = self.find_else_branch(then_branch)
-            if else_pos >= 0:
-                else_branch = then_branch[else_pos:].strip()
-                if else_branch.startswith('else'):
-                    else_branch = else_branch[4:].strip()
-                    if else_branch.startswith('{'):
-                        self.execute_block(else_branch, local_vars)
-                    else:
-                        self.execute_statement(else_branch, local_vars)
+        elif after.startswith('else'):
+            else_branch = after[4:].strip()
+            if else_branch.startswith('{'):
+                self.execute_block(else_branch, local_vars)
+            elif else_branch:
+                # `else if (...)` 链: 作为语句递归处理
+                self.execute_statement(else_branch, local_vars)
 
     def find_else_branch(self, stmt: str) -> int:
         """
@@ -2205,7 +2300,10 @@ class HLSLInterpreter:
         in_string = False
         string_char = None
 
-        for char in code:
+        n = len(code)
+        i = 0
+        while i < n:
+            char = code[i]
             if char == '{':
                 brace_count += 1
                 current_stmt.append(char)
@@ -2214,10 +2312,23 @@ class HLSLInterpreter:
                     current_stmt.append(char)
                 brace_count -= 1
                 if brace_count == 0 and current_stmt:
-                    stmt = ''.join(current_stmt).strip()
-                    if stmt:
-                        statements.append(stmt)
-                    current_stmt = []
+                    # 关键: 一个 `if (...) { ... }` 块在其闭合 '}' 处 brace_count 归零，
+                    # 但其后可能紧跟 `else { ... }`。若此时就切分，else 分支会变成孤立语句，
+                    # 永远不会作为该 if 的 else 执行 —— 条件为假时整段 else 被丢弃，
+                    # 导致依赖 else 分支的寄存器(如逐顶点变换结果)保持默认值。
+                    # 因此向后窥探: 若下一个非空白记号是 else，则继续累积、暂不切分。
+                    j = i + 1
+                    while j < n and code[j] in ' \t\r\n':
+                        j += 1
+                    next_is_else = (
+                        code[j:j + 4] == 'else'
+                        and (j + 4 >= n or not (code[j + 4].isalnum() or code[j + 4] == '_'))
+                    )
+                    if not next_is_else:
+                        stmt = ''.join(current_stmt).strip()
+                        if stmt:
+                            statements.append(stmt)
+                        current_stmt = []
             elif char == '(':
                 paren_count += 1
                 current_stmt.append(char)
@@ -2239,6 +2350,7 @@ class HLSLInterpreter:
                 current_stmt = []
             else:
                 current_stmt.append(char)
+            i += 1
 
         if current_stmt:
             stmt = ''.join(current_stmt).strip()
@@ -3976,12 +4088,22 @@ class HLSLInterpreter:
 
         return pixels
 
+    # 相对容差: golden 由 GPU 以 float32 计算, 解释器用 Python float64。对幅值很大的
+    # 输出(如 o2.xy = clip_xy * screen_scale + screen_scale, screen_scale≈1024 时 o2≈2000),
+    # clip 坐标里远小于绝对容差的 float32 舍入误差会被放大上千倍, 绝对差超过 0.005,
+    # 但相对误差仅 ~1e-5。用 max(绝对容差, 相对容差*|golden|) 组合判定: 仅放宽、不会让
+    # 原本通过的分量变成失败, 且真实逻辑错误(相对差量级 >1) 仍会被捕获。
+    _REL_TOLERANCE = 2e-5
+
     def compare_vs_output_with_golden_params(self, results: list, output_params: list,
                                             golden_rows: list, float_tolerance: float = 0.0001,
                                             execute_count: int = None) -> bool:
         """Compare VS output results against golden data (both using canonical key format)."""
         count = execute_count if execute_count and execute_count > 0 else len(results)
         count = min(count, len(results), len(golden_rows))
+
+        def _tol(golden_value):
+            return max(float_tolerance, self._REL_TOLERANCE * abs(golden_value))
 
         passed = 0
         all_match = True
@@ -4008,7 +4130,7 @@ class HLSLInterpreter:
                             # NaN/inf output — where every comparison is False —
                             # is correctly flagged as a mismatch instead of
                             # silently counting as a pass.
-                            if not (abs(ov - gv) <= float_tolerance):
+                            if not (abs(ov - gv) <= _tol(gv)):
                                 self.log_output(
                                     f"Error: Row {row_idx} {key}[{comp_idx}]: "
                                     f"output={ov:.6f} golden={gv:.6f} diff={abs(ov-gv):.6f}"
@@ -4018,7 +4140,7 @@ class HLSLInterpreter:
                             self.log_output(f"Error: Row {row_idx} {key}[{comp_idx}]: output={ov} golden={gv}")
                             row_match = False
                 elif isinstance(output_val, (int, float)) and isinstance(golden_val, (int, float)):
-                    if not (abs(float(output_val) - float(golden_val)) <= float_tolerance):
+                    if not (abs(float(output_val) - float(golden_val)) <= _tol(float(golden_val))):
                         self.log_output(f"Error: Row {row_idx} {key}: output={output_val:.6f} golden={golden_val:.6f}")
                         row_match = False
 
