@@ -23,6 +23,17 @@
             "args": [
                 "./Cases/Default.json"
             ]
+        },
+        {
+            "name": "Python human debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "render.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "./Cases/hy.json"
+            ]
         }
     ]
 }

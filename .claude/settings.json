@@ -89,7 +89,17 @@
       "Bash(python /tmp/diag994.py)",
       "Bash(cp /tmp/diag994.py ./_diag994.py)",
       "Bash(python _diag994.py)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(sort -u -t' ' -k2 -n)",
+      "Bash(sed -n '2p' *_vs_mesh.csv)",
+      "Bash(sed -n '/void main/,/^}/p' VS_shader.hlsl)",
+      "Bash(tasklist)",
+      "Bash(awk 'NR>=1720 && NR<=1850 && /\\\\[STMT\\\\] r[0138]\\\\./' Cases/output.log)",
+      "Bash(awk 'NR>=1720 && NR<=1860' Cases/output.log)",
+      "Bash(awk 'NR>=1745 && NR<=1900 && /=> /' Cases/output.log)",
+      "Bash(python -)",
+      "Bash(grep -cE \"^# [0-9]+$\" \"Prompts/hlsl-interpreter-prompt-ClaudeCode.md\")",
+      "Bash(grep -E \"^# [0-9]+$\" \"Prompts/hlsl-interpreter-prompt-ClaudeCode.md\")"
     ],
     "additionalDirectories": [
       "\\tmp",
