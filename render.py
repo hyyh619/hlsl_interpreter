@@ -1244,29 +1244,43 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     data_path = config.get('data_path', '')
     stem = os.path.splitext(os.path.basename(data_path))[0] if data_path else 'output'
     out_dir = os.path.dirname(log_file_path) if log_file_path else config_dir
-    if pixels:
-        out_bmp = config.get('output_bitmap_path', '')
-        if out_bmp:
-            out_bmp = out_bmp if os.path.isabs(out_bmp) else os.path.join(config_dir, out_bmp)
-        else:
-            out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
+    # Which bitmaps to dump is driven by what the output merger has bound, per
+    # pipeline_state.csv: a RenderTarget → the color bitmap, a DepthStencil →
+    # the depth bitmap. A depth-only pass (e.g. shadow/Z-prepass) has no render
+    # target, so no color bitmap is written. Both still require surviving
+    # fragments to have anything to draw.
+    has_render_target = rast.config.render_target_format is not None
+    has_depth_stencil = rast.config.depth_stencil_format is not None
 
-        if no_ps == False:
+    if not pixels:
+        # No fragments survived the pipeline: nothing to render.
+        vs_interp.log_output("Output/depth bitmaps skipped: pipeline produced no pixels.")
+    else:
+        # Output-color bitmap — only when a render target is bound and the PS ran.
+        if has_render_target and no_ps == False:
+            out_bmp = config.get('output_bitmap_path', '')
+            if out_bmp:
+                out_bmp = out_bmp if os.path.isabs(out_bmp) else os.path.join(config_dir, out_bmp)
+            else:
+                out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
             _save_output_pixels_bitmap(pixels, rast.config.viewport, out_bmp, vs_interp.log_output)
+        elif not has_render_target:
+            vs_interp.log_output(
+                "Output color bitmap skipped: no render target bound (pipeline_state.csv RenderTarget absent).")
 
-        # Dump the per-pixel depth buffer as an auto-scaled grayscale BMP. Path:
+        # Depth bitmap — only when a depth-stencil is bound. Path:
         # 'depth_bitmap_path' from config (resolved like output_bitmap_path),
         # else '<zip-stem>_depth.bmp' beside the output bitmap.
-        depth_bmp = config.get('depth_bitmap_path', '')
-        if depth_bmp:
-            depth_bmp = depth_bmp if os.path.isabs(depth_bmp) else os.path.join(config_dir, depth_bmp)
+        if has_depth_stencil:
+            depth_bmp = config.get('depth_bitmap_path', '')
+            if depth_bmp:
+                depth_bmp = depth_bmp if os.path.isabs(depth_bmp) else os.path.join(config_dir, depth_bmp)
+            else:
+                depth_bmp = os.path.join(out_dir, f"{stem}_depth.bmp")
+            _save_depth_bitmap(pixels, rast.config.viewport, depth_bmp, vs_interp.log_output)
         else:
-            depth_bmp = os.path.join(out_dir, f"{stem}_depth.bmp")
-        _save_depth_bitmap(pixels, rast.config.viewport, depth_bmp, vs_interp.log_output)
-    else:
-        # No fragments survived the pipeline: nothing to render, so skip both the
-        # output-color and depth bitmaps (no '<stem>_output.bmp' is written).
-        vs_interp.log_output("Output/depth bitmaps skipped: pipeline produced no pixels.")
+            vs_interp.log_output(
+                "Depth bitmap skipped: no depth-stencil bound (pipeline_state.csv DepthStencil absent).")
 
     # Flush/close the optional debug trace file (no-op when tracing was off).
     if TRACE.enabled:

@@ -1528,9 +1528,60 @@ Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit:
+Dump color/depth bitmaps based on RenderTarget/DepthStencil binding
+
+pipeline_state.csv records the output-merger bindings: a RenderTarget
+(Target[0]_Format) and/or a DepthStencil (Format). Use them to decide which
+bitmaps to write, instead of dumping the color bitmap for every draw that
+produced fragments.
+
+- rasterizer.py: added RasterizerConfig.depth_stencil_format; parse the
+  DepthStencil,Format row; treat a format of UNKNOWN as unbound.
+- render.py: dump the color bitmap only when a render target is bound (and the
+  PS ran), and the depth bitmap only when a depth-stencil is bound; both still
+  require surviving fragments. Depth-only passes (e.g. the witcher3 Z/shadow
+  cases with no render target) no longer write a spurious *_output.bmp.
+
+Verified: event1433 (DS only) writes depth only; collision event104/351/399/516
+(RT+DS) write both. Regression 15/15 (bitmap gating doesn't affect the VS or
+pixel/depth comparisons). See Sessions/hlsl-interpreter-step115-*.md.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 ## Claude Code Session
+Summary
+The pipeline now decides which bitmaps to dump from the output-merger bindings
+in pipeline_state.csv, rather than always dumping the color bitmap when any
+fragments survived.
+
+- A RenderTarget binding (`RenderTarget,Target[0]_Format`) gates the pixel-color
+  bitmap; a DepthStencil binding (`DepthStencil,Format`) gates the depth bitmap.
+- rasterizer.py: `RasterizerConfig.depth_stencil_format` added and parsed from
+  the `DepthStencil,Format` row (render_target_format was already parsed). A
+  format value of `UNKNOWN` is treated as unbound, so both fields are None
+  unless a real format is present.
+- render.py: the color bitmap is written only when a render target is bound (and
+  the PS ran); the depth bitmap only when a depth-stencil is bound. Both still
+  require surviving fragments — when none survive, the existing "pipeline
+  produced no pixels" message is kept. Skips are logged explicitly
+  ("Output color bitmap skipped: no render target bound").
+
+Effect: depth-only passes (most witcher3 cases bind a depth-stencil but no
+render target — Z/shadow-style draws) no longer emit a spurious `*_output.bmp`;
+they write only the depth bitmap. Normal draws (the Collision suite) bind both
+and write both.
+
+Verification:
+- event1433 (DepthStencil only): "Output color bitmap skipped: no render target
+  bound" + depth bitmap written (4609 px).
+- event104/351/399/516 (RenderTarget + DepthStencil): both color and depth
+  bitmaps written.
+- event28 (RT+DS but all fragments depth-fail): "pipeline produced no pixels".
+- Regression suite 15/15 passing (the change only affects bitmap dumping, not
+  the VS/pixel/depth comparisons).
+
+See Sessions/hlsl-interpreter-step115-dump-bitmaps-by-rendertarget-depthstencil-binding.md.
 
 
 

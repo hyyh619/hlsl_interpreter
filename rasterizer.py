@@ -117,6 +117,9 @@ class RasterizerConfig:
     # "R8G8B8A8_UNORM"). Drives the output-merger write clamp (see render.py
     # _rt_format_to_clamp_mode). None when the capture predates the format row.
     render_target_format: Optional[str] = None
+    # Depth-stencil format string from pipeline_state.csv (e.g. "D16_UNORM").
+    # None when no depth-stencil view is bound to the output merger.
+    depth_stencil_format: Optional[str] = None
     viewport: Viewport = None
 
     def __post_init__(self):
@@ -1058,9 +1061,16 @@ class Rasterizer:
 
             elif section == 'RenderTarget':
                 # Target[0]_Format is the RT0 format that the PS writes; it
-                # determines the output-merger write clamp range.
-                if prop == 'Target[0]_Format' and val:
+                # determines the output-merger write clamp range. Its presence
+                # also signals a bound render target (→ dump the color bitmap).
+                if prop == 'Target[0]_Format' and val and val.upper() != 'UNKNOWN':
                     self.config.render_target_format = val
+
+            elif section == 'DepthStencil':
+                # Format presence signals a bound depth-stencil view
+                # (→ dump the depth bitmap).
+                if prop == 'Format' and val and val.upper() != 'UNKNOWN':
+                    self.config.depth_stencil_format = val
 
             elif section == 'Topology':
                 if prop == 'Primitive':
