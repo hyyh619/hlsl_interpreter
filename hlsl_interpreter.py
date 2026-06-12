@@ -3476,18 +3476,33 @@ class HLSLInterpreter:
                 ptype = info['type']
                 comp = info['components']
                 try:
-                    if 'w' in comp:
-                        vertex[param_name] = [float(row[comp['x']]), float(row[comp['y']]),
-                                            float(row[comp['z']]), float(row[comp['w']])]
-                    elif 'z' in comp:
-                        vertex[param_name] = [float(row[comp['x']]), float(row[comp['y']]),
-                                            float(row[comp['z']])]
-                    elif 'y' in comp:
-                        vertex[param_name] = [float(row[comp['x']]), float(row[comp['y']])]
-                    elif 'x' in comp:
-                        vertex[param_name] = float(row[comp['x']])
-                    else:
+                    # Collect the components actually present in the data, in
+                    # x,y,z,w order (a vertex element always supplies a
+                    # contiguous prefix starting at .x).
+                    vals = []
+                    for suffix in ('x', 'y', 'z', 'w'):
+                        if suffix in comp:
+                            vals.append(float(row[comp[suffix]]))
+                        else:
+                            break
+                    if not vals:
                         vertex[param_name] = self._default_value_for_type(ptype)
+                        continue
+                    # The output width follows the *declared* param type, not
+                    # the buffer element's component count. When a buffer
+                    # element supplies fewer components than the declared type
+                    # (e.g. an R32G32B32 POSITION feeding a float4 v0), D3D
+                    # initialises the input register to (0,0,0,1) and overwrites
+                    # from .x — so the missing trailing components default to
+                    # [0,0,0,1][i], i.e. a missing .w becomes 1.0.
+                    target = min(self._type_component_count(ptype), 4)
+                    d3d_defaults = (0.0, 0.0, 0.0, 1.0)
+                    while len(vals) < target:
+                        vals.append(d3d_defaults[len(vals)])
+                    if target <= 1:
+                        vertex[param_name] = vals[0]
+                    else:
+                        vertex[param_name] = vals[:target]
                 except (ValueError, IndexError):
                     vertex[param_name] = self._default_value_for_type(ptype)
             vertices.append(vertex)
