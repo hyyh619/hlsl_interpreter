@@ -1670,9 +1670,55 @@ Sessions/hlsl-interpreter-step116-witcher-countryside-nested-if-else-intrinsics-
 Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit:
+提交 1 — Fix IA missing-component default: pad VS input to declared width with (0,0,0,1)
+提交 2 — Fix witcher countryside event6977..8775: multi-output keys + binary VB decode
 
 ## Claude Code Session
+
+初始扫描 12 个 countryside case：event6977 已通过；其余 11 个失败。失败按症状归为
+四类根因，逐一定位修复：
+
+1. **IA 缺失分量默认值**（event7264/7301/7321/7358/7889，每行仅 `SV_Position.w`
+   错：output=0 golden=1.0）。这些是 `o0=v0` 直传 / 全屏三角着色器。
+   `load_ia_vertex_data` 按 CSV 中*实际出现*的分量列建值（R32G32B32 的 POSITION 只
+   给 x,y,z），而非按声明类型，于是 `float4 v0` 的 .w 读成 0。D3D 顶点输入寄存器在
+   被数据从 .x 覆盖前初始化为 (0,0,0,1)，缺失的 .w 应默认 1.0。改为按声明宽度
+   `min(declared,4)` 用 (0,0,0,1) 补齐再截断。（独立提交。）
+
+2. **>4 个 TEXCOORD 输出的语义→规范键碰撞**（event7934/7951/7967/8573/8775）。网格
+   着色器输出 o0..o5 : TEXCOORD0..5，键表只认 TEXCOORD0..3，TEXCOORD4/5 回退到基名
+   `TEXCOORD`→`TexCoord`，与 TEXCOORD0 撞键；golden 加载器与结果构建器都把多个输出塌
+   到同一键（后写胜出），大多数输出根本没被比较。改为未显式映射的带索引语义用全名作键
+   （TEXCOORD4…）。光栅器只消费 TexCoord/TexCoord2(=TEXCOORD0/1，仍显式映射)，PS 路径
+   不受影响。
+
+3. **NORMAL/TANGENT 解成 0**（同上 5 个 case）。布局把它们标为 `R0G0B0A0_UNORM`、
+   CompByteWidth=0，RenderDoc 在 ia_vertex_data.csv 里写成全 0，于是 `v2*2-1` 塌成
+   (-1,-1,-1)，所有归一化输出变成常量 -0.5774。新增 `load_per_vertex_binary_data`：从
+   `vb_slot{N}_res_{resid}.bin` 按 IDX(索引缓冲值)逐顶点解码非实例元素，与 RenderDoc 已
+   做过索引的 CSV 列对齐。退化字节宽由槽布局推断；**4 分量挤进 4 字节是巫师 3 的
+   R10G10B10A2_UNORM 法线/切线打包**（10/10/10/2 位，2 位 alpha 是切线手性符号），在
+   `_decode_vertex_element` 加分支。对照 golden 验证：切线解出 [0.546,-0.588,-0.597,
+   w=1.0] 与 TEXCOORD5 及 ±1 手性吻合，而 R8 解出 w=0.6 错误。
+
+4. **POSITION 精度**（event7816，残余 `sv_position` 差 ~0.006 刚过 0.005）。
+   R16G16B16A16_UNORM 的 POSITION 从 5 位小数的 CSV 读入，经逐网格大尺度解压后 ~5e-6
+   舍入被放大到裁剪空间 w 的 ~0.006。二进制 VB 是 GPU 实际用的精确字节，于是对普通元素
+   也用二进制解码做精度细化——但**仅当二进制与 CSV 一致**（`_values_agree`）时才替换。
+   这点至关重要：首版无条件覆盖所有元素，把蒙皮网格(event1341/1399/1450)的
+   `BLENDINDICES : R8G8B8A8_UINT`（解码器未建模、被当 float32 读成 0）写坏导致回归，
+   还让 event7358 的 PS 产生 inf 崩溃。加一致性门后这些被拒、保留 CSV 正确值。
+
+5. **非有限颜色崩溃 + 回归超时**（event7358）。VS 修好后全屏 pass 着色器把整屏
+   ~129024 像素跑过纯 Python PS（~458s）；某 sliver 像素输出 inf 通道，
+   `int(round(inf))` 让位图导出抛 OverflowError。`_color_to_byte` 改为 clamp
+   inf/-inf/NaN。该 case VS 本身 3/3 通过，只是慢——把 run_regression.py 单 case 超时
+   600s→1800s。
+
+结果：12 个 countryside case 全部无 `Error:`（event8573 达 10572/10572，event7358
+   全屏 pass 3/3 且不再崩溃）。12 个全部加入本地回归列表，完整回归 **36/36 通过**。
+   详见 Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.md。
 
 
 
