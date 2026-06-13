@@ -3520,7 +3520,20 @@ class HLSLInterpreter:
         fmt_u = fmt.upper()
         vals = []
         try:
-            if 'FLOAT' in fmt_u and comp_byte_width == 4:
+            if 'R10G10B10A2' in fmt_u:
+                # Packed 10/10/10/2-bit components in a single uint32. Used by
+                # The Witcher 3 for NORMAL/TANGENT (RenderDoc reports it as the
+                # degenerate 'R0G0B0A0_UNORM'); the 2-bit alpha carries the
+                # tangent handedness sign.
+                packed = struct.unpack_from('<I', raw)[0]
+                comps = [
+                    (packed & 0x3FF) / 1023.0,
+                    ((packed >> 10) & 0x3FF) / 1023.0,
+                    ((packed >> 20) & 0x3FF) / 1023.0,
+                    ((packed >> 30) & 0x3) / 3.0,
+                ]
+                vals = comps[:comp_count] if comp_count <= 4 else comps
+            elif 'FLOAT' in fmt_u and comp_byte_width == 4:
                 vals = list(struct.unpack_from(f'<{comp_count}f', raw))
             elif 'FLOAT' in fmt_u and comp_byte_width == 2:
                 # half float
@@ -3655,6 +3668,251 @@ class HLSLInterpreter:
 
         return result
 
+    def _parse_ia_layouts(self, layouts_csv_path: str):
+        """Parse ia_input_layouts.csv into (elements, vb_bindings).
+
+        elements: list of {name, format, comp_count, comp_byte_width,
+                           input_slot, resid, byte_offset, per_instance}
+        vb_bindings: input_slot -> {resid, byte_offset, byte_stride}
+        """
+        elements, vb_bindings = [], {}
+        if not os.path.exists(layouts_csv_path):
+            return elements, vb_bindings
+        rows = self.load_csv(layouts_csv_path)
+        section = None
+        for row in rows:
+            if not row or all(str(c).strip() == '' for c in row):
+                section = None
+                continue
+            c0 = str(row[0]).strip()
+            if c0 == 'Index':
+                section = 'elements'; continue
+            if c0 == 'VertexBuffer':
+                section = 'vbuffers'; continue
+            if c0 == 'IndexBuffer':
+                section = 'ibuffer'; continue
+            if section == 'elements':
+                try:
+                    elements.append({
+                        'name': row[1].strip(),
+                        'format': row[2].strip(),
+                        'comp_count': int(row[3]),
+                        'comp_byte_width': int(row[4]),
+                        'input_slot': int(row[5]),
+                        'resid': self._extract_resid(row[6]),
+                        'byte_offset': int(row[7]),
+                        'per_instance': row[8].strip().lower() == 'true',
+                    })
+                except (ValueError, IndexError):
+                    pass
+            elif section == 'vbuffers':
+                try:
+                    vb_bindings[int(row[0])] = {
+                        'resid': self._extract_resid(row[1]),
+                        'byte_offset': int(row[2]),
+                        'byte_stride': int(row[3]),
+                    }
+                except (ValueError, IndexError):
+                    pass
+        return elements, vb_bindings
+
+    def load_index_column(self, csv_path: str) -> list:
+        """Return the IDX (index-buffer value) column of ia_vertex_data.csv as
+        ints — the per-drawn-vertex index used to fetch from a vertex buffer."""
+        if not os.path.exists(csv_path):
+            return []
+        rows = self.load_csv(csv_path)
+        if not rows or len(rows) < 2:
+            return []
+        header = [c.strip().upper() for c in rows[0]]
+        if 'IDX' not in header:
+            return []
+        j = header.index('IDX')
+        out = []
+        for row in rows[1:]:
+            try:
+                out.append(int(float(row[j])))
+            except (ValueError, IndexError):
+                out.append(0)
+        return out
+
+    def load_per_vertex_binary_data(self, layouts_csv_path: str, data_folder: str,
+                                    vs_input_params: list, idx_list: list,
+                                    csv_vertex_data: list = None) -> list:
+        """
+        Decode per-vertex VS inputs from the captured binary vertex buffers
+        (vb_slot{N}_res_{resid}.bin), fetching each drawn vertex by its
+        index-buffer value, and return them as per-row overrides.
+
+        Two reasons to prefer the binary over ia_vertex_data.csv:
+          1. RenderDoc sometimes dumps an element with a degenerate format
+             (e.g. NORMAL/TANGENT as 'R0G0B0A0_UNORM', CompByteWidth 0) as
+             zeros in the CSV even though the real bytes are in the .bin. The
+             true byte width is inferred from the gap to the next element in
+             the slot (or the slot stride); a 4-component/4-byte element is
+             The Witcher 3's R10G10B10A2_UNORM normal/tangent packing.
+          2. The CSV rounds floats to ~5 decimals; for a 16-bit-UNORM POSITION
+             scaled by a large per-mesh factor that rounding amplifies past the
+             golden tolerance. The binary carries the exact bytes the GPU used.
+
+        Decoded values are fit to the declared VS-input register width with the
+        same (0,0,0,1) defaults as load_ia_vertex_data. Falls back silently
+        (no override for that element) when the .bin file is absent.
+
+        `csv_vertex_data` (the values already loaded from ia_vertex_data.csv)
+        gates the precision refinement: for a non-degenerate element the binary
+        decode is only used when it AGREES with the CSV value, so a format this
+        decoder cannot model (e.g. R8G8B8A8_UINT BLENDINDICES on a skinned mesh)
+        never overwrites a column the CSV got right. Degenerate elements always
+        use the binary (the CSV holds zeros for them).
+
+        Returns a list (len == len(idx_list)) of {param_name: value} overrides;
+        empty when there is nothing to override.
+        """
+        if not idx_list:
+            return []
+        elements, vb_bindings = self._parse_ia_layouts(layouts_csv_path)
+        if not elements:
+            return []
+
+        # Group elements per slot to infer the byte span of degenerate elements.
+        slot_elems = {}
+        for e in elements:
+            slot_elems.setdefault(e['input_slot'], []).append(e)
+        for elist in slot_elems.values():
+            elist.sort(key=lambda e: e['byte_offset'])
+
+        # Map an element's semantic to the VS input param it feeds (if any).
+        def _param_for(elem):
+            for param in vs_input_params:
+                base = param['semantic_base']
+                idx = param['semantic_index']
+                if elem['name'] == f'{base}{idx}' or (idx == 0 and elem['name'] == base):
+                    return param
+            return None
+
+        # Collect the non-instanced elements to (re-)decode from the binary VB,
+        # each paired with its VS input param and decode parameters.
+        jobs = []
+        for slot, elist in slot_elems.items():
+            binding = vb_bindings.get(slot)
+            if binding is None:
+                continue
+            stride = binding['byte_stride']
+            for i, elem in enumerate(elist):
+                if elem['per_instance']:
+                    continue
+                param = _param_for(elem)
+                if param is None:
+                    continue
+                cc = elem['comp_count'] or 1
+                dec_fmt = elem['format']
+                cbw = elem['comp_byte_width']
+                degenerate = (cbw == 0)
+                if cbw > 0:
+                    # Normal element: trust the layout's component byte width.
+                    read_bytes = cc * cbw
+                else:
+                    # Degenerate format (CompByteWidth 0, e.g. NORMAL/TANGENT as
+                    # 'R0G0B0A0_UNORM'): infer the element's byte span from the
+                    # next element's offset in the same slot (or the slot stride
+                    # for the trailing element).
+                    if i + 1 < len(elist):
+                        span = elist[i + 1]['byte_offset'] - elem['byte_offset']
+                    elif stride > 0:
+                        span = stride - elem['byte_offset']
+                    else:
+                        span = 0
+                    cbw = span // cc if cc else 0
+                    if cbw <= 0:
+                        continue
+                    read_bytes = cc * cbw
+                    # A 4-component element packed into 4 bytes is not R8G8B8A8
+                    # (RenderDoc would have named that). The Witcher 3 packs
+                    # NORMAL/TANGENT as R10G10B10A2_UNORM (10/10/10/2 bits), so
+                    # decode the whole element as one uint32.
+                    if cc == 4 and span == 4:
+                        dec_fmt = 'R10G10B10A2_UNORM'
+                        read_bytes = 4
+                resid = elem['resid'] or binding['resid']
+                bin_path = os.path.join(
+                    data_folder, f"vb_slot{slot}_res_{resid}.bin"
+                )
+                if not os.path.exists(bin_path):
+                    continue
+                jobs.append((elem, param, degenerate, cbw, dec_fmt, read_bytes,
+                             bin_path, stride, binding['byte_offset']))
+
+        if not jobs:
+            return []
+
+        # Cache raw buffer bytes per file.
+        file_cache = {}
+        overrides = [dict() for _ in idx_list]
+        for (elem, param, degenerate, cbw, dec_fmt, read_bytes, bin_path,
+             stride, base_off) in jobs:
+            pname = param['name']
+            target = min(self._type_component_count(param['type']), 4)
+            if bin_path not in file_cache:
+                with open(bin_path, 'rb') as f:
+                    file_cache[bin_path] = f.read()
+            data = file_cache[bin_path]
+            for row_i, vtx_idx in enumerate(idx_list):
+                off = base_off + vtx_idx * stride + elem['byte_offset']
+                raw = data[off:off + read_bytes]
+                if len(raw) < read_bytes:
+                    continue
+                value = self._fit_value_to_width(
+                    self._decode_vertex_element(raw, dec_fmt, elem['comp_count'], cbw),
+                    target,
+                )
+                # For a degenerate element the CSV column is unreliable (zeros),
+                # so the binary decode is the only source of truth — always use
+                # it. For a normal element the CSV already holds the value; only
+                # replace it with the binary decode when the two AGREE (the
+                # binary is then simply higher-precision than the 5-decimal CSV).
+                # This guards against formats _decode_vertex_element does not
+                # model (e.g. R8G8B8A8_UINT BLENDINDICES) silently corrupting a
+                # column that the CSV got right.
+                if not degenerate and csv_vertex_data is not None:
+                    if row_i >= len(csv_vertex_data):
+                        continue
+                    csv_val = csv_vertex_data[row_i].get(pname)
+                    if csv_val is None or not self._values_agree(value, csv_val):
+                        continue
+                overrides[row_i][pname] = value
+        return overrides
+
+    @staticmethod
+    def _values_agree(a, b, rel: float = 1e-2, abs_tol: float = 1e-3) -> bool:
+        """True when two decoded vertex values match component-wise within a
+        loose tolerance — used to accept a binary decode as a precision refine-
+        ment of the CSV value while rejecting an outright mis-decode."""
+        la = a if isinstance(a, list) else [a]
+        lb = b if isinstance(b, list) else [b]
+        n = min(len(la), len(lb))
+        if n == 0:
+            return False
+        for i in range(n):
+            try:
+                av, bv = float(la[i]), float(lb[i])
+            except (TypeError, ValueError):
+                return False
+            if abs(av - bv) > max(abs_tol, rel * abs(bv)):
+                return False
+        return True
+
+    def _fit_value_to_width(self, value, target: int):
+        """Trim/pad a decoded vertex value to the declared register width using
+        D3D's (0,0,0,1) vertex-input defaults (matches load_ia_vertex_data)."""
+        if not isinstance(value, list):
+            value = [value]
+        d3d_defaults = (0.0, 0.0, 0.0, 1.0)
+        vals = list(value[:target])
+        while len(vals) < target:
+            vals.append(d3d_defaults[len(vals)] if len(vals) < 4 else 0.0)
+        return vals[0] if target <= 1 else vals
+
     @staticmethod
     def _extract_resid(resid_str: str):
         """Extract the numeric id from a 'ResourceId::20417' style string."""
@@ -3734,7 +3992,12 @@ class HLSLInterpreter:
             sem_base = param['semantic_base']
             sem_idx = param['semantic_index']
             sem_full = f'{sem_base.upper()}{sem_idx}' if sem_idx > 0 else sem_base.upper()
-            key = sem_to_key.get(sem_full, sem_to_key.get(sem_base.upper(), sem_base))
+            # Use the full indexed semantic as the key. Falling back to the
+            # *base* semantic (e.g. TEXCOORD4 -> TEXCOORD -> 'TexCoord') would
+            # collide every unmapped TEXCOORDn onto TEXCOORD0's key, so shaders
+            # with >4 TEXCOORD outputs would silently overwrite each other in
+            # the golden dict. sem_full is unique per output.
+            key = sem_to_key.get(sem_full, sem_full)
             param_cols.append((key, cols))
 
         golden = []
@@ -3915,7 +4178,10 @@ class HLSLInterpreter:
                 sem_base = param['semantic_base'].upper()
                 sem_idx = param['semantic_index']
                 sem_full = f'{sem_base}{sem_idx}' if sem_idx > 0 else sem_base
-                key = sem_to_key.get(sem_full, sem_to_key.get(sem_base, param['semantic_base']))
+                # Keep result keys collision-free for >4 TEXCOORD outputs:
+                # fall back to the full indexed semantic, never the base (see
+                # load_vs_golden_from_mesh_csv for the matching golden side).
+                key = sem_to_key.get(sem_full, sem_full)
 
                 value = result_params.get(param['name'])
                 comp_count = self._type_component_count(param['type'])

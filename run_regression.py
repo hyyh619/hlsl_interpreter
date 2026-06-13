@@ -97,9 +97,15 @@ def run_case(zip_name, keep):
 
     result = {'name': zip_name, 'status': 'FAIL', 'detail': ''}
     try:
+        # Full-screen pass shaders (e.g. event7358) legitimately push the
+        # whole viewport through the pure-Python pixel shader once their VS
+        # output is correct — hundreds of thousands of pixels at a few ms each.
+        # The regression only grades VS-vs-golden, but render.py runs the whole
+        # pipeline, so allow generous wall-clock headroom before declaring a
+        # correct-but-slow case a failure.
         proc = subprocess.run(
             [sys.executable, 'render.py', os.path.relpath(cfg_path, ROOT)],
-            cwd=ROOT, capture_output=True, text=True, timeout=600,
+            cwd=ROOT, capture_output=True, text=True, timeout=1800,
         )
         error_count, passed, total = analyze_log(log_abs)
         if proc.returncode != 0:
@@ -116,7 +122,7 @@ def run_case(zip_name, keep):
             result['status'] = 'PASS'
             result['detail'] = f"passed {passed}/{total}"
     except subprocess.TimeoutExpired:
-        result['detail'] = "timeout (>600s)"
+        result['detail'] = "timeout (>1800s)"
     finally:
         if not keep and os.path.exists(cfg_path):
             os.remove(cfg_path)

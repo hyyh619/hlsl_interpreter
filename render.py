@@ -450,11 +450,22 @@ def _clamp_output_colors(pixels, mode, log) -> None:
 
 
 def _color_to_byte(v):
-    """Quantize a float color component in [0,1] to an 8-bit value, clamped."""
+    """Quantize a float color component in [0,1] to an 8-bit value, clamped.
+
+    A pixel shader can legitimately emit a non-finite channel (e.g. a 1/w that
+    blows up on a sliver triangle); clamp inf/-inf/NaN here rather than letting
+    int(round(inf)) raise OverflowError and abort the whole bitmap dump."""
     try:
-        return max(0, min(255, int(round(float(v) * 255.0))))
+        f = float(v) * 255.0
     except (TypeError, ValueError):
         return 0
+    if f != f:            # NaN
+        return 0
+    if f == float('inf'):
+        return 255
+    if f == float('-inf'):
+        return 0
+    return max(0, min(255, int(round(f))))
 
 
 def _write_bmp24(frame, width, height, path, log) -> bool:
@@ -980,6 +991,26 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             f"Loaded per-instance inputs (instance 0): "
             f"{ {k: (v if not isinstance(v, list) else [round(x, 4) for x in v]) for k, v in instance_inputs.items()} }"
         )
+
+    # Re-decode per-vertex inputs that ia_vertex_data.csv stored as zeros
+    # because RenderDoc could not represent their format (e.g. NORMAL/TANGENT
+    # dumped as 'R0G0B0A0_UNORM'). These come from a separate VB slot and are
+    # fetched by index-buffer value, then override the zero CSV columns.
+    idx_list = vs_interp.load_index_column(ia_vertex_csv)
+    pv_overrides = vs_interp.load_per_vertex_binary_data(
+        ia_layouts_csv, data_folder, vs_input_params, idx_list,
+        csv_vertex_data=vertex_data,
+    )
+    if pv_overrides:
+        overridden = set()
+        for i, ov in enumerate(pv_overrides):
+            if i < len(vertex_data) and ov:
+                vertex_data[i].update(ov)
+                overridden.update(ov.keys())
+        if overridden:
+            vs_interp.log_output(
+                f"Re-decoded per-vertex inputs from binary VB: {sorted(overridden)}"
+            )
 
     # Load golden VS output (optional)
     golden_vs_rows = []
