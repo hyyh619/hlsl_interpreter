@@ -656,6 +656,19 @@ class HLSLInterpreter:
         if self.debug and self._should_print and not self._in_derivative_eval:
             self.log_output(msg)
 
+    @staticmethod
+    def _safe_pow(base, exp):
+        """pow that saturates to +/-inf instead of raising OverflowError, and
+        returns NaN for invalid domains instead of crashing. 3Dmigoto exp2/pow
+        on real cbuffer values can blow past float range; downstream consumers
+        (color quantizer, golden compare) already tolerate inf/NaN."""
+        try:
+            return math.pow(base, exp)
+        except OverflowError:
+            return math.inf if base > 0 else -math.inf
+        except (ValueError, ZeroDivisionError):
+            return math.nan
+
     def _format_float(self, val):
         """
         格式化浮点数输出
@@ -1524,9 +1537,9 @@ class HLSLInterpreter:
             if val is None:
                 return None
             if isinstance(val, list):
-                result = [math.pow(2.0, v) for v in val]
+                result = [self._safe_pow(2.0, v) for v in val]
             else:
-                result = math.pow(2.0, val)
+                result = self._safe_pow(2.0, val)
             self.debug_print(f"[FUNC] exp2({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
@@ -1656,7 +1669,15 @@ class HLSLInterpreter:
             exp = self.evaluate_syntax_tree(args[1], local_vars)
             if base is None or exp is None:
                 return None
-            result = math.pow(base, exp)
+            if isinstance(base, list) or isinstance(exp, list):
+                n = max(len(base) if isinstance(base, list) else 1,
+                        len(exp) if isinstance(exp, list) else 1)
+
+                def _c(x, i):
+                    return x[i] if isinstance(x, list) else x
+                result = [self._safe_pow(_c(base, i), _c(exp, i)) for i in range(n)]
+            else:
+                result = self._safe_pow(base, exp)
             self.debug_print(f"[FUNC] pow({self._format_float(base)}, {self._format_float(exp)}) = {self._format_float(result)}")
             return result
 
@@ -2185,6 +2206,33 @@ class HLSLInterpreter:
 
         return 0.0
 
+    @staticmethod
+    def _split_top_level_commas(s: str) -> list:
+        """Split on commas not nested inside (), [] or <>."""
+        parts, depth, cur = [], 0, []
+        for ch in s:
+            if ch in '([<':
+                depth += 1
+            elif ch in ')]>':
+                depth -= 1
+            if ch == ',' and depth == 0:
+                parts.append(''.join(cur))
+                cur = []
+            else:
+                cur.append(ch)
+        if cur:
+            parts.append(''.join(cur))
+        return parts
+
+    def _assign_lvalue(self, lvalue: str, value, local_vars: Dict[str, Any]):
+        """Assign to an lvalue that may carry a swizzle (e.g. 'r1.x' or 'r0')."""
+        lvalue = lvalue.strip()
+        m = re.match(r'^(\w+)\.([xyzwrgba]+)$', lvalue)
+        if m:
+            self._apply_swizzle_assign(m.group(1), m.group(2), value, local_vars)
+        else:
+            local_vars[lvalue] = value
+
     def execute_statement(self, stmt: str, local_vars: Dict[str, Any]):
         """
         执行单条HLSL语句
@@ -2201,6 +2249,27 @@ class HLSLInterpreter:
         if stmt.startswith('if'):
             self.execute_if_statement(stmt, local_vars)
             return None
+
+        # sincos(angle, s_out, c_out): no return value; writes sin(angle) to the
+        # second lvalue and cos(angle) to the third. Pervasive in 3Dmigoto
+        # rotation/animation code; without it the out registers keep stale values
+        # and the transform is wrong.
+        if stmt.startswith('sincos'):
+            m = re.match(r'sincos\s*\((.*)\)\s*;?$', stmt, re.DOTALL)
+            if m:
+                parts = self._split_top_level_commas(m.group(1))
+                if len(parts) == 3:
+                    angle = self.evaluate_expression(parts[0].strip(), local_vars)
+                    if angle is not None:
+                        if isinstance(angle, list):
+                            s = [math.sin(a) for a in angle]
+                            c = [math.cos(a) for a in angle]
+                        else:
+                            s, c = math.sin(angle), math.cos(angle)
+                        self._assign_lvalue(parts[1].strip(), s, local_vars)
+                        self._assign_lvalue(parts[2].strip(), c, local_vars)
+                    self.debug_print(f"[STMT] {stmt} => sincos written")
+                    return None
 
         # 多变量声明无初始值: float4 r0,r1,r2; 或 uint4 bitmask, uiDest;
         if '=' not in stmt:

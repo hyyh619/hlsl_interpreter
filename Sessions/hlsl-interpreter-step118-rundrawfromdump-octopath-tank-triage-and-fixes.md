@@ -128,7 +128,39 @@ binary cbuffer / typed-buffer / raw-int paths are all no-ops when the capture
 lacks the corresponding files (the witcher regression set), so full regression
 stays green.
 
+## Class 4 — `sincos` statement (Octopath foliage)
+
+**Representative: `Octopath-frame746_event1487` (0/6 → 6/6).**
+
+These shaders already parsed the `#define cmp -` macro and vector ternaries
+(`r9.zzz ? a : b`) correctly — the only gap was **`sincos(angle, s, c)`**, a
+void intrinsic that writes `sin`→2nd lvalue, `cos`→3rd. It hit the
+`(no assignment)` fallback, so the rotation registers kept stale values and the
+position was wrong. Added a statement handler (`_split_top_level_commas` +
+`_assign_lvalue`).
+
+## Class 5 — `exp2`/`pow` overflow no longer crashes (event576/2651/2682)
+
+Once cbuffers carried real binary values, an `exp2`/`pow` on a large exponent
+raised `OverflowError: math range error` and aborted the run. `_safe_pow`
+saturates to ±inf (and NaN on bad domain) instead; downstream consumers already
+tolerate inf/NaN. The three crashes became ordinary runs.
+
 ## Remaining classes (not yet fixed — follow-up)
+
+The still-failing Octopath cases are a **long tail of distinct per-shader
+features**, split into:
+
+- **Float32-precision-limited** (logic correct, only a noise/hash output off):
+  event1897 (`PARTICLE_LIGHTING_OFFSET = frac(1361.4·(10+v1.w)²)…`, SV_POSITION
+  passes), event283 (sv_position diff 0.008), event1828/2091 (TEXCOORD10 diff
+  ~0.03–0.05). Would need float32-rounding emulation of intermediates.
+- **Bit-ops + multi-typed-buffer particle/quaternion shaders** (event2135/1250/
+  3542/3601/3012 …): need `<<`/`>>`/`^`/`%`/`~` operators (not in the precedence
+  table), `t3.Load` quaternion decode, `(uint)` truncation chains.
+- Large/slow cases now run without crashing but time out in triage at 150 s
+  (event2384 23k+ rows, 576, 2428, 2651, 2682, 3221).
+- **event1854** colour path; **18 Tank timeouts**; **witcher 160** un-triaged.
 
 - **Complex Octopath foliage/skinning shaders** (event1057/1357/1487/1897/1922/
   2214/2384/2513/2569/2767/2912/3502/3601/3642 …): need `sincos`, the 3Dmigoto
@@ -155,6 +187,8 @@ stays green.
   `_cbuffer_component_raw_int` (+ `typed_buffers`/`_cb_raw` state).
 - `render.py` — wire `override_cbuffers_from_binary` (VS+PS),
   `load_typed_buffer_data`, and per-vertex `SV_VertexID` from the index column.
+- `hlsl_interpreter.py` (class 4/5) — `sincos` statement handler +
+  `_split_top_level_commas`/`_assign_lvalue`; `_safe_pow` used by `exp2`/`pow`.
 
 ## Status at checkpoint
 
