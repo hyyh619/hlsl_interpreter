@@ -1599,6 +1599,34 @@ class HLSLInterpreter:
                 result = a + (b - a) * t
             return result
 
+        # mad: multiply-add, mad(a,b,c) = a*b + c, component-wise with scalar
+        # broadcasting. Pervasive in 3Dmigoto output, including integer index
+        # math like `mad((int2)v1.xx, int2(36,36), int2(1,3))` that computes
+        # StructuredBuffer row indices; unimplemented it returned None and
+        # poisoned the whole transform (garbage SV_POSITION).
+        elif func_name == 'mad':
+            if len(args) != 3:
+                self.debug_print(f"[ERROR] mad requires 3 args, got {len(args)} at line {node.line_number}")
+                return None
+            a = self.evaluate_syntax_tree(args[0], local_vars)
+            b = self.evaluate_syntax_tree(args[1], local_vars)
+            c = self.evaluate_syntax_tree(args[2], local_vars)
+            if a is None or b is None or c is None:
+                return None
+            lists = [x for x in (a, b, c) if isinstance(x, list)]
+            if lists:
+                n = max(len(x) for x in lists)
+
+                def _comp(x, i):
+                    if isinstance(x, list):
+                        return x[i] if i < len(x) else x[-1]
+                    return x
+                result = [_comp(a, i) * _comp(b, i) + _comp(c, i) for i in range(n)]
+            else:
+                result = a * b + c
+            self.debug_print(f"[FUNC] mad(...) = {self._format_float(result)}")
+            return result
+
         # int2/int3/int4: 整数向量构造
         elif func_name in ('int2', 'int3', 'int4', 'uint2', 'uint3', 'uint4'):
             result = []
@@ -1847,7 +1875,12 @@ class HLSLInterpreter:
             return None
 
         if not isinstance(obj, list):
-            return obj if swizzle == 'x' else None
+            # A scalar has a single component; HLSL allows replicating it with
+            # .x / .xx / .xxx / .xxxx (and the .r colour-channel alias), e.g.
+            # `(int2)v1.xx` on a scalar uint. Anything else is invalid -> None.
+            if swizzle and all(c.lower() in ('x', 'r') for c in swizzle):
+                return obj if len(swizzle) == 1 else [obj] * len(swizzle)
+            return None
 
         result = []
         for c in swizzle:

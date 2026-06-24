@@ -56,6 +56,43 @@ before commit.
 
 _(filled in as triage completes)_
 
+## Class 2 — `mad` intrinsic + scalar-swizzle replication (Octopath transform)
+
+**Representative: `Octopath-frame746_event1031`** (sv_position errors → 0).
+
+The Octopath instanced meshes transform the position through a matrix stored in
+a `StructuredBuffer<t0_t{float val[4]}>`, indexed by
+`mad((int2)v1.xx, int2(36,36), int2(1,3))` etc. Two bugs produced garbage
+`SV_POSITION`:
+
+1. **`mad(a,b,c)` was unimplemented** → returned None, so the row indices
+   `v1.x*36 + {1,2,3}` were None and the wrong `t0` rows were read. Added
+   `mad = a*b + c`, component-wise with scalar broadcasting.
+
+2. **Scalar swizzle replication returned None.** `apply_swizzle` only allowed
+   `.x` on a scalar; `(int2)v1.xx` (v1 is a scalar `uint`) gave None, re-breaking
+   the index `mad`. HLSL lets a scalar be replicated with `.x/.xx/.xxx/.xxxx`;
+   `apply_swizzle` now does that.
+
+With both, `event1031`'s `SV_POSITION` matches golden (all `sv_position[*]`
+errors gone). The dominant Octopath class fails first on `sv_position`, so this
+is the high-impact fix.
+
+## Class 3 (in progress) — binary cbuffer load + typed-buffer `Buffer<T>.Load`
+
+`event1031`'s remaining `TEXCOORD` error: `o1.xy = t1.Load(r1.x).xy` where
+`t1 : Buffer<float4>` and
+`r1.x = (v2.x + asint(cb1[0].w)) * asint(cb1[0].y)` (v2 = SV_VertexID).
+
+- cb1 holds **integer bit-patterns** (`ints (-1, 1, 0, 0)` in
+  `constant_30981.bin`); the float CSV destroyed them (`cb1[0].y` int `1` printed
+  as `0.000000`, `cb1[0].x` int `-1` as `nan`). `asint(cb1[0].y)` must recover
+  `1`, so cbuffers must be read from the raw binary
+  (`VS_constant_buffer_info.csv` maps slot→`constant_<id>.bin`).
+- `t1` is a typed buffer (`buffer_params.csv`: TypedBuffer, `buffer_30974.bin`),
+  here R32G32_FLOAT; `Buffer<T>.Load(index)` must fetch element `index`. The
+  existing `.Load` handler only models `Texture2D.Load(int3)`.
+
 ## Remaining classes
 
 - **Octopath transform class** (event1031/1057/1250/1320/1487/1828/1897/1922/
