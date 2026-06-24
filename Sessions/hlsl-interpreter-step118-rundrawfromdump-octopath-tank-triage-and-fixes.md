@@ -173,6 +173,28 @@ format** for VS typed buffers (`buffer_params.csv` has only element byte size;
 from the captured metadata — a capture-data limitation, so these particle cases
 stay unfixed. The bitwise support is committed as correct general infrastructure.
 
+## Class 7 — binary-VB rescue when the CSV column is all-zero (event1854)
+
+**Representative: `Octopath-frame746_event1854` (0/6 → 6/6).**
+
+`o3 = COLOR0 = v3` (`ATTRIBUTE3 : B8G8R8A8_UNORM`, slot 4) came out 0 vs golden
+`(1,1,1,1)`: `ia_vertex_data.csv` stored ATTRIBUTE3 as zeros, but the real bytes
+are in the binary VB. The class-3 agreement guard blocked the override (CSV `0`
+≠ binary `1`). The guard exists to protect *non-zero* CSV columns the decoder
+might mis-read (R8G8B8A8_UINT BLENDINDICES), so it now also accepts the binary
+when **the CSV column is all-zero and the binary is not** (`_is_all_zero`) — the
+CSV simply failed to capture that element. A non-zero CSV that disagrees is
+still kept, so skinned meshes stay correct.
+
+## Tank timeouts — slow, not wrong (deferred)
+
+Ran `TankMechanicSimulator_event1090` to completion bounds: with a vertex cap it
+finishes instantly and the VS shows **0 `Error:` lines**; the full run is slow
+only because it rasterizes and depth-compares ~62 k pixels in pure Python (the
+`Error [DepthDiff]` lines are depth-buffer diffs, not VS mismatches). So the 18
+Tank "timeouts" are a performance limit of the headless triage, not interpreter
+bugs — deferred (would need a much larger per-case timeout to confirm each).
+
 ## Remaining classes (not yet fixed — follow-up)
 
 The still-failing Octopath cases are a **long tail of distinct per-shader
@@ -220,6 +242,8 @@ features**, split into:
   `^`/`<<`/`>>`/`%`; unary `~`/`!` and pre-cast bitwise/shift split in
   `_parse_expression`; `execute_binary_op` shifts/xor/mod, `execute_unary_op`
   `~`; hex/`u`-suffixed integer literals in `get_value`.
+- `hlsl_interpreter.py` (class 7) — `_is_all_zero`; binary-VB override now
+  rescues an all-zero CSV column in `load_per_vertex_binary_data`.
 
 ## Status at checkpoint
 

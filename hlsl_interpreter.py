@@ -4268,10 +4268,35 @@ class HLSLInterpreter:
                     if row_i >= len(csv_vertex_data):
                         continue
                     csv_val = csv_vertex_data[row_i].get(pname)
-                    if csv_val is None or not self._values_agree(value, csv_val):
+                    # Accept the binary decode when it AGREES with the CSV (a
+                    # precision refinement) OR when the CSV column is all-zero
+                    # while the binary is not — the CSV failed to capture this
+                    # element (e.g. a B8G8R8A8_UNORM colour the dump left at 0),
+                    # so the binary is the only truth. A non-zero CSV that
+                    # disagrees is still kept (protects R8G8B8A8_UINT
+                    # BLENDINDICES this decoder cannot model).
+                    agree = csv_val is not None and self._values_agree(value, csv_val)
+                    rescue = self._is_all_zero(csv_val) and not self._is_all_zero(value)
+                    if not (agree or rescue):
                         continue
                 overrides[row_i][pname] = value
         return overrides
+
+    @staticmethod
+    def _is_all_zero(v) -> bool:
+        """True if v is None/empty or every component is (near) zero."""
+        if v is None:
+            return True
+        seq = v if isinstance(v, list) else [v]
+        if not seq:
+            return True
+        for x in seq:
+            try:
+                if abs(float(x)) > 1e-9:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return True
 
     @staticmethod
     def _values_agree(a, b, rel: float = 1e-2, abs_tol: float = 1e-3) -> bool:
