@@ -262,7 +262,7 @@ The zip workflow parsed the PS texture/sampler bindings but never loaded the act
 
 1. Load zip textures — render.py
 
-Added _discover_zip_textures() which scans the extracted folder for 3Dmigoto's shader-resource dumps (PS_slot_<slot>_res_<id>_mip<m>_arr<a>.bmp), groups them by register slot, uses the mip0/arr0 BMP as each texture's source, and builds register-indexed texture_desc_list / sampler_list (each slot gets a default linear/wrap Sampler).
+Added _discover_zip_textures() which scans the extracted folder for 3Dmigoto's shader-resource dumps (PS_slot_num_res_id_mip_m_arrnum.bmp), groups them by register slot, uses the mip0/arr0 BMP as each texture's source, and builds register-indexed texture_desc_list / sampler_list (each slot gets a default linear/wrap Sampler).
 Wired it into the PS section of _execute_pipeline: textures are loaded and bound via set_texture_and_sampler(...) before _parse_texture_and_sampler_bindings, so t0 → DiffuseTexture resolves to real data.
 2. Y-flip on load — texture.py:326-330
 
@@ -1722,17 +1722,71 @@ Notice:
 
 
 
-# 41
+# 41 修复C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump里的所有zip file
 ## Prompts
-
+1. 挨个执行C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump里的所有zip file。
+2. 如果运行的zip file没有问题，则什么操作也不做，直接运行下一个zip file
+3. 如果运行的zip file在output.log中发现了error，请分析整个渲染管线，找出问题在哪里
+4. 修复该问题，执行该case保证修复的error没有了，也没有新增error。
+5. 问题修复后执行regression test保证回归测试通过
+6. 以上测试通过后，直接提交fix。同时把同样出错误这一类zip file选一个加入到regression test中。然后继续执行下一个zip file
+7. 把步骤2~6过程中你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit:
+cb42511 Fix dropped statement after 3Dmigoto comment block + add as* intrinsics
+4c3ee2f Add mad intrinsic + scalar swizzle replication (Octopath transform)
+af348f6 Octopath instanced transform: binary cbuffer, typed Buffer.Load, SV_VertexID
 
 ## Claude Code Session
+
+Dump 目录有 **280 个 zip**（Collision×1、Octopath-frame746×44、
+TankMechanicSimulator×75、witcher3_countryside×160）。逐个全量跑不现实（大量大
+capture + 全屏 PS），故**先 triage**（headless 脚本，单 case 超时，超时也从 log 抓
+VS 判定），按错误特征 + shader 特性分类，再按根因逐类修复并增量提交。
+
+新游戏（Octopath/Tank）triage：Octopath 30 失败，Tank 57 通过 + 18 个超时(150s 内无
+VS 判定)。已定位并修复 **3 类根因**（均回归 39/39 通过，代表 case 已加入本地回归）：
+
+1. **3Dmigoto 注释块吞掉首条语句 + 缺失 as* 内建**（代表 event102，1/4→4/4）。
+   `GenerateStmts` 只按 `;` 切分、从不剥离 `//`、`/* */` 注释；3Dmigoto 在每条语句
+   前插 `// Needs manual fix...` 注释块，注释与其后赋值粘成一条语句，赋值被判为
+   “no assignment”，输出寄存器保持默认 0。新增 `_strip_comments`（保留字符串字面量
+   与换行）。另补 `asint/asuint/asfloat`（32 位位型重解释），原先返回 None 毒化表达式。
+
+2. **mad 内建 + 标量 swizzle 复制**（代表 event1031 的 sv_position 全部清零）。
+   Octopath 实例化网格用 `StructuredBuffer<t0_t{float val[4]}>` 存矩阵，索引
+   `mad((int2)v1.xx, int2(36,36), int2(1,3))`。(a) `mad(a,b,c)=a*b+c` 未实现→返回
+   None→行索引错→读错矩阵行→sv_position 全是垃圾值；已补（逐分量+标量广播）。
+   (b) `apply_swizzle` 对标量只允许 `.x`，`(int2)v1.xx`（v1 是标量 uint）返回 None；
+   HLSL 允许 `.x/.xx/.xxx/.xxxx` 复制标量，已支持。
+
+3. **二进制 cbuffer + typed Buffer<T>.Load + SV_VertexID**（代表 event1031、
+   event1320，均 0/6→6/6）。TEXCOORD/COLOR 来自 `t1/t2.Load(idx)`，
+   `idx=(v2.x+asint(cb1[0].w))*asint(cb1[0].y)`，v2=SV_VertexID。五个子修复：
+   (a) `override_cbuffers_from_binary` 从 `constant_<id>.bin`(由
+   `{VS,PS}_constant_buffer_info.csv` 映射)重载 cbuffer，使 asint/asuint 拿到真实
+   整数位（CSV 浮点把 int 1 印成 0、-1 印成 nan）；浮点值位级一致，且 info CSV 缺失
+   时(witcher)直接跳过、零影响。(b) `load_typed_buffer_data`/`_typed_buffer_load` +
+   `.Load` 分支：解析 `Buffer<T> tN`、按 `buffer_params.csv` 读 `buffer_<resid>.bin`、
+   取 element[index]，格式按“每声明分量字节数”推断(=1→R8G8B8A8_UNORM 颜色表，否则
+   float32×elem_size//4，如 8B=R32G32)。(c) 每顶点 SV_VertexID 取索引缓冲值(此前从未
+   设置，所有顶点都读 element 0)。(d) `_cbuffer_component_raw_int`：asint/asuint 直接
+   作用于 `cbN[i].c` 时取精确 int32 位(−1 存为 nan 无法浮点往返)。
+
+**尚未修复（后续迭代）**：
+- 复杂 Octopath 植被/蒙皮 shader(event1487/1897/1057/1357/1922/2214/2384…)：需
+  `sincos`、`#define cmp -` 比较宏(cmp(a<b)→整型掩码)、向量三元
+  `r9.zzz?a:b`、更多 (int2) 转换链、`StructuredBuffer t0.Load(index)`。
+- `OverflowError: math range error`(event576/2651/2682)：cbuffer 用真实值后
+  exp2/pow 溢出 Python float，需 inf 钳制。
+- event1854(Color 路径)；Tank 18 个超时(150s 内无 VS 判定，疑似 setup 很慢/挂起)；
+  witcher3_countryside 本批 160 个未单独 triage(回归中的 36 个通过)。
+
+详见 Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.md。
 
 
 
