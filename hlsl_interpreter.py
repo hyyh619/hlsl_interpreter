@@ -1641,6 +1641,36 @@ class HLSLInterpreter:
             self.debug_print(f"[FUNC] abs({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
+        # asint/asuint/asfloat: bit-pattern reinterpretation (no value conversion).
+        # 3Dmigoto uses these for integer/flag packing, e.g.
+        # `o2.x = (int)v2.x + asint(cb0[0].x)`. We reinterpret the raw 32-bit
+        # pattern, matching HLSL semantics; unimplemented they returned None and
+        # poisoned the whole expression.
+        elif func_name in ('asint', 'asuint', 'asfloat'):
+            if len(args) != 1:
+                self.debug_print(f"[ERROR] {func_name} requires 1 arg, got {len(args)} at line {node.line_number}")
+                return None
+            val = self.evaluate_syntax_tree(args[0], local_vars)
+            if val is None:
+                return None
+
+            def _reinterpret(x):
+                try:
+                    if func_name == 'asint':
+                        return struct.unpack('<i', struct.pack('<f', float(x)))[0]
+                    if func_name == 'asuint':
+                        return struct.unpack('<I', struct.pack('<f', float(x)))[0]
+                    # asfloat: reinterpret an integer bit pattern as float32.
+                    xi = int(x)
+                    packer = '<i' if xi < 0 else '<I'
+                    return struct.unpack('<f', struct.pack(packer, xi & 0xFFFFFFFF if xi >= 0 else xi))[0]
+                except (struct.error, ValueError, OverflowError):
+                    return x
+
+            result = [_reinterpret(v) for v in val] if isinstance(val, list) else _reinterpret(val)
+            self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
+            return result
+
         # sin: 正弦函数
         # 计算弧度的正弦值，对列表则对每个元素计算
         elif func_name == 'sin':
@@ -2292,7 +2322,47 @@ class HLSLInterpreter:
         for stmt in statements:
             self.execute_statement(stmt, local_vars)
 
+    @staticmethod
+    def _strip_comments(code: str) -> str:
+        """Remove C++-style `//` line comments and `/* */` block comments,
+        leaving string literals intact. 3Dmigoto emits comment blocks such as
+        `// Needs manual fix for instruction:` immediately before a real
+        statement; without stripping, GenerateStmts fuses the comment with the
+        following assignment (up to the next ';') and the assignment is lost."""
+        out = []
+        i = 0
+        n = len(code)
+        in_string = False
+        string_char = None
+        while i < n:
+            c = code[i]
+            if in_string:
+                out.append(c)
+                if c == string_char:
+                    in_string = False
+                i += 1
+            elif c in '"\'':
+                in_string = True
+                string_char = c
+                out.append(c)
+                i += 1
+            elif c == '/' and i + 1 < n and code[i + 1] == '/':
+                # Line comment: drop through end of line, keep the newline so
+                # line-number bookkeeping and statement boundaries are preserved.
+                while i < n and code[i] != '\n':
+                    i += 1
+            elif c == '/' and i + 1 < n and code[i + 1] == '*':
+                i += 2
+                while i + 1 < n and not (code[i] == '*' and code[i + 1] == '/'):
+                    i += 1
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+        return ''.join(out)
+
     def GenerateStmts(self, code: str):
+        code = self._strip_comments(code)
         statements = []
         current_stmt = []
         brace_count = 0
