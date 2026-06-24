@@ -11,13 +11,17 @@ _COMPILED_PATTERNS: Dict[str, re.Pattern] = {
     'method_call': re.compile(r'^(\w+(?:\.\w+)*)\s*\('),
 }
 
+# Precedence: higher binds tighter. Renumbered to insert C-style bitwise xor
+# and the shift operators at their correct levels without changing the relative
+# order of the existing operators.
 _OPERATORS: Dict[str, int] = {
     '||': 1, '&&': 2,
-    '|': 3, '&': 4,
-    '==': 5, '!=': 5,
-    '<': 6, '>': 6, '<=': 6, '>=': 6,
-    '+': 7, '-': 7,
-    '*': 8, '/': 8,
+    '|': 3, '^': 4, '&': 5,
+    '==': 6, '!=': 6,
+    '<': 7, '>': 7, '<=': 7, '>=': 7,
+    '<<': 8, '>>': 8,
+    '+': 9, '-': 9,
+    '*': 10, '/': 10, '%': 10,
 }
 
 
@@ -205,13 +209,20 @@ class SyntaxTreeParser:
         if not expr:
             return SyntaxTreeNode('value', None)
 
-        # Check for | and & before cast: (int2)a | (int2)b must NOT be treated
-        # as a cast of the whole rhs — the bitwise op is at the top level.
+        # Unary bitwise-not / logical-not prefix: ~expr, !expr (but not !=).
+        if expr[0] == '~':
+            return SyntaxTreeNode('unary_op', '~', self._parse_expression(expr[1:].strip()))
+        if expr[0] == '!' and not expr.startswith('!='):
+            return SyntaxTreeNode('unary_op', '!', self._parse_expression(expr[1:].strip()))
+
+        # Check for bitwise/shift ops before cast: (int2)a | (int2)b and
+        # (uint)r0.x << 1 must NOT be treated as a cast of the whole rhs — the
+        # operator is at the top level and binds looser than the cast.
         op_info_pre = self._find_top_level_operator(expr)
-        if op_info_pre and op_info_pre[1] in ('|', '&'):
+        if op_info_pre and op_info_pre[1] in ('|', '^', '&', '<<', '>>', '%'):
             pos, op = op_info_pre
             left_node = self._parse_expression(expr[:pos].strip())
-            right_node = self._parse_expression(expr[pos+1:].strip())
+            right_node = self._parse_expression(expr[pos+len(op):].strip())
             return SyntaxTreeNode('binary_op', op, left_node, right_node)
 
         cast_match = _COMPILED_PATTERNS['type_cast'].match(expr)
@@ -251,7 +262,8 @@ class SyntaxTreeParser:
         op_info = self._find_top_level_operator(expr)
         if op_info:
             pos, op = op_info
-            if op in ['||', '&&', '|', '&', '==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/']:
+            if op in ['||', '&&', '|', '^', '&', '==', '!=', '<', '>', '<=', '>=',
+                      '<<', '>>', '+', '-', '*', '/', '%']:
                 left_expr = expr[:pos].strip()
                 right_expr = expr[pos+len(op):].strip()
                 left_node = self._parse_expression(left_expr)

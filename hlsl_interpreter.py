@@ -1050,11 +1050,19 @@ class HLSLInterpreter:
                 return -v
             return v
 
+        def _bitnot(v):
+            if isinstance(v, (int, float, bool)):
+                r = (~int(v)) & 0xFFFFFFFF
+                return r - 0x100000000 if r >= 0x80000000 else r
+            return v
+
         if op == '-':
             if isinstance(val, list):
                 result = [_neg(v) for v in val]
             else:
                 result = _neg(val)
+        elif op == '~':
+            result = [_bitnot(v) for v in val] if isinstance(val, list) else _bitnot(val)
         else:
             result = not bool(val)
         if self.debug and self._should_print:
@@ -1180,6 +1188,28 @@ class HLSLInterpreter:
                 result = [int(left) & int(r) for r in right]
             else:
                 result = int(left) & int(right)
+        elif op in ('^', '<<', '>>', '%'):
+            # Bitwise xor / shifts (mask to 32-bit, as HLSL ints are 32-bit) and
+            # integer modulo. Used by particle/quaternion shaders for index math.
+            def _bit(a, b):
+                ia, ib = int(a) & 0xFFFFFFFF, int(b) & 0xFFFFFFFF
+                if op == '^':
+                    r = ia ^ ib
+                elif op == '<<':
+                    r = (ia << (ib & 31)) & 0xFFFFFFFF
+                elif op == '>>':
+                    r = ia >> (ib & 31)
+                else:  # '%' — operate on the signed values
+                    bi = int(b)
+                    return int(a) % bi if bi != 0 else 0
+                # Reinterpret as signed 32-bit so subsequent (int) math matches.
+                return r - 0x100000000 if r >= 0x80000000 else r
+            if isinstance(left, list) or isinstance(right, list):
+                lv = left if isinstance(left, list) else [left] * (len(right) if isinstance(right, list) else 1)
+                rv = right if isinstance(right, list) else [right] * len(lv)
+                result = [_bit(l, r) for l, r in zip(lv, rv)]
+            else:
+                result = _bit(left, right)
         else:
             result = None
         self.debug_print(f"[BINARY OP] left={self._format_float(left)}, right={self._format_float(right)}, op={op}, result={self._format_float(result)}")
@@ -1981,6 +2011,16 @@ class HLSLInterpreter:
             return True
         if name == 'false':
             return False
+
+        # Hex / unsigned integer literals (0xffffffff, 0x80000000u, 1u) — keep
+        # them as ints so bit ops see the exact pattern; >0x7fffffff is signed.
+        m_hex = re.match(r'^0[xX]([0-9a-fA-F]+)[uUlL]*$', name)
+        if m_hex:
+            v = int(m_hex.group(1), 16)
+            return v - 0x100000000 if 0x80000000 <= v <= 0xFFFFFFFF else v
+        m_uint = re.match(r'^(\d+)[uUlL]+$', name)
+        if m_uint:
+            return int(m_uint.group(1))
 
         # 尝试解析为数字
         try:

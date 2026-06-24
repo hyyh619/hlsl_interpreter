@@ -146,6 +146,33 @@ raised `OverflowError: math range error` and aborted the run. `_safe_pow`
 saturates to ±inf (and NaN on bad domain) instead; downstream consumers already
 tolerate inf/NaN. The three crashes became ordinary runs.
 
+## Class 6 — bitwise operators + hex literals (particle shaders, partial)
+
+The particle/quaternion shaders (event2135/1250/3542/3601/3012 …) use integer
+bit math the parser/evaluator lacked: `<<`, `>>`, `^`, `%`, unary `~`, and hex
+literals (`0xffffffff`). Added:
+
+- `_OPERATORS` gains `^`/`<<`/`>>`/`%` (renumbered to keep the existing relative
+  order; `^` between `|` and `&`, shifts between relational and additive).
+- `_parse_expression`: unary `~`/`!` prefix; the bitwise/shift set is split
+  before the cast branch so `(uint)r0.x << 1` is `((uint)r0.x) << 1`, not
+  `(uint)(r0.x << 1)`; the binary-op whitelist includes the new operators.
+- `execute_binary_op`: `^`/`<<`/`>>`/`%` (32-bit masked, result reinterpreted as
+  signed int32); `execute_unary_op`: `~`.
+- `get_value`: hex / `u`-suffixed integer literals.
+
+Verified on event2135: the `bitmask.x = ((~(-1<<31))<<1)&0xffffffff` idiom now
+evaluates to `-2` (was 0) and the index math is correct — errors dropped 78 → 11.
+
+**Blocked beyond this:** the remaining errors are the **quaternion typed buffer
+`t3`**, which is R8G8B8A8_**SNORM** (byte 127 → 1.0), while the sibling texcoord
+`t2` is R8G8B8A8_**UNORM** — both 4 bytes, and the capture records **no view
+format** for VS typed buffers (`buffer_params.csv` has only element byte size;
+`texture_params.csv` covers PS textures only; the DXBC disasm declares all as
+`(float,float,float,float)`). UNORM vs SNORM therefore cannot be disambiguated
+from the captured metadata — a capture-data limitation, so these particle cases
+stay unfixed. The bitwise support is committed as correct general infrastructure.
+
 ## Remaining classes (not yet fixed — follow-up)
 
 The still-failing Octopath cases are a **long tail of distinct per-shader
@@ -189,6 +216,10 @@ features**, split into:
   `load_typed_buffer_data`, and per-vertex `SV_VertexID` from the index column.
 - `hlsl_interpreter.py` (class 4/5) — `sincos` statement handler +
   `_split_top_level_commas`/`_assign_lvalue`; `_safe_pow` used by `exp2`/`pow`.
+- `hlsl_syntax_tree.py` + `hlsl_interpreter.py` (class 6) — `_OPERATORS`
+  `^`/`<<`/`>>`/`%`; unary `~`/`!` and pre-cast bitwise/shift split in
+  `_parse_expression`; `execute_binary_op` shifts/xor/mod, `execute_unary_op`
+  `~`; hex/`u`-suffixed integer literals in `get_value`.
 
 ## Status at checkpoint
 
