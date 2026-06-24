@@ -52,9 +52,12 @@ before commit.
 
 ---
 
-## Triage map (Octopath + Tank)
+## Triage map (Octopath 44 / Tank 75)
 
-_(filled in as triage completes)_
+Initial triage (classes 1–2 in tree): Octopath 30 fail; Tank 57 pass + 18
+timeouts that logged no VS verdict. After classes 1–3 the simple instanced-
+transform Octopath shaders pass (event102/1031/1320 + siblings); the still-
+failing Octopath cases use materially more complex shaders (see Remaining).
 
 ## Class 2 — `mad` intrinsic + scalar-swizzle replication (Octopath transform)
 
@@ -78,33 +81,83 @@ With both, `event1031`'s `SV_POSITION` matches golden (all `sv_position[*]`
 errors gone). The dominant Octopath class fails first on `sv_position`, so this
 is the high-impact fix.
 
-## Class 3 (in progress) — binary cbuffer load + typed-buffer `Buffer<T>.Load`
+## Class 3 — binary cbuffer load + typed-buffer `Buffer<T>.Load` + SV_VertexID
 
-`event1031`'s remaining `TEXCOORD` error: `o1.xy = t1.Load(r1.x).xy` where
+**Representative: `Octopath-frame746_event1031` (2/6 → 6/6, errors 0).**
+
+`event1031`'s remaining `TEXCOORD` came from `o1.xy = t1.Load(r1.x).xy` where
 `t1 : Buffer<float4>` and
-`r1.x = (v2.x + asint(cb1[0].w)) * asint(cb1[0].y)` (v2 = SV_VertexID).
+`r1.x = (v2.x + asint(cb1[0].w)) * asint(cb1[0].y)` (v2 = SV_VertexID). Three
+sub-fixes:
 
-- cb1 holds **integer bit-patterns** (`ints (-1, 1, 0, 0)` in
-  `constant_30981.bin`); the float CSV destroyed them (`cb1[0].y` int `1` printed
-  as `0.000000`, `cb1[0].x` int `-1` as `nan`). `asint(cb1[0].y)` must recover
-  `1`, so cbuffers must be read from the raw binary
-  (`VS_constant_buffer_info.csv` maps slot→`constant_<id>.bin`).
-- `t1` is a typed buffer (`buffer_params.csv`: TypedBuffer, `buffer_30974.bin`),
-  here R32G32_FLOAT; `Buffer<T>.Load(index)` must fetch element `index`. The
-  existing `.Load` handler only models `Texture2D.Load(int3)`.
+1. **Binary cbuffer load** (`override_cbuffers_from_binary`). cb1 holds integer
+   bit-patterns (`ints (-1, 1, 0, 0)` in `constant_30981.bin`); the float CSV
+   destroyed them (`cb1[0].y` int `1` printed `0.000000`; `-1` → `nan`).
+   `asint(cb1[0].y)` must recover `1`. We now re-load cbuffers from the raw
+   `constant_<id>.bin` (mapped by `{VS,PS}_constant_buffer_info.csv` slot→file),
+   decoding float4 arrays; float values round-trip identically, integer-as-float
+   denormals survive `asint` (`struct` re-pack). **No-op when the info CSV is
+   absent (the witcher captures have none), so they are untouched.**
 
-## Remaining classes
+2. **Typed-buffer `Buffer<T>.Load(index)`** (`load_typed_buffer_data`,
+   `_typed_buffer_load`, new branch in the `.Load` method handler). Parses
+   `Buffer<T> tN : register(tN)`, loads `buffer_<resid>.bin` via
+   `buffer_params.csv`, decodes `elem_size//4` float32 components (here 8B →
+   R32G32) padded to 4 with `(0,0,0,1)`, and fetches `element[index]`. The
+   existing `.Load` only modelled `Texture2D.Load(int3)`.
 
-- **Octopath transform class** (event1031/1057/1250/1320/1487/1828/1897/1922/
-  2091/2135/2214/2384/2428/2513 …): first error `sv_position[0]`, large garbage
-  values. Shaders use `StructuredBuffer<t0_t{float val[4]}>` indexed
-  `t0[i].val[0/4+k]`, integer `mad((int2)v1.xx, int2(36,36), int2(1,3))`,
-  per-instance `ATTRIBUTE13 : R32_UINT` (absent from ia_vertex_data.csv),
-  `Buffer<float4> t1.Load`, `SV_VertexID`, `SV_ClipDistance` output. Under
-  investigation.
-- **event1854 class**: first error `Color[0]` — distinct.
+3. **Per-vertex `SV_VertexID`** (render.py). It was never set, so `r1.x` was 0
+   for every vertex and all read `t1[0]`. Now set to the index-buffer value
+   (`idx_list[i]`, +BaseVertex=0) per vertex.
+
+4. **Exact int bits for `asint`/`asuint` of a cbuffer component**
+   (`_cbuffer_component_raw_int`, `_cb_raw`). `-1` stored as NaN does not survive
+   the float round-trip, so `asint(cb1[0].x)` (a `& -1` mask in the colour path)
+   gave garbage. We keep the int32 bit array from the binary load and, when the
+   `asint`/`asuint` argument is a literal `cbN[i].c`, return the exact int.
+
+5. **Typed-buffer format inference** (`_typed_buffer_load`). `buffer_params.csv`
+   gives only element byte size. A second buffer `t2` (the colour table) is
+   R8G8B8A8_UNORM (4B → (1,1,1,1)); decoding it as float32 gave NaN. Rule:
+   bytes-per-declared-component == 1 → UNORM8, else float32 with `elem_size//4`
+   components. This fixes the colour path; **event1320 now 6/6**.
+
+These five sub-fixes fully fix the core Octopath instanced-transform class
+(representatives **event1031** and **event1320**, both 6/6). Scoped safely: the
+binary cbuffer / typed-buffer / raw-int paths are all no-ops when the capture
+lacks the corresponding files (the witcher regression set), so full regression
+stays green.
+
+## Remaining classes (not yet fixed — follow-up)
+
+- **Complex Octopath foliage/skinning shaders** (event1057/1357/1487/1897/1922/
+  2214/2384/2513/2569/2767/2912/3502/3601/3642 …): need `sincos`, the 3Dmigoto
+  `#define cmp -` comparison macro (`cmp(a<b)` → integer mask), vector ternaries
+  (`r9.zzz ? a : b`), more `(int2)` cast / `frac` / `floor` chains, and a
+  `StructuredBuffer t0.Load(index)` path. event1487 still shows `sv_position`
+  errors because the `if/else` that builds `r0` uses `cmp`/`sincos`.
+- **OverflowError: math range error** (event576/2651/2682): once cbuffers carry
+  real binary values an `exp2`/`pow` overflows Python `float` — needs an inf
+  clamp.
+- **event1854**: first error `Color` — distinct colour path.
+- **Tank 18 timeouts** (event1090/1172/1189/1278/1357/1406/1947/4186/4236/4458/
+  5118/9153/9598/9634/9682/9750/10577/10691): no VS verdict logged within 150 s
+  and the log was empty — hang/very-slow in setup, not confirmed wrong.
+- **witcher3_countryside (160)**: not yet triaged in this batch (the 36 already
+  in the regression set pass).
 
 ## Files changed
 
 - `hlsl_interpreter.py` — `_strip_comments` + call in `GenerateStmts`;
-  `asint`/`asuint`/`asfloat` in the intrinsic dispatch.
+  `asint`/`asuint`/`asfloat`, `mad` intrinsics; scalar-swizzle replication in
+  `apply_swizzle`; typed-buffer parse in `_parse_structured_buffers`;
+  `load_typed_buffer_data`, `_typed_buffer_load`, `override_cbuffers_from_binary`,
+  `_cbuffer_component_raw_int` (+ `typed_buffers`/`_cb_raw` state).
+- `render.py` — wire `override_cbuffers_from_binary` (VS+PS),
+  `load_typed_buffer_data`, and per-vertex `SV_VertexID` from the index column.
+
+## Status at checkpoint
+
+Committed: class 1 (`cb42511`), class 2 (`4c3ee2f`), class 3 (this). Regression
+green. Representatives added to the local regression list: event102, event1031,
+event1320. Remaining classes above are the next iterations of the loop.

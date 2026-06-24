@@ -951,9 +951,14 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # Load cbuffer data
     if os.path.exists(vs_cb_csv):
         vs_interp.load_all_cbuffers_from_combined_csv(vs_cb_csv)
+    # Prefer the raw capture binary so integer bit patterns survive for
+    # asint/asuint (no-op when *_constant_buffer_info.csv is absent).
+    vs_interp.override_cbuffers_from_binary(data_folder, 'VS')
 
     # Load StructuredBuffer data (e.g. skinning bone palette t0)
     vs_interp.load_structured_buffer_data(data_folder)
+    # Load typed Buffer<T> data (e.g. Buffer<float4> t1 texcoord table)
+    vs_interp.load_typed_buffer_data(data_folder)
 
     # Load VS signature
     vs_sig = vs_interp.load_signature_from_csv(vs_sig_csv)
@@ -997,6 +1002,16 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # dumped as 'R0G0B0A0_UNORM'). These come from a separate VB slot and are
     # fetched by index-buffer value, then override the zero CSV columns.
     idx_list = vs_interp.load_index_column(ia_vertex_csv)
+    # SV_VertexID is a per-vertex system value (the index-buffer value for an
+    # indexed draw, +BaseVertex=0). Used e.g. to index a Buffer<float4> texcoord
+    # table (Octopath). Without it every vertex reads element 0.
+    sv_vid_params = [p['name'] for p in vs_input_params
+                     if p['semantic_base'].upper() == 'SV_VERTEXID']
+    if sv_vid_params and idx_list:
+        for i, vtx in enumerate(vertex_data):
+            vid = idx_list[i] if i < len(idx_list) else i
+            for pname in sv_vid_params:
+                vtx[pname] = vid
     pv_overrides = vs_interp.load_per_vertex_binary_data(
         ia_layouts_csv, data_folder, vs_input_params, idx_list,
         csv_vertex_data=vertex_data,
@@ -1164,6 +1179,7 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
 
         if os.path.exists(ps_cb_csv):
             ps_interp.load_all_cbuffers_from_combined_csv(ps_cb_csv)
+        ps_interp.override_cbuffers_from_binary(data_folder, 'PS')
 
         ps_params = ps_interp.parse_main_params_with_semantics(ps_code, 'main')
         if ps_params:

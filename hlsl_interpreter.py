@@ -339,6 +339,13 @@ class HLSLInterpreter:
         # StructuredBuffer绑定 (如 StructuredBuffer<t0_t> t0 : register(t0))
         # name -> {register, element_type, members:[(name,base_type,count)], stride, data(bytes)}
         self.structured_buffers: Dict[str, dict] = {}
+        # Typed-buffer bindings (Buffer<float4> t1 : register(t1)).
+        # name -> {register, comp, elem_size, data(bytes)}
+        self.typed_buffers: Dict[str, dict] = {}
+        # Exact int32 bit patterns of binary-loaded cbuffers, so asint/asuint of
+        # a direct cbuffer component recovers integers a float cannot round-trip
+        # (e.g. -1 stored as NaN).  {'cb1': [[i0,i1,i2,i3], ...]}
+        self._cb_raw: Dict[str, list] = {}
         # Cached structured-buffer index for the DXBC split-vector-load hazard
         # (see get_value). {'token': 't0[r1.x]', 'value': int} or None.
         self._sb_index_burst: Optional[dict] = None
@@ -1678,6 +1685,15 @@ class HLSLInterpreter:
             if len(args) != 1:
                 self.debug_print(f"[ERROR] {func_name} requires 1 arg, got {len(args)} at line {node.line_number}")
                 return None
+            # For asint/asuint of a direct cbuffer component, use the exact int32
+            # bit pattern from the binary load: a float cannot round-trip values
+            # like -1 (stored as NaN) through struct re-packing.
+            if func_name in ('asint', 'asuint'):
+                raw = self._cbuffer_component_raw_int(args[0])
+                if raw is not None:
+                    result = raw if func_name == 'asint' else (raw & 0xFFFFFFFF)
+                    self.debug_print(f"[FUNC] {func_name}(cbuffer raw) = {result}")
+                    return result
             val = self.evaluate_syntax_tree(args[0], local_vars)
             if val is None:
                 return None
@@ -1845,6 +1861,13 @@ class HLSLInterpreter:
             if obj_name is None:
                 return None
             location = self.evaluate_syntax_tree(args[0], local_vars)
+            # Typed buffer (Buffer<T>): Load(int index) -> element[index].
+            if obj_name in self.typed_buffers:
+                idx = location[0] if isinstance(location, list) else location
+                idx = int(idx) if idx is not None else 0
+                result = self._typed_buffer_load(self.typed_buffers[obj_name], idx)
+                self.debug_print(f"[METHOD] {obj_name}.Load({idx}) = {self._format_float(result)}")
+                return result
             if not isinstance(location, list):
                 location = [location]
             x = int(location[0]) if len(location) > 0 and location[0] is not None else 0
@@ -1863,6 +1886,27 @@ class HLSLInterpreter:
 
         self.debug_print(f"[ERROR] Unknown method: {method_name}")
         return None
+
+    _CB_COMPONENT_RE = re.compile(r'^(cb\d+)\[(\d+)\]\.([xyzw])$')
+    _CB_COMP_IDX = {'x': 0, 'y': 1, 'z': 2, 'w': 3}
+
+    def _cbuffer_component_raw_int(self, node):
+        """If `node` is a literal cbuffer scalar access (cbN[i].c) whose exact
+        int32 bits were captured by override_cbuffers_from_binary, return that
+        signed int; otherwise None. Lets asint/asuint recover integers that do
+        not survive the float round-trip (e.g. -1 stored as NaN)."""
+        if node is None or getattr(node, 'node_type', None) != 'value':
+            return None
+        m = self._CB_COMPONENT_RE.match(str(node.value).strip())
+        if not m:
+            return None
+        rows = self._cb_raw.get(m.group(1))
+        if not rows:
+            return None
+        idx = int(m.group(2))
+        if idx >= len(rows):
+            return None
+        return rows[idx][self._CB_COMP_IDX[m.group(3)]]
 
     def apply_swizzle(self, obj: Any, swizzle: str) -> Any:
         """
@@ -2836,6 +2880,18 @@ class HLSLInterpreter:
                 'members': members, 'stride': stride, 'data': None,
             }
 
+        # Typed buffers:  Buffer<float4> t1 : register(t1);
+        # comp count from the element type (float4 -> 4); the captured view's
+        # actual element byte size is filled in by load_typed_buffer_data.
+        for m in re.finditer(
+            r'\bBuffer\s*<\s*(\w+)\s*>\s*(\w+)\s*:\s*register\s*\(\s*t(\d+)\s*\)', code
+        ):
+            elem_type, name, reg = m.group(1), m.group(2), int(m.group(3))
+            comp = self._SB_COMPONENTS.get(elem_type, 4)
+            self.typed_buffers[name] = {
+                'register': reg, 'comp': comp, 'elem_size': 0, 'data': None,
+            }
+
     def load_structured_buffer_data(self, data_folder: str):
         """
         Load each parsed StructuredBuffer's contents from the captured binary
@@ -2862,6 +2918,128 @@ class HLSLInterpreter:
                 f"Loaded StructuredBuffer '{name}' (t{reg}): {n} elements, "
                 f"stride {sb['stride']}B from {os.path.basename(candidates[0])}"
             )
+
+    def load_typed_buffer_data(self, data_folder: str):
+        """Load each parsed typed Buffer<T>'s bytes from the capture, using
+        buffer_params.csv to map register -> .bin file and element byte size."""
+        params_path = os.path.join(data_folder, 'buffer_params.csv')
+        if not os.path.exists(params_path) or not self.typed_buffers:
+            return
+        rows = self.load_csv(params_path)
+        if not rows or len(rows) < 2:
+            return
+        header = [h.strip() for h in rows[0]]
+
+        def col(name):
+            return header.index(name) if name in header else -1
+        ci_slot, ci_bin = col('Slot'), col('BinFile')
+        ci_elem, ci_type = col('ElementByteSize'), col('DescriptorType')
+        if ci_slot < 0 or ci_bin < 0:
+            return
+        # register -> (binfile, elem_size); prefer TypedBuffer rows.
+        by_reg = {}
+        for row in rows[1:]:
+            if len(row) <= max(ci_slot, ci_bin):
+                continue
+            try:
+                slot = int(row[ci_slot])
+            except ValueError:
+                continue
+            dtype = row[ci_type].strip() if 0 <= ci_type < len(row) else ''
+            binfile = row[ci_bin].strip()
+            try:
+                esize = int(row[ci_elem]) if 0 <= ci_elem < len(row) else 0
+            except ValueError:
+                esize = 0
+            if slot not in by_reg or dtype == 'TypedBuffer':
+                by_reg[slot] = (binfile, esize)
+        for name, tb in self.typed_buffers.items():
+            info = by_reg.get(tb['register'])
+            if not info:
+                continue
+            binfile, esize = info
+            binpath = os.path.join(data_folder, binfile)
+            if not binfile or not os.path.exists(binpath):
+                continue
+            with open(binpath, 'rb') as f:
+                tb['data'] = f.read()
+            tb['elem_size'] = esize or (tb['comp'] * 4)
+            n = len(tb['data']) // tb['elem_size'] if tb['elem_size'] else 0
+            self.log_output(
+                f"Loaded typed Buffer '{name}' (t{tb['register']}): {n} elements, "
+                f"{tb['elem_size']}B/elem from {os.path.basename(binpath)}"
+            )
+
+    def _typed_buffer_load(self, tb: dict, index: int):
+        """Fetch element `index` of a typed buffer as a float list padded to 4
+        with D3D's (0,0,0,1) defaults. buffer_params.csv gives only the element
+        byte size, not the view format, so infer from bytes-per-declared-
+        component: 1 -> R8G8B8A8_UNORM (e.g. a colour table), otherwise float32
+        with elem_size//4 components (8B -> R32G32, 16B -> R32G32B32A32)."""
+        data = tb.get('data')
+        esize = tb.get('elem_size') or 0
+        if not data or esize <= 0 or index < 0:
+            return None
+        off = index * esize
+        if off + esize > len(data):
+            return None
+        comp = tb.get('comp') or 4
+        if comp and esize // comp == 1:
+            vals = [b / 255.0 for b in data[off:off + min(esize, 4)]]
+        else:
+            ncomp = min(esize // 4, 4)
+            vals = list(struct.unpack_from('<%df' % ncomp, data, off))
+        defaults = (0.0, 0.0, 0.0, 1.0)
+        while len(vals) < 4:
+            vals.append(defaults[len(vals)])
+        return vals
+
+    def override_cbuffers_from_binary(self, data_folder: str, stage_prefix: str):
+        """Re-load cbuffers from the raw capture binary (constant_<id>.bin via
+        {stage}_constant_buffer_info.csv) so exact bit patterns survive. The
+        float CSV destroys integers stored as bits (asint/asuint of e.g. an
+        int 1 stored as the float denormal 1.4e-45, or -1 as NaN). float values
+        round-trip identically, so this only ever adds precision. No-op when the
+        info CSV is absent (e.g. the witcher captures), keeping them untouched."""
+        info_path = os.path.join(data_folder, f'{stage_prefix}_constant_buffer_info.csv')
+        if not os.path.exists(info_path):
+            return
+        rows = self.load_csv(info_path)
+        if not rows or len(rows) < 2:
+            return
+        header = [h.strip() for h in rows[0]]
+
+        def col(name):
+            return header.index(name) if name in header else -1
+        ci_slot, ci_bin = col('Slot'), col('BinFile')
+        if ci_slot < 0 or ci_bin < 0:
+            return
+        for row in rows[1:]:
+            if len(row) <= max(ci_slot, ci_bin):
+                continue
+            try:
+                slot = int(row[ci_slot])
+            except ValueError:
+                continue
+            binfile = row[ci_bin].strip()
+            cb_def = self.cbuffers.get(f'cb{slot}')
+            if cb_def is None or not binfile:
+                continue
+            binpath = os.path.join(data_folder, binfile)
+            if not os.path.exists(binpath):
+                continue
+            with open(binpath, 'rb') as f:
+                data = f.read()
+            n4 = len(data) // 16
+            decoded = [list(struct.unpack_from('<4f', data, i * 16)) for i in range(n4)]
+            self._cb_raw[f'cb{slot}'] = [
+                list(struct.unpack_from('<4i', data, i * 16)) for i in range(n4)
+            ]
+            for field in cb_def.fields:
+                if getattr(field, 'array_size', 0) > 0:
+                    m = min(field.array_size, len(decoded))
+                    field.data = decoded[:m]
+                    break
 
     def _structured_buffer_member(self, sb: dict, index: int, member_name: str):
         """Decode one member of structured-buffer element `index` on demand.
