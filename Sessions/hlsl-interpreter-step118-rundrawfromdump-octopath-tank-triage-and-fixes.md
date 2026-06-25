@@ -195,6 +195,28 @@ only because it rasterizes and depth-compares ~62 k pixels in pure Python (the
 Tank "timeouts" are a performance limit of the headless triage, not interpreter
 bugs — deferred (would need a much larger per-case timeout to confirm each).
 
+## Class 8 — float32 arithmetic emulation (precision hashes)
+
+**Representatives: `Octopath-frame746_event1897` (0/6 → 6/6) and `event283`
+(0/48 → 48/48).**
+
+Some outputs are hash/noise functions like
+`r0.w = (10+v1.w); r0.w *= r0.w; r2 = frac(float3(1361.4563,…) * r0.www)`. The
+interpreter computes in Python `float` (double); the GPU uses float32. After a
+`×1361` amplification the ~1e-5 double/float32 gap moves the `frac` result by
+order 1 — so SV_POSITION matched but the noise output was garbage.
+
+Added GPU float32 emulation (`_to_f32` round-trips a double through
+`struct.pack('<f')`): when enabled, every `+ - * /` binary result, numeric
+literal, and `frac`/`mad` result is rounded to float32, so the amplified value
+is the exact float32 the GPU saw before `frac`. Gated by the config flag
+`float32_emulation`; the regression suite turns it **on** for every case
+(`run_regression.py` BASE_CONFIG) and stays green, confirming it is a
+strictly-more-accurate default rather than a per-case hack.
+
+`event1828` has a *different* residual precision issue (not pure arithmetic) and
+is still open.
+
 ## Remaining classes (not yet fixed — follow-up)
 
 The still-failing Octopath cases are a **long tail of distinct per-shader
@@ -244,6 +266,10 @@ features**, split into:
   `~`; hex/`u`-suffixed integer literals in `get_value`.
 - `hlsl_interpreter.py` (class 7) — `_is_all_zero`; binary-VB override now
   rescues an all-zero CSV column in `load_per_vertex_binary_data`.
+- `hlsl_interpreter.py` + `render.py` + `run_regression.py` (class 8) —
+  `_to_f32`/`_f32` + `f32_emulation` flag; float32 rounding in
+  `execute_binary_op`, numeric literals, `frac`/`mad`; wired from config
+  `float32_emulation` (on in the regression BASE_CONFIG).
 
 ## Status at checkpoint
 

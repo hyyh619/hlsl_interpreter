@@ -86,6 +86,11 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
         texture_list=[texture_exec] if texture_exec else [],
         texture_desc_list=texture_desc_list or [],
         sampler_list=sampler_list or [],
+        # float32 rounding adds per-op overhead; the precision-sensitive hash
+        # outputs are all in the VS, so only emulate there (keeps the per-pixel
+        # PS fast on full-screen draws like event7358).
+        f32_emulation=(config.get('float32_emulation', False)
+                       and shader_stage == d3d.SHADER_STAGE_VS),
     )
 
 

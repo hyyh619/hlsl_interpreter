@@ -309,7 +309,8 @@ class HLSLInterpreter:
                 log_cache_size: int = 10 * 1024 * 1024,
                 texture_list: List['Texture'] = None,
                 texture_desc_list: List['TextureDesc'] = None,
-                sampler_list: List['Sampler'] = None):
+                sampler_list: List['Sampler'] = None,
+                f32_emulation: bool = False):
         self.structs: Dict[str, StructDefinition] = {}      # 解析的结构体定义
         self.cbuffers: Dict[str, CbufferDefinition] = {}    # 解析的cbuffer定义
         self.variables: Dict[str, Any] = {}                 # 全局变量
@@ -329,6 +330,10 @@ class HLSLInterpreter:
         self._parsed_func_cache = {}                         # 解析过的函数体缓存
         self._all_functions = {}                              # 所有解析的函数定义 {func_name: {'ret_type': ..., 'params': {...}, 'body': ...}}
         self.primitive_topology = primitive_topology         # 图元拓扑类型
+        # Emulate GPU float32 arithmetic: round every binary-op / intrinsic
+        # result to float32. Needed for hash-style outputs like frac(K*x*x)
+        # where float64 intermediates diverge after amplification.
+        self.f32_emulation = f32_emulation
         self._mesh_view = None                               # MeshView实例(用于显示输入和输出)
         self._mesh_view_enabled = False                      # 是否启用MeshView
         self.vertex_pool = VertexPool()                       # 顶点池
@@ -1212,6 +1217,8 @@ class HLSLInterpreter:
                 result = _bit(left, right)
         else:
             result = None
+        if self.f32_emulation and op in ('+', '-', '*', '/'):
+            result = self._to_f32(result)
         self.debug_print(f"[BINARY OP] left={self._format_float(left)}, right={self._format_float(right)}, op={op}, result={self._format_float(result)}")
         return result
 
@@ -1598,6 +1605,7 @@ class HLSLInterpreter:
                 result = [float(op(v)) for v in val]
             else:
                 result = float(op(val))
+            result = self._f32(result)
             self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
@@ -1674,6 +1682,7 @@ class HLSLInterpreter:
                 result = [_comp(a, i) * _comp(b, i) + _comp(c, i) for i in range(n)]
             else:
                 result = a * b + c
+            result = self._f32(result)
             self.debug_print(f"[FUNC] mad(...) = {self._format_float(result)}")
             return result
 
@@ -2024,7 +2033,7 @@ class HLSLInterpreter:
 
         # 尝试解析为数字
         try:
-            return float(name)
+            return self._f32(float(name))
         except ValueError:
             pass
 
@@ -4281,6 +4290,26 @@ class HLSLInterpreter:
                         continue
                 overrides[row_i][pname] = value
         return overrides
+
+    @staticmethod
+    def _to_f32(x):
+        """Round a Python float (double) to the nearest float32, the precision
+        the GPU actually uses. Lists are rounded element-wise; ints/bools and
+        non-finite values pass through unchanged."""
+        if isinstance(x, list):
+            return [HLSLInterpreter._to_f32(v) for v in x]
+        if isinstance(x, bool) or not isinstance(x, float):
+            return x
+        if x != x or x in (float('inf'), float('-inf')):
+            return x
+        try:
+            return struct.unpack('<f', struct.pack('<f', x))[0]
+        except (OverflowError, struct.error):
+            return x
+
+    def _f32(self, x):
+        """Apply float32 rounding when GPU-precision emulation is enabled."""
+        return self._to_f32(x) if self.f32_emulation else x
 
     @staticmethod
     def _is_all_zero(v) -> bool:
