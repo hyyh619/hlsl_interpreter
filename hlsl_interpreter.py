@@ -331,6 +331,12 @@ class HLSLInterpreter:
         self._parsed_func_cache = {}                         # 解析过的函数体缓存
         self._all_functions = {}                              # 所有解析的函数定义 {func_name: {'ret_type': ..., 'params': {...}, 'body': ...}}
         self.primitive_topology = primitive_topology         # 图元拓扑类型
+        # Names of the current VS input attributes (v0, v1, ...). A (uint)/(int)
+        # cast applied directly to one of these REINTERPRETS its float32 bits
+        # rather than converting the value: 3Dmigoto writes `(uint2)v1.zw` for a
+        # DXBC opcode that consumes the raw register bits (e.g. packed halfs),
+        # not an ftou conversion.
+        self._vertex_input_names: set = set()
         # Emulate GPU float32 arithmetic: round every binary-op / intrinsic
         # result to float32. Needed for hash-style outputs like frac(K*x*x)
         # where float64 intermediates diverge after amplification.
@@ -1398,6 +1404,15 @@ class HLSLInterpreter:
                 return [row[:2] for row in inner[:2]]
             # int/uint cast: 转换为整数
             if cast_type in ('int', 'int2', 'int3', 'int4', 'uint', 'uint2', 'uint3', 'uint4'):
+                # A cast applied DIRECTLY to a vertex-input attribute reinterprets
+                # the raw float32 bits (3Dmigoto's `(uint2)v1.zw` for a DXBC op
+                # that consumes the register bits, e.g. packed halfs) rather than
+                # converting the float value.
+                if self._cast_operand_is_vertex_input(node.left):
+                    signed = cast_type.startswith('int')
+                    if isinstance(inner, list):
+                        return [self._bitcast_to_int(v, signed) for v in inner]
+                    return self._bitcast_to_int(inner, signed)
                 if isinstance(inner, list):
                     return [int(v) for v in inner]
                 return int(inner) if inner is not None else 0
@@ -1793,7 +1808,12 @@ class HLSLInterpreter:
             def _conv(x):
                 try:
                     if func_name == 'f16tof32':
-                        return struct.unpack('<e', struct.pack('<H', int(x) & 0xFFFF))[0]
+                        # f16tof32 takes the low 16 bits of a uint register. A
+                        # float operand (e.g. a packed-half vertex attribute used
+                        # directly) is reinterpreted by its float32 bits, not
+                        # truncated; an int is already the raw bits.
+                        bits = self._bitcast_to_int(x, False) if isinstance(x, float) else int(x)
+                        return struct.unpack('<e', struct.pack('<H', bits & 0xFFFF))[0]
                     return struct.unpack('<H', struct.pack('<e', float(x)))[0]
                 except (struct.error, ValueError, OverflowError):
                     return 0.0 if func_name == 'f16tof32' else 0
@@ -4328,6 +4348,30 @@ class HLSLInterpreter:
                 overrides[row_i][pname] = value
         return overrides
 
+    def _cast_operand_is_vertex_input(self, node) -> bool:
+        """True if `node` is a direct reference to a VS input attribute (vN or
+        vN.swizzle) — the signal that an int cast is a bit reinterpret."""
+        if node is None or getattr(node, 'node_type', None) != 'value':
+            return False
+        base = str(node.value).strip().split('.')[0]
+        return base in self._vertex_input_names
+
+    @staticmethod
+    def _bitcast_to_int(v, signed: bool):
+        """Reinterpret a value's 32-bit pattern as int/uint. A float is bitcast
+        via its float32 encoding; an int passes through (already raw bits)."""
+        if isinstance(v, bool) or v is None:
+            return int(bool(v))
+        if isinstance(v, int):
+            return v
+        try:
+            bits = struct.unpack('<I', struct.pack('<f', float(v)))[0]
+        except (struct.error, ValueError, OverflowError):
+            return int(v)
+        if signed and bits >= 0x80000000:
+            return bits - 0x100000000
+        return bits
+
     @staticmethod
     def _to_f32(x):
         """Round a Python float (double) to the nearest float32, the precision
@@ -4530,7 +4574,14 @@ class HLSLInterpreter:
         copied into it (used by quad neighbor-lane re-execution for derivatives).
         """
         local_vars = {}
-        # Set input params directly by name
+        # Set input params directly by name. Only FLOAT-typed inputs feed the
+        # cast-reinterpret heuristic: a (uint) cast of a float attribute unpacks
+        # its bits, whereas a uint/int attribute (e.g. R32_UINT index) cast to
+        # int is a genuine value, so it must stay a plain conversion.
+        self._vertex_input_names = {
+            param['name'] for param in input_params
+            if str(param.get('type', '')).startswith('float')
+        }
         for param in input_params:
             pname = param['name']
             local_vars[pname] = input_data.get(pname, self._default_value_for_type(param['type']))

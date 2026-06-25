@@ -244,6 +244,31 @@ event16215/16834 but they do **not** fully pass yet — their `v1.zw` is packed-
 high 16 bits before `f16tof32`. That vertex-format reinterpretation is a deeper
 open class (below).
 
+## Class 11 (prototype) — usage-based format inference for packed vertex data
+
+The witcher packed-uint vertex shaders (event16215/16834) declare `float4 v1 :
+TEXCOORD0` but use it *both* ways: `v1.x + v1.y` (float) and `(uint2)v1.zw >>
+16` / `f16tof32(v1.zw)` (two halfs packed in the .zw lanes). In DXBC the
+register holds raw bits and each opcode reinterprets them; 3Dmigoto's `(uint2)`
+cast of a raw attribute is a *bit reinterpret*, not an `ftou` conversion.
+
+Prototype inference:
+- A `(int)`/`(uint)`-family cast applied **directly to a float-typed vertex
+  input** (`_cast_operand_is_vertex_input`) reinterprets the float32 bits
+  (`_bitcast_to_int`) instead of converting the value.
+- `f16tof32` of a float argument likewise reinterprets its bits (the low 16),
+  not `int(value)`.
+- **Restricted to float-typed inputs** so an integer attribute (e.g. event1031's
+  `uint v1` R32_UINT index used as `(int)v1.x`) still converts by value —
+  verified event1031 stays 6/6.
+
+Result: event16215 `sv_position` now matches (errors 390 → 180) — the position
+unpacks from `v1.zw` bits correctly. The residual `TexCoord*` errors are a
+deeper octahedral-normal decode (the unpacked halfs feed a
+`normalize(r2.zy - r0.yz)` reconstruction with another nuance), still open. The
+inference itself is correct and general; committed as infrastructure (gated by
+the float-type restriction, full regression green).
+
 ## Remaining classes (not yet fixed — follow-up)
 
 **Witcher Dump set** (after classes 9/10): several `sv_position` cases pass via
@@ -312,6 +337,12 @@ features, split into:
   `_to_f32`/`_f32` + `f32_emulation` flag; float32 rounding in
   `execute_binary_op`, numeric literals, `frac`/`mad`; wired from config
   `float32_emulation` (on in the regression BASE_CONFIG).
+- `hlsl_interpreter.py` (class 9/10) — `CbufferDefinition.register` parsed from
+  `register(bN)`; `override_cbuffers_from_binary` matches by register;
+  `f16tof32`/`f32tof16` intrinsics.
+- `hlsl_interpreter.py` (class 11) — `_vertex_input_names` (float-typed only),
+  `_cast_operand_is_vertex_input`, `_bitcast_to_int`; int-cast of a float vertex
+  attribute and `f16tof32` of a float reinterpret bits.
 - `hlsl_interpreter.py` (class 9/10) — `CbufferDefinition.register` parsed in
   `parse_cbuffer`; `override_cbuffers_from_binary` matches by register;
   `f16tof32`/`f32tof16` intrinsics.
