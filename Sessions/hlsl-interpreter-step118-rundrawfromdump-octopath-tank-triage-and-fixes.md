@@ -282,8 +282,14 @@ features, split into:
 - **Tank 18 timeouts** (event1090/1172/1189/1278/1357/1406/1947/4186/4236/4458/
   5118/9153/9598/9634/9682/9750/10577/10691): no VS verdict logged within 150 s
   and the log was empty — hang/very-slow in setup, not confirmed wrong.
-- **witcher3_countryside (160)**: not yet triaged in this batch (the 36 already
-  in the regression set pass).
+- **witcher3_countryside (160 in the Dump set)**: triaged — **99/160 clean-pass**
+  after class 9 (register-matched binary cbuffer) + f16tof32. The 61 fails split
+  into `sv_position` (packed-uint vertex data, e.g. event16215/16834 — the lane
+  is `R32G32B32A32_FLOAT` in the layout but the shader bit-unpacks it with
+  `(uint2)v.zw>>16` / `f16tof32`; resolving needs DXBC `dcl_input` integer flags
+  or usage inference, ambiguous from the captured signature) and `TexCoord*`
+  groups (event20571/21719/22229… — large counts, likely packed-half texcoords /
+  further >4-TEXCOORD wiring). Deep, deferred.
 
 ## Files changed
 
