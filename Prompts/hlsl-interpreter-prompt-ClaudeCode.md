@@ -1855,9 +1855,31 @@ class 9 修复。
 
 
 
-# 42
+# 42 继续修复
 ## Prompts
-
+**尚未修复（剩余长尾，后续迭代）**：
+- **witcher 打包 uint 顶点数据**(event16215/16834…)：class 11 已用“按用途推断格式”原型解决
+  位重解释——对 float 类型顶点属性的 `(uint)` 转换、以及 `f16tof32` 的 float 实参，改为
+  重解释 float32 位(而非 int 转换)，按 float 类型限制以保护 uint 索引属性(event1031 仍 6/6)。
+  event16215 的 sv_position 已修(位置从 v1.zw 位正确解包，错误 390→180)；残余 TexCoord 是
+  更深的八面体法线解码，仍未解。
+- **四元数 typed-buffer 被 capture 元数据阻塞**(event2135/1250/3542/3601/3012…)：位运算
+  已修好(class 6)，但残余错误来自 t3 四元数缓冲是 R8G8B8A8_**SNORM**(字节 127→1.0)而同尺寸
+  的 t2 纹理坐标是 R8G8B8A8_**UNORM**；capture 未记录 VS typed-buffer 的 view 格式
+  (buffer_params.csv 只有元素字节数，texture_params.csv 只含 PS 纹理，disasm 一律标
+  `(float,float,float,float)`)，UNORM/SNORM 无法区分 —— capture 数据限制，无解。
+- **float32 精度**：event1897/283 已由 class 8 修复；event1828 另有非纯算术的精度
+  问题、event2091 较慢，仍未解。
+- Tank 18 个超时：纯 Python 光栅化/深度比较 ~62k 像素慢，非 bug，暂缓。
+- witcher3_countryside 本批 160 个未单独 triage(回归中的 36 个通过)。
+1. 挨个修复上面列出的issue
+2. zip file在C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump里。
+3. 如果运行的zip file没有问题，则什么操作也不做，直接运行下一个zip file
+4. 如果运行的zip file在output.log中发现了error，请分析整个渲染管线，找出问题在哪里
+5. 修复该问题，执行该case保证修复的error没有了，也没有新增error。
+6. 问题修复后执行regression test保证回归测试通过
+7. 以上测试通过后，直接提交fix。同时把同样出错误这一类zip file选一个加入到regression test中。然后继续执行下一个zip file
+8. 把步骤2~6过程中你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -1866,6 +1888,43 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**Step 119 — witcher3_countryside triage + 多数组 cbuffer 二进制重载修复**
+
+对 `Dump/` 里 160 个 witcher3_countryside 中未单独 triage 的 129 个做了批量
+headless triage（scratchpad `triage.py`：直接把 `data_path` 指向 Dump zip，按日志
+里的 `Error:` 行与 `Total PASSED rows` 分类）。绝大多数 PASS，失败聚成几类：
+
+1. **sv_position / TexCoord 读成 0**（event23341、23141、23251、23183、23195）—— 本
+   次修复的一个 bug。
+2. **打包 uint 八面体法线**（event16215/16834）—— class 11 长尾，未解。
+3. **不支持的 raw structured buffer**（event22201 等）—— disasm 自带
+   `// No code for instruction: ld_raw_indexable ... t21` + `dcl_resource_raw t21`，
+   capture 根本没 dump 该 raw buffer，属能力/capture 限制，暂缓。
+4. **慢绘制 TIMEOUT**（~26 个）—— 纯 Python 光栅化慢，同 Tank 类，非 bug。
+
+**根因（class 1）**：以 event23341 为例，VS cbuffer 是
+`float4 mvp[2] : packoffset(c0); float4 texgen[2] : packoffset(c2);`。
+`o2`(SV_Position)=`dot(v1,mvp[i])` 正确，但 `o1`(TEXCOORD)=`dot(v1,texgen[i])`
+全 0。组合 float CSV 每个数组名只存一个代表值（没有 `mvp_v0/_v1` 键），故两个数组
+CSV 都加载成 `[None,None]`；随后 `override_cbuffers_from_binary` 从 `constant_*.bin`
+重载时，填充循环只填**第一个**数组字段就 `break`，于是 mvp 拿到 `decoded[0:2]`(对)，
+texgen 仍是 `[None,None]` → texgen[i] 当 0。单数组(@c0)cbuffer 永远命中旧假设，所以
+之前所有 witcher case 都没暴露。
+
+**修复**（`hlsl_interpreter.py`）：`FieldDefinition` 增加 `reg_offset`；
+`parse_cbuffer` 解析 `packoffset(cN)`；新增 `_field_register_offsets()`（优先用
+packoffset，否则按 HLSL cbuffer 打包规则推算，向量不跨 16 字节寄存器、数组/矩阵按寄存器
+对齐）；二进制重载循环改为给**每个**数组字段按各自寄存器窗口
+`decoded[reg_off:reg_off+array_size]` 填充。于是 mvp←decoded[0:2]、texgen←decoded[2:4]；
+单数组(@c0)行为不变。
+
+**验证**：event23341 0→30/30，event23141 162/162，event23251 54/54，event23183
+30/30，event23195 36/36，均无新增 error。event22201 仍 FAIL（确认 raw-buffer 不支持类）。
+回归 44/44 全过（修复不影响既有用例）。把 event23341 加入回归 CSV（并拷贝 zip 到 Cases/）
+作为该类代表用例。
+
+详见 Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.md。
 
 
 

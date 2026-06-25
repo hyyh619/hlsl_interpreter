@@ -59,6 +59,7 @@ class FieldDefinition:
     semantic: str       # 语义名称，如 POSITION, NORMAL
     data: List[Any] = None  # 字段数据值
     array_size: int = 0  # 数组长度（0表示非数组，如 float4 cb1[4] → 4）
+    reg_offset: int = -1  # packoffset(cN) 的寄存器号（16字节单位）；-1 表示未指定
 
 
 @dataclass
@@ -911,7 +912,13 @@ class HLSLInterpreter:
                     if arr_match:
                         field_name = arr_match.group(1)
                         array_size = int(arr_match.group(2))
-                    fields.append(FieldDefinition(field_type, field_name, '', array_size=array_size))
+                    # packoffset(cN[.xyzw]) → 该字段所在的 16 字节寄存器号。
+                    # 多个数组字段(如 mvp[2]@c0 与 texgen[2]@c2)靠它从同一
+                    # 二进制 cbuffer 里各取正确的寄存器区间。
+                    po_match = re.search(r'packoffset\s*\(\s*c(\d+)', line)
+                    reg_offset = int(po_match.group(1)) if po_match else -1
+                    fields.append(FieldDefinition(field_type, field_name, '',
+                                                  array_size=array_size, reg_offset=reg_offset))
         return CbufferDefinition(name, fields, register=register)
 
     # 控制流关键字: header 正则可能把 "else if (...)" 误判成函数定义，需排除
@@ -3159,6 +3166,45 @@ class HLSLInterpreter:
             vals.append(defaults[len(vals)])
         return vals
 
+    # Base byte size of a scalar/vector/matrix field type (pre-packing).
+    _CB_TYPE_BYTES = {
+        'float': 4, 'int': 4, 'uint': 4, 'bool': 4, 'dword': 4,
+        'float2': 8, 'int2': 8, 'uint2': 8,
+        'float3': 12, 'int3': 12, 'uint3': 12,
+        'float4': 16, 'int4': 16, 'uint4': 16,
+        'float3x3': 48, 'float3x4': 48, 'float4x3': 48, 'float4x4': 64,
+    }
+
+    def _field_register_offsets(self, fields):
+        """Return a per-field 16-byte register offset list for a cbuffer.
+
+        Prefers an explicit packoffset(cN) when the source carried one (3Dmigoto
+        always does), otherwise replays HLSL's sequential constant-buffer packing
+        rules (vectors never straddle a 16-byte register; arrays and matrices are
+        register-aligned). Used to slice the raw binary into per-field windows."""
+        offsets = []
+        cursor = 0  # next free byte
+        for field in fields:
+            if getattr(field, 'reg_offset', -1) >= 0:
+                reg = field.reg_offset
+                offsets.append(reg)
+                cursor = reg * 16  # resync the running cursor to the explicit slot
+            else:
+                offsets.append(cursor // 16 if cursor % 16 == 0 else None)
+                reg = cursor // 16
+            base = self._CB_TYPE_BYTES.get(field.field_type, 16)
+            if getattr(field, 'array_size', 0) > 0:
+                elem_stride = (base + 15) // 16 * 16  # each element register-aligned
+                cursor = reg * 16 + field.array_size * elem_stride
+            else:
+                # A vector that would straddle a register boundary bumps to the next.
+                if base <= 16 and (cursor % 16) + base > 16:
+                    cursor = (cursor + 15) // 16 * 16
+                if base > 16:  # matrices align to a register
+                    cursor = (cursor + 15) // 16 * 16
+                cursor += base
+        return offsets
+
     def override_cbuffers_from_binary(self, data_folder: str, stage_prefix: str):
         """Re-load cbuffers from the raw capture binary (constant_<id>.bin via
         {stage}_constant_buffer_info.csv) so exact bit patterns survive. The
@@ -3210,11 +3256,17 @@ class HLSLInterpreter:
             self._cb_raw[f'cb{slot}'] = [
                 list(struct.unpack_from('<4i', data, i * 16)) for i in range(n4)
             ]
-            for field in cb_def.fields:
-                if getattr(field, 'array_size', 0) > 0:
-                    m = min(field.array_size, len(decoded))
-                    field.data = decoded[:m]
-                    break
+            # Fill EVERY array field from its own register window, not just the
+            # first. A cbuffer with two arrays (e.g. mvp[2]@c0 + texgen[2]@c2)
+            # would otherwise leave the second array as [None,...] (the combined
+            # float CSV only stores a single representative value per array name,
+            # never the per-element mvp_v0/mvp_v1 keys), so texgen[i] read 0.
+            reg_offsets = self._field_register_offsets(cb_def.fields)
+            for field, reg_off in zip(cb_def.fields, reg_offsets):
+                if getattr(field, 'array_size', 0) > 0 and reg_off is not None:
+                    m = min(field.array_size, max(0, len(decoded) - reg_off))
+                    if m > 0:
+                        field.data = decoded[reg_off:reg_off + m]
 
     def _structured_buffer_member(self, sb: dict, index: int, member_name: str):
         """Decode one member of structured-buffer element `index` on demand.
