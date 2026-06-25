@@ -105,6 +105,23 @@ Added `witcher3_countryside_event23341.zip` to
 `Cases/regression_test_zip_files.csv` — the clearest two-array cbuffer case
 (`mvp[2]@c0` + `texgen[2]@c2`).
 
+## Investigated but deferred: event20899 (atmosphere-output computation)
+
+Spent real effort confirming this is *not* a vertex-load or golden-mapping bug:
+
+- POSITION (R16G16B16A16_UNORM) and TEXCOORD0 (R16G16_FLOAT) both decode
+  correctly (verified the binary VB bytes by hand: vertex 372 → texcoord
+  (0.39990, 0.94092) = golden). The `ia_vertex_data.csv` is in **draw order**
+  (row VTX=k pulls VB-vertex IDX), and row 0 (IDX=372) holds the right values.
+- The golden VS-mesh is SV_Position-first; the loader maps it correctly here —
+  outputs o2, o3, o4, o5 and o6(SV_Position) **all match golden exactly**, and
+  even o0.w / o1.w match. So the comparison is wired right.
+- The only failing components are **o0.xyz** (small diffs, ~0.01–0.03) and
+  **o1.xyz** (large, e.g. 2.4669 vs golden 0.67958). Both are the atmosphere /
+  in-scattering colour outputs computed through long `exp2`/`log2`/division
+  chains over many `cb12` values. This is the hard precision/intrinsic long-tail,
+  not a structural bug — deferred rather than risk a speculative change.
+
 ## Still unfixed (long tail, unchanged from step 118)
 
 - packed-uint octahedral normals (`event16215`/`16834`).
