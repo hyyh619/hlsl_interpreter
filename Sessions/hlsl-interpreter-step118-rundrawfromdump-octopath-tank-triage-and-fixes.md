@@ -217,10 +217,46 @@ strictly-more-accurate default rather than a per-case hack.
 `event1828` has a *different* residual precision issue (not pure arithmetic) and
 is still open.
 
+## Class 9 — match binary cbuffer by register, not name (witcher Dump set)
+
+**Representative: `witcher3_countryside_event23303` (0/6 → 6/6).**
+
+The 160 witcher captures in the Dump dir are a **newer format** than the ones
+already in regression: the cbuffer is declared `cbuffer Constants : register(b0)
+{ float4 vfuniforms[48]; }` and indexed dynamically (`vfuniforms[r0.x]`). Its
+`VS_constant_buffers.csv` holds **only element 0** of the 48-entry array — the
+real data is in `constant_<id>.bin`. `override_cbuffers_from_binary` keyed the
+target cbuffer as `cb{slot}`, so a cbuffer named `Constants` was never loaded
+from binary and `vfuniforms[i]` resolved to None.
+
+Fix: parse `register(bN)` into `CbufferDefinition.register` and match the binary
+file to the cbuffer **by register == slot** (falling back to the `cb{slot}` name
+and the info-CSV `Name`). Octopath `cb0`/`cb1` (register 0/1) still match
+identically, so nothing regresses.
+
+## Class 10 — f16tof32 / f32tof16 (packed-half vertex data)
+
+Witcher foliage shaders pack two halfs per 32-bit lane and read them with
+`f16tof32((uint)v.zw >> 16)` / `f16tof32(v.zw)`. Added both intrinsics via
+Python's half-float struct codec (`'<e'`). Correct and general; it advances
+event16215/16834 but they do **not** fully pass yet — their `v1.zw` is packed-
+**uint** vertex data being loaded as float, so `(uint2)v1.zw` already lost the
+high 16 bits before `f16tof32`. That vertex-format reinterpretation is a deeper
+open class (below).
+
 ## Remaining classes (not yet fixed — follow-up)
 
-The still-failing Octopath cases are a **long tail of distinct per-shader
-features**, split into:
+**Witcher Dump set** (after classes 9/10): several `sv_position` cases pass via
+the register-matched binary cbuffer; the rest split into —
+- **Packed-uint vertex data read as float** (event16215/16834 …): `v1.zw` holds
+  two packed halfs as a uint lane but is loaded as a float, so `(uint2)v1.zw`
+  and `f16tof32` see the wrong bits. Needs the IA to keep such attributes as raw
+  uint (format-aware vertex load), then `f16tof32` finishes them.
+- Various `TexCoord`/`TexCoord3/4` cases and the ~24 TIMEOUTs (slow, several are
+  the already-passing event7321/7358/7816 just exceeding the 150 s triage cap).
+
+The still-failing **Octopath** cases are a long tail of distinct per-shader
+features, split into:
 
 - **Float32-precision-limited** (logic correct, only a noise/hash output off):
   event1897 (`PARTICLE_LIGHTING_OFFSET = frac(1361.4·(10+v1.w)²)…`, SV_POSITION
@@ -270,6 +306,9 @@ features**, split into:
   `_to_f32`/`_f32` + `f32_emulation` flag; float32 rounding in
   `execute_binary_op`, numeric literals, `frac`/`mad`; wired from config
   `float32_emulation` (on in the regression BASE_CONFIG).
+- `hlsl_interpreter.py` (class 9/10) — `CbufferDefinition.register` parsed in
+  `parse_cbuffer`; `override_cbuffers_from_binary` matches by register;
+  `f16tof32`/`f32tof16` intrinsics.
 
 ## Status at checkpoint
 

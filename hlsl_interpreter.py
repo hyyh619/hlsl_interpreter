@@ -289,6 +289,7 @@ class CbufferDefinition:
     """HLSL常量缓冲区定义"""
     name: str                     # cbuffer名称
     fields: List[FieldDefinition]  # cbuffer字段列表
+    register: Optional[int] = None  # register(bN) 中的 N（用于按槽位匹配二进制）
 
 
 class HLSLInterpreter:
@@ -883,6 +884,10 @@ class HLSLInterpreter:
         if not match:
             return None
         name = match.group(1)
+        # register(bN) so the binary loader can match by slot regardless of the
+        # cbuffer's name (cb0 / Constants / cbuffer0 all differ across captures).
+        reg_m = re.search(r'register\s*\(\s*b(\d+)\s*\)', code[match.start():match.end()])
+        register = int(reg_m.group(1)) if reg_m else None
         fields = []
         lines = code[match.start():match.end()].split('\n')[1:]
         for line in lines:
@@ -901,7 +906,7 @@ class HLSLInterpreter:
                         field_name = arr_match.group(1)
                         array_size = int(arr_match.group(2))
                     fields.append(FieldDefinition(field_type, field_name, '', array_size=array_size))
-        return CbufferDefinition(name, fields)
+        return CbufferDefinition(name, fields, register=register)
 
     # 控制流关键字: header 正则可能把 "else if (...)" 误判成函数定义，需排除
     _CONTROL_KEYWORDS = frozenset({
@@ -1772,6 +1777,28 @@ class HLSLInterpreter:
                     return x
 
             result = [_reinterpret(v) for v in val] if isinstance(val, list) else _reinterpret(val)
+            self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
+            return result
+
+        # f16tof32 / f32tof16: half-float (un)packing. 3Dmigoto packs two halfs
+        # per 32-bit lane; shaders read e.g. f16tof32((uint)v.zw >> 16). The
+        # input/output is the raw 16-bit pattern in the low bits.
+        elif func_name in ('f16tof32', 'f32tof16'):
+            if len(args) != 1:
+                return None
+            val = self.evaluate_syntax_tree(args[0], local_vars)
+            if val is None:
+                return None
+
+            def _conv(x):
+                try:
+                    if func_name == 'f16tof32':
+                        return struct.unpack('<e', struct.pack('<H', int(x) & 0xFFFF))[0]
+                    return struct.unpack('<H', struct.pack('<e', float(x)))[0]
+                except (struct.error, ValueError, OverflowError):
+                    return 0.0 if func_name == 'f16tof32' else 0
+            result = [_conv(v) for v in val] if isinstance(val, list) else _conv(val)
+            result = self._f32(result) if func_name == 'f16tof32' else result
             self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
@@ -3129,7 +3156,7 @@ class HLSLInterpreter:
 
         def col(name):
             return header.index(name) if name in header else -1
-        ci_slot, ci_bin = col('Slot'), col('BinFile')
+        ci_slot, ci_bin, ci_name = col('Slot'), col('BinFile'), col('Name')
         if ci_slot < 0 or ci_bin < 0:
             return
         for row in rows[1:]:
@@ -3140,7 +3167,17 @@ class HLSLInterpreter:
             except ValueError:
                 continue
             binfile = row[ci_bin].strip()
-            cb_def = self.cbuffers.get(f'cb{slot}')
+            info_name = row[ci_name].strip() if 0 <= ci_name < len(row) else ''
+            # Match the target cbuffer by register slot (robust to naming:
+            # cb0 / Constants / cbuffer0 all map to b0), then fall back to the
+            # cbN convention and finally the info-CSV name.
+            cb_def = None
+            for cd in self.cbuffers.values():
+                if isinstance(cd, CbufferDefinition) and cd.register == slot:
+                    cb_def = cd
+                    break
+            if cb_def is None:
+                cb_def = self.cbuffers.get(f'cb{slot}') or self.cbuffers.get(info_name)
             if cb_def is None or not binfile:
                 continue
             binpath = os.path.join(data_folder, binfile)
