@@ -1745,6 +1745,7 @@ af348f6 Octopath instanced transform: binary cbuffer, typed Buffer.Load, SV_Vert
 bcab81e Binary-VB rescue when CSV vertex column is all-zero (event1854 color)
 de898e6 Emulate GPU float32 arithmetic (VS) for precision-hash outputs
 69d5368 Witcher Dump set: match binary cbuffer by register + f16tof32/f32tof16
+36bb4be Usage-based format inference: reinterpret packed-uint vertex attributes
 
 ## Claude Code Session
 
@@ -1835,9 +1836,11 @@ event102/1031/1320/1487/1854/1897/283。Tank 18 个超时经查为纯 Python 光
 class 9 修复。
 
 **尚未修复（剩余长尾，后续迭代）**：
-- **witcher 打包 uint 顶点数据被当 float 加载**(event16215/16834…)：`v1.zw` 是两个 half
-  打包的 uint lane，被当 float 加载，`(uint2)v1.zw`/`f16tof32` 看到错误位。需 IA 按格式
-  保留 uint(format-aware 顶点加载)。
+- **witcher 打包 uint 顶点数据**(event16215/16834…)：class 11 已用“按用途推断格式”原型解决
+  位重解释——对 float 类型顶点属性的 `(uint)` 转换、以及 `f16tof32` 的 float 实参，改为
+  重解释 float32 位(而非 int 转换)，按 float 类型限制以保护 uint 索引属性(event1031 仍 6/6)。
+  event16215 的 sv_position 已修(位置从 v1.zw 位正确解包，错误 390→180)；残余 TexCoord 是
+  更深的八面体法线解码，仍未解。
 - **四元数 typed-buffer 被 capture 元数据阻塞**(event2135/1250/3542/3601/3012…)：位运算
   已修好(class 6)，但残余错误来自 t3 四元数缓冲是 R8G8B8A8_**SNORM**(字节 127→1.0)而同尺寸
   的 t2 纹理坐标是 R8G8B8A8_**UNORM**；capture 未记录 VS typed-buffer 的 view 格式
