@@ -1354,7 +1354,12 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         vs_interp._mesh_view.show(blocking=False)
 
         while True:
-            user_input = input("\nEnter 'x' to exit, 'o' to open MeshView: ").strip().lower()
+            # Use sys.stdin.readline() instead of input() to avoid tkinter's
+            # PyOS_InputHook being called from the background pipeline thread on
+            # macOS, which triggers Tcl_WaitForEvent on the wrong thread and panics.
+            sys.stdout.write("\nEnter 'x' to exit, 'o' to open MeshView: ")
+            sys.stdout.flush()
+            user_input = sys.stdin.readline().strip().lower()
             if user_input == 'x':
                 vs_interp._mesh_view.close()
                 break
@@ -1481,8 +1486,9 @@ def _run_legacy_workflow(config: dict, config_path: str):
         interpreter._mesh_view._draw_output_merger_pixels()
 
     while True:
-        user_input = input("\nEnter 'x' to exit, 'o' to open MeshView, 'r' to rerun executeVS: ")
-        user_input = user_input.strip().lower()
+        sys.stdout.write("\nEnter 'x' to exit, 'o' to open MeshView, 'r' to rerun executeVS: ")
+        sys.stdout.flush()
+        user_input = sys.stdin.readline().strip().lower()
         if user_input == 'x':
             if interpreter._mesh_view:
                 interpreter._mesh_view.close()

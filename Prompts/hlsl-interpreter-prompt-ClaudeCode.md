@@ -2730,7 +2730,13 @@ Notice:
 
 ## Claude Code Session
 
+**问题**：步骤90修复后，macOS上启用MeshView仍然崩溃。崩溃线程（Thread 11，后台pipeline线程）的调用栈显示：`builtin_input` → `PyOS_Readline` → `PyOS_StdioReadline` → `my_fgets` → `EventHook`（tkinter安装的`PyOS_InputHook`）→ `Tcl_WaitForEvent` → `Tcl_Panic` → `abort()`。
 
+**根本原因**：`render.py`中有两处`input()`调用（`_execute_pipeline`第1357行、`_run_legacy_workflow`第1484行），在macOS后台线程模式下均从后台pipeline线程执行。tkinter创建`Tk()`并调用`mainloop()`时，会全局设置`PyOS_InputHook = EventHook`。CPython的`input()`通过`my_fgets`调用此hook，而`EventHook`会调用`Tcl_DoOneEvent`→`Tcl_WaitForEvent`，后者在非主线程调用时触发`Tcl_Panic`。
+
+**修复**：将两处`input(prompt)`替换为`sys.stdout.write(prompt) + sys.stdout.flush() + sys.stdin.readline()`。`sys.stdin.readline()`通过Python的`io`栈（`TextIOWrapper`→`BufferedReader`→`FileIO`→`read(fd=0)` syscall）读取，**完全绕过`PyOS_InputHook`**，从后台线程调用是安全的。
+
+**结果**：崩溃消除，回归测试46/46 PASS。Session文件：`Sessions/hlsl-step91-fix-meshview-input-hook-crash.md`
 
 # 92
 ## Prompts
