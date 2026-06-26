@@ -101,6 +101,20 @@ class Vertex:
         if self.output_data is None:
             self.output_data = {}
 
+@dataclass
+class StructDefinition:
+    """HLSL结构体定义"""
+    name: str                     # 结构体名称
+    fields: List[FieldDefinition]  # 结构体字段列表
+
+@dataclass
+class CbufferDefinition:
+    """HLSL常量缓冲区定义"""
+    name: str                     # cbuffer名称
+    fields: List[FieldDefinition]  # cbuffer字段列表
+    register: Optional[int] = None  # register(bN) 中的 N（用于按槽位匹配二进制）
+
+
 
 class VertexPool:
     """顶点池 - 根据输入顺序保存所有顶点对象"""
@@ -277,20 +291,6 @@ class VertexPool:
     def get_count(self) -> int:
         """获取顶点数量"""
         return len(self.vertices)
-
-
-@dataclass
-class StructDefinition:
-    """HLSL结构体定义"""
-    name: str                     # 结构体名称
-    fields: List[FieldDefinition]  # 结构体字段列表
-
-@dataclass
-class CbufferDefinition:
-    """HLSL常量缓冲区定义"""
-    name: str                     # cbuffer名称
-    fields: List[FieldDefinition]  # cbuffer字段列表
-    register: Optional[int] = None  # register(bN) 中的 N（用于按槽位匹配二进制）
 
 
 class HLSLInterpreter:

@@ -1989,9 +1989,12 @@ Notice:
 
 
 
-# 44
+# 44 开启MeshView在MacOS中崩溃
 ## Prompts
-
+开启MeshView在MacOS中崩溃，请修复该问题。崩溃信息如下
+cd /Users/yinghuang/development/hy_code/hlsl_interpreter ; /usr/bin/env /usr/bin/python3 /Users/yinghuang/.vscode/extensions/ms-python.debugpy-2026.6.0-darwin-arm64/bundled/libs/debugpy/adapter/../../debugpy/launcher 64260 -- render.py ./Cases/Default.json 
+Extracting /Users/yinghuang/development/hy_code/hlsl_interpreter/Cases/Collision-fix-constant-buffer-and-RdotV-zero_event516.zip ...
+MeshView enabledmacOS 26 (2603) or later required, have instead 16 (1603) !
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -2655,6 +2658,7 @@ Notice:
 # 89
 ## Prompts
 
+开启MeshView在MacOS中崩溃，请修复该问题。崩溃信息：MeshView enabledmacOS 26 (2603) or later required, have instead 16 (1603) !
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -2664,6 +2668,16 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**Fix MeshView macOS crash: tkinter must run on main thread**
+
+根本原因：`MeshView._gui_thread_run()` 在后台线程调用 `tk.Tk()`，macOS Cocoa 要求 tkinter 事件循环必须在主线程运行，导致底层版本检查失败崩溃。
+
+修复方案：
+1. `mesh_view.py`：新增 `set_main_thread_root(root)` 模块函数。`_start_gui_thread()` 检测 macOS 模式：若已注册 root，直接复用并通过 `after(0)` 将 `_setup_ui()` 调度到主线程；否则走原线程路径（Windows/Linux 不变）。`show()` 改为始终等待 `_gui_ready_event`；`close()` 在 macOS 模式下只 `quit()` 不 `destroy()`。
+2. `render.py`：`main()` 检测 `mesh_view_enabled and sys.platform == 'darwin'`，若满足：在主线程创建并注册 `tk.Tk()`，pipeline 放入 daemon 线程，主线程调用 `root.mainloop()` 阻塞。
+
+Session 文件：`Sessions/hlsl-step89-fix-meshview-macos-threading.md`
 
 
 

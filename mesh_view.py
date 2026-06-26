@@ -2,6 +2,7 @@
 MeshView - 3D Mesh Visualization Tool
 类似于RenderDoc的mesh view功能，用于显示顶点组成的mesh
 """
+import sys
 import tkinter as tk
 from tkinter import ttk
 import threading
@@ -9,6 +10,17 @@ import math
 import json
 import os
 from typing import List, Tuple, Optional
+
+# On macOS, tkinter must run on the main thread.  render.py sets this before
+# creating any MeshView instance; MeshView then uses it instead of spawning its
+# own GUI thread.
+_main_thread_root = None
+
+
+def set_main_thread_root(root):
+    """Register the main-thread tk.Tk() root for macOS mode."""
+    global _main_thread_root
+    _main_thread_root = root
 
 from d3d import (
     D3D_PRIMITIVE_TOPOLOGY_UNDEFINED,
@@ -146,9 +158,24 @@ class MeshView:
             self._animation_interval = 100
 
     def _start_gui_thread(self):
-        """启动单独的GUI线程"""
-        self._gui_thread = threading.Thread(target=self._gui_thread_run, daemon=True)
-        self._gui_thread.start()
+        """启动GUI。On macOS uses the pre-created main-thread root; elsewhere spawns a thread."""
+        global _main_thread_root
+        if _main_thread_root is not None:
+            # macOS path: tk.Tk() was already created on the main thread by render.py.
+            # Schedule UI setup on the main thread via after(); pipeline runs in a
+            # background thread and will call show() only after _gui_ready_event is set.
+            self._root = _main_thread_root
+            self._root.title(self.title)
+            self._root.geometry("1700x700")
+            self._root.after(0, self._setup_ui_macos)
+        else:
+            self._gui_thread = threading.Thread(target=self._gui_thread_run, daemon=True)
+            self._gui_thread.start()
+
+    def _setup_ui_macos(self):
+        """Called on the main thread (via after()) for macOS shared-root mode."""
+        self._setup_ui()
+        self._gui_ready_event.set()
 
     def _gui_thread_run(self):
         """在单独线程中运行tkinter主循环"""
@@ -1800,8 +1827,9 @@ class MeshView:
         显示MeshView窗口（双窗口：左侧输入，右侧输出）
         blocking: 如果为True，则阻塞直到窗口关闭（已废弃，仅为兼容）
         """
-        if self._root is None:
-            self._gui_ready_event.wait()
+        # Always wait for GUI setup to complete (important on macOS where root is
+        # set immediately but _setup_ui runs via after() on the main thread).
+        self._gui_ready_event.wait(timeout=10)
         if self._root:
             self._root.deiconify()
             self._schedule_draw()
@@ -1926,22 +1954,31 @@ class MeshView:
                     pass
             self._animation_job = None
         if self._root:
-            def _do_close():
+            global _main_thread_root
+            if self._root is _main_thread_root:
+                # macOS shared-root mode: only quit the mainloop; don't destroy
+                # the root (render.py's main() owns and will exit after mainloop).
                 try:
-                    self._root.quit()
-                    self._root.destroy()
-                except:
+                    self._root.after(0, self._root.quit)
+                except Exception:
                     pass
-                self._root = None
-                self._input_canvas = None
-                self._rasterizer_canvas = None
-                self._pixel_shader_canvas = None
-                self._output_merger_canvas = None
-                self._output_notebook = None
-            try:
-                self._root.after(0, _do_close)
-            except RuntimeError:
-                self._gui_thread_alive = False
-                self._root = None
-                self._input_canvas = None
-                self._output_canvas = None
+            else:
+                def _do_close():
+                    try:
+                        self._root.quit()
+                        self._root.destroy()
+                    except:
+                        pass
+                    self._root = None
+                    self._input_canvas = None
+                    self._rasterizer_canvas = None
+                    self._pixel_shader_canvas = None
+                    self._output_merger_canvas = None
+                    self._output_notebook = None
+                try:
+                    self._root.after(0, _do_close)
+                except RuntimeError:
+                    self._gui_thread_alive = False
+                    self._root = None
+                    self._input_canvas = None
+                    self._output_canvas = None

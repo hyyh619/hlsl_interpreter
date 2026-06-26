@@ -7,6 +7,7 @@ import json
 import zipfile
 import tempfile
 import shutil
+import threading
 
 from hlsl_interpreter import HLSLInterpreter
 from rasterizer import Rasterizer
@@ -1511,10 +1512,39 @@ def main():
         config = json.load(f)
 
     data_path = config.get('data_path', '')
-    if data_path:
-        _run_zip_workflow(config, data_path, config_path)
+    mesh_view_enabled = config.get('mesh_view_enabled', False)
+
+    if mesh_view_enabled and sys.platform == 'darwin':
+        # On macOS, tkinter's Cocoa backend requires the event loop to run on the
+        # main thread.  Create the root here (main thread), hand it to MeshView via
+        # set_main_thread_root(), run the pipeline in a daemon thread, then block
+        # on mainloop() until the user closes the window or the pipeline finishes.
+        import tkinter as tk
+        import mesh_view as mv_module
+        root = tk.Tk()
+        root.withdraw()
+        mv_module.set_main_thread_root(root)
+
+        def _run_pipeline():
+            try:
+                if data_path:
+                    _run_zip_workflow(config, data_path, config_path)
+                else:
+                    _run_legacy_workflow(config, config_path)
+            finally:
+                try:
+                    root.after(0, root.quit)
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_run_pipeline, daemon=True)
+        t.start()
+        root.mainloop()
     else:
-        _run_legacy_workflow(config, config_path)
+        if data_path:
+            _run_zip_workflow(config, data_path, config_path)
+        else:
+            _run_legacy_workflow(config, config_path)
 
 
 if __name__ == '__main__':
