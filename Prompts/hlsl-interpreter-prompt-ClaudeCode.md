@@ -2001,6 +2001,28 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 ## Git commit: 
+Fix MeshView crash on macOS: run tkinter on main thread
+
+macOS Cocoa requires tk.Tk() and mainloop() to run on the main thread.
+The previous design spawned a daemon thread to create tk.Tk(), which
+triggered an internal Apple SDK version check failure at startup.
+
+Fix:
+- mesh_view.py: add set_main_thread_root(root) module function; when a
+  main-thread root is registered, _start_gui_thread() reuses it and
+  schedules _setup_ui() via after() instead of spawning a thread.
+  show() now always waits for _gui_ready_event. close() in macOS mode
+  only calls root.quit() (not destroy, which is owned by main()).
+- render.py: main() detects mesh_view_enabled + darwin, creates tk.Tk()
+  on the main thread, runs the pipeline in a daemon thread, and blocks
+  on root.mainloop(). Windows/Linux behavior is unchanged.
+
+Also move StructDefinition/CbufferDefinition before VertexPool in
+hlsl_interpreter.py (pre-existing edit, fixes forward-reference order).
+
+All 46/46 regression cases pass.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 ## Claude Code Session
 
@@ -2016,14 +2038,62 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 ## Git commit: 
+Fix MeshView macOS crash (v2): route all tkinter calls through after()
+
+Three call sites in mesh_view.py were still invoking tkinter from the
+background pipeline thread, crashing on macOS Cocoa:
+
+1. _start_gui_thread: title() and geometry() called directly from the
+   background thread before after() had a chance to run on the main thread.
+2. show(): deiconify() called from the background thread (used by
+   display_input_mesh, display_output_mesh, and _execute_pipeline).
+3. _draw_rasterizer/pixel_shader/output_merger_pixels(): called _draw_pixels_image
+   which creates tk.PhotoImage and calls canvas.delete/create_image from the
+   background thread.
+
+Fix:
+- Move title()/geometry() from _start_gui_thread into _setup_ui_macos
+  (already runs on the main thread via after()).
+- Add _schedule_on_main(func) helper: uses after(0, func) in macOS
+  shared-root mode; calls func() directly otherwise.
+- show() uses _schedule_on_main(self._root.deiconify).
+- _draw_rasterizer/pixel_shader/output_merger_pixels() all use _schedule_on_main.
+
+Windows/Linux (non-macOS) path is unchanged — _schedule_on_main calls
+func() directly when _main_thread_root is not in use.
+
+All 46/46 regression cases pass.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+Fix MeshView macOS crash (step 91): replace input() with sys.stdin.readline()
+
+On macOS, the pipeline runs in a background daemon thread while mainloop() holds
+the main thread.  tkinter installs PyOS_InputHook = EventHook globally when Tk()
+is created; CPython's input() calls this hook via my_fgets to keep the GUI alive
+during readline.  Called from a non-main thread, EventHook → Tcl_WaitForEvent →
+Tcl_Panic → abort().
+
+Fix: replace both input() calls in render.py with sys.stdout.write(prompt) +
+sys.stdout.flush() + sys.stdin.readline().  The io-stack path for sys.stdin never
+touches PyOS_InputHook, making it safe from any thread.
+
+Regression: 46/46 PASS.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 ## Claude Code Session
 
 
 
-# 46
+# 46 从bin/raw data中加载数据
 ## Prompts
-
+1. 为了保证输入数据的精确，我们不能从下列已经解析的csv文件中加载数据
+   a. **_constant_buffer.csv
+   b. ia_vertex_data.csv
+2. 对于vertex buffer/index buffer，请从ia_input_layouts.csv中获取用到的index/vertex buffer resource id，然后找到对应的ib_res_id.bin/vb_slotnum_res_id.bin加载数据，并根据ia_input_layouts.csv中的格式解析
+3. 对于constant buffer请根据 **_constant_buffer_info.csv 来获取对应constan slot的constant buffer resource id，然后找到对应的constant_id.bin加载，并根据 **_constant_buffers.csv来获得对应contant buffer内容的格式来解析数据
+4. 对于 SRV/RTV/UAV的数据加载不要使用.bmp的数据，而是直接使用同名.img的数据加载
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
