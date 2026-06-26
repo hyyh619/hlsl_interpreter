@@ -1374,8 +1374,17 @@ class HLSLInterpreter:
             return self.get_value(node.value, local_vars)
 
         elif node.node_type == 'binary_op':
-            left = self.evaluate_syntax_tree(node.left, local_vars)
-            right = self.evaluate_syntax_tree(node.right, local_vars)
+            if node.value in self._BITWISE_OPS:
+                # A bit operation on a (int/uint) cast of a float vertex input
+                # consumes the register's raw bits (3Dmigoto's packed-attribute
+                # pattern, e.g. `(uint2)v1.zw >> 16`), so reinterpret the float32
+                # bits. Outside a bit op the same cast is a plain ftoi/ftou value
+                # conversion (e.g. `(int2)v1.zw` used as a texture coordinate).
+                left = self._eval_bitwise_operand(node.left, local_vars)
+                right = self._eval_bitwise_operand(node.right, local_vars)
+            else:
+                left = self.evaluate_syntax_tree(node.left, local_vars)
+                right = self.evaluate_syntax_tree(node.right, local_vars)
             return self.execute_binary_op(node.value, left, right)
 
         elif node.node_type == 'unary_op':
@@ -1409,17 +1418,12 @@ class HLSLInterpreter:
             # float2x2转换: 从3x3矩阵提取前2x2
             if cast_type == 'float2x2' and isinstance(inner, list) and len(inner) == 3:
                 return [row[:2] for row in inner[:2]]
-            # int/uint cast: 转换为整数
-            if cast_type in ('int', 'int2', 'int3', 'int4', 'uint', 'uint2', 'uint3', 'uint4'):
-                # A cast applied DIRECTLY to a vertex-input attribute reinterprets
-                # the raw float32 bits (3Dmigoto's `(uint2)v1.zw` for a DXBC op
-                # that consumes the register bits, e.g. packed halfs) rather than
-                # converting the float value.
-                if self._cast_operand_is_vertex_input(node.left):
-                    signed = cast_type.startswith('int')
-                    if isinstance(inner, list):
-                        return [self._bitcast_to_int(v, signed) for v in inner]
-                    return self._bitcast_to_int(inner, signed)
+            # int/uint cast: ftoi/ftou value conversion (round toward zero).
+            # A vertex-input attribute cast is a raw-bit reinterpret ONLY when it
+            # feeds a bit operation; that case is handled in the binary_op branch
+            # (_eval_bitwise_operand), so here we always value-convert — matching
+            # `(int2)v1.zw` used directly as e.g. a texture coordinate.
+            if cast_type in self._INT_CAST_TYPES:
                 if isinstance(inner, list):
                     return [int(v) for v in inner]
                 return int(inner) if inner is not None else 0
@@ -4403,6 +4407,10 @@ class HLSLInterpreter:
                 overrides[row_i][pname] = value
         return overrides
 
+    _BITWISE_OPS = frozenset({'>>', '<<', '&', '|', '^'})
+    _INT_CAST_TYPES = frozenset({'int', 'int2', 'int3', 'int4',
+                                 'uint', 'uint2', 'uint3', 'uint4'})
+
     def _cast_operand_is_vertex_input(self, node) -> bool:
         """True if `node` is a direct reference to a VS input attribute (vN or
         vN.swizzle) — the signal that an int cast is a bit reinterpret."""
@@ -4410,6 +4418,22 @@ class HLSLInterpreter:
             return False
         base = str(node.value).strip().split('.')[0]
         return base in self._vertex_input_names
+
+    def _eval_bitwise_operand(self, node, local_vars):
+        """Evaluate a bit-operation operand. A (int/uint) cast of a float vertex
+        input here reinterprets the register's raw bits (packed-attribute
+        extraction such as `(uint2)v1.zw >> 16`); everywhere else such a cast is
+        a plain ftoi/ftou value conversion (see the cast branch)."""
+        if (node is not None and getattr(node, 'node_type', None) == 'cast'
+                and node.value in self._INT_CAST_TYPES
+                and self._cast_operand_is_vertex_input(node.left)):
+            inner = self.evaluate_syntax_tree(node.left, local_vars)
+            if inner is not None:
+                signed = node.value.startswith('int')
+                if isinstance(inner, list):
+                    return [self._bitcast_to_int(v, signed) for v in inner]
+                return self._bitcast_to_int(inner, signed)
+        return self.evaluate_syntax_tree(node, local_vars)
 
     @staticmethod
     def _bitcast_to_int(v, signed: bool):
