@@ -121,12 +121,24 @@
       "Bash(python scan_witcher.py)",
       "Bash(rm -rf _e1643)",
       "Bash(mkdir _e1643)",
-      "Bash(unzip -o -q ../Cases/witcher3_countryside_event1643.zip)"
+      "Bash(unzip -o -q ../Cases/witcher3_countryside_event1643.zip)",
+      "Bash(python render.py ./Cases/witcher_run.json)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(rm -rf /tmp/ev7264)",
+      "Bash(mkdir -p /tmp/ev7264)",
+      "Bash(unzip -o -q Cases/witcher3_countryside_event7264.zip -d /tmp/ev7264)",
+      "Bash(head -2 MeshOut_*_mesh.csv)",
+      "Bash(head -3 ia_vertex_data.csv)",
+      "Bash(cygpath -w /tmp/ev7934/witcher3_countryside_event7934/vb_slot2_res_112927.bin)",
+      "Bash(cd /c/Development/Graphics/hlsl_interpreter *)"
     ],
+    "defaultMode": "auto",
     "additionalDirectories": [
       "\\tmp",
       "c:\\Users\\yinghuang\\.claude\\projects\\c--Development-Graphics-hlsl-interpreter\\memory",
-      "\\tmp\\e1852\\witcher3_countryside_event1852"
+      "\\tmp\\e1852\\witcher3_countryside_event1852",
+      "C:\\Development\\Graphics\\hlsl_interpreter\\Cases",
+      "C:\\Users\\YINGHU~1\\AppData\\Local\\Temp\\claude\\c--Development-Graphics-hlsl-interpreter\\7c0f27af-4a6f-47c0-8d6b-58cbf18bf15a\\tasks"
     ]
   }
 }
