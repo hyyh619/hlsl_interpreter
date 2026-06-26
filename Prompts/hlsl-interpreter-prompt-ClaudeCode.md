@@ -2122,9 +2122,12 @@ Upgraded pipeline input loading to use binary files captured by RenderDoc/3Dmigo
 Session file: `Sessions/hlsl-interpreter-step121-binary-input-data-precision.md`
 
 
-# 47
+# 47 遍历整个Dump目录下的zip draw，修复问题
 ## Prompts
-
+1. 遍历整个Dump目录下的zip draw，修复问题
+2. 每个zip draw如果出错就修复问题，并把该zip draw加入到regression test中
+3. 每次修复需要运行regression test保证不带来新问题，完成后提交修复改动
+4. 请把每次修复的思考，执行过程写成md提交
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -2834,11 +2837,21 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit: fix: packoffset sub-register, float4x4 array loading, icb local array, _mRC accessor; expand regression to 119 cases
 
 ## Claude Code Session
 
+**目标**：遍历 `Dump/` 目录所有 zip，修复解释器问题，将通过的 case 加入回归测试。
 
+**修复内容（4处）**：
+1. **`const float4 icb[]` 本地数组**：`execute_statement` 新增分支识别 3Dmigoto 内联 constant buffer 语法 `const float4 icb[] = { {…}, … }`，解析并存入 `local_vars`。修复后 event22420 等 event22xxx 系列通过。
+2. **`_mRC` 矩阵访问器**：`apply_swizzle` 新增 `_m00_m10_m20_m30` 列向量提取逻辑（当 `obj[0]` 是 list 时）。
+3. **float4x4 数组二进制加载**：`override_cbuffers_from_binary` 的数组分支对 `base==64` 的 float4x4 类型读取 4 个连续寄存器并转置为行主序矩阵。修复后 Frame-frame9222_event1734/1971 通过（8475+1404 顶点）。
+4. **`packoffset(c3.w)` 子寄存器偏移**：`FieldDefinition` 新增 `comp_off` 字段；`parse_cbuffer` 正则扩展为 `c(\d+)(?:\.([xyzwrgba]))?`，提取组件编号；`override_cbuffers_from_binary` 计算 `byte_off = reg * 16 + comp_off * 4`。修复了 event399 (LightRadius 错误读取 -60 而非 600 的问题)。
+
+**回归扩展**：从 `Dump/` 对多个游戏系列进行批量 triage，新增 71 个通过 case（heaven x14, valley x10, Octopath x18, sekiro4 x5, witcher3 event22xx x14, Frame-frame9222 x2, EndlessSpace2 x5, 其他 x3），回归套件从 46 扩展至 **117 cases，117/117 PASS**。
+
+Session文件：`Sessions/hlsl-step92-sweep-dump-zips-and-fix-interpreter.md`
 
 # 93
 ## Prompts

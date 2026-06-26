@@ -60,6 +60,7 @@ class FieldDefinition:
     data: List[Any] = None  # 字段数据值
     array_size: int = 0  # 数组长度（0表示非数组，如 float4 cb1[4] → 4）
     reg_offset: int = -1  # packoffset(cN) 的寄存器号（16字节单位）；-1 表示未指定
+    comp_off: int = 0     # packoffset(cN.x/y/z/w) 的组件偏移（0-3）；用于子寄存器字段
 
 
 @dataclass
@@ -915,10 +916,18 @@ class HLSLInterpreter:
                     # packoffset(cN[.xyzw]) → 该字段所在的 16 字节寄存器号。
                     # 多个数组字段(如 mvp[2]@c0 与 texgen[2]@c2)靠它从同一
                     # 二进制 cbuffer 里各取正确的寄存器区间。
-                    po_match = re.search(r'packoffset\s*\(\s*c(\d+)', line)
-                    reg_offset = int(po_match.group(1)) if po_match else -1
+                    po_match = re.search(r'packoffset\s*\(\s*c(\d+)(?:\.([xyzwrgba]))?\s*\)', line)
+                    if po_match:
+                        reg_offset = int(po_match.group(1))
+                        _comp_char = po_match.group(2) or 'x'
+                        comp_off = {'x': 0, 'r': 0, 'y': 1, 'g': 1,
+                                    'z': 2, 'b': 2, 'w': 3, 'a': 3}.get(_comp_char, 0)
+                    else:
+                        reg_offset = -1
+                        comp_off = 0
                     fields.append(FieldDefinition(field_type, field_name, '',
-                                                  array_size=array_size, reg_offset=reg_offset))
+                                                  array_size=array_size, reg_offset=reg_offset,
+                                                  comp_off=comp_off))
         return CbufferDefinition(name, fields, register=register)
 
     # 控制流关键字: header 正则可能把 "else if (...)" 误判成函数定义，需排除
@@ -1424,9 +1433,19 @@ class HLSLInterpreter:
             # (_eval_bitwise_operand), so here we always value-convert — matching
             # `(int2)v1.zw` used directly as e.g. a texture coordinate.
             if cast_type in self._INT_CAST_TYPES:
+                def _to_int(v):
+                    if v is None:
+                        return 0
+                    try:
+                        f = float(v)
+                    except (TypeError, ValueError):
+                        return 0
+                    if math.isnan(f) or math.isinf(f):
+                        return 0
+                    return int(f)
                 if isinstance(inner, list):
-                    return [int(v) for v in inner]
-                return int(inner) if inner is not None else 0
+                    return [_to_int(v) for v in inner]
+                return _to_int(inner)
             # float cast: 转换为浮点数
             if cast_type in ('float', 'float2', 'float3', 'float4'):
                 if isinstance(inner, list):
@@ -2044,6 +2063,21 @@ class HLSLInterpreter:
                 return obj if len(swizzle) == 1 else [obj] * len(swizzle)
             return None
 
+        # _mRC accessor on a matrix element (list of float4 rows): _m00_m10_m20_m30
+        if (swizzle and swizzle.startswith('_m') and obj
+                and isinstance(obj[0], list)):
+            accessor_parts = [p for p in swizzle.split('_') if p and p[0] == 'm' and len(p) == 3]
+            result = []
+            for ap in accessor_parts:
+                try:
+                    r, c = int(ap[1]), int(ap[2])
+                    result.append(obj[r][c] if r < len(obj) and c < len(obj[r]) else 0.0)
+                except (ValueError, IndexError):
+                    result.append(0.0)
+            if result:
+                return result[0] if len(result) == 1 else result
+            return 0.0
+
         result = []
         for c in swizzle:
             if c.lower() in self._SWIZZLE_MAP:
@@ -2392,6 +2426,36 @@ class HLSLInterpreter:
                             local_vars[vname] = list(default) if isinstance(default, list) else default
                     self.debug_print(f"[DECL] {var_type} {var_names}")
                     return None
+
+        # const <type> <name>[] = { {...}, {...}, ... }  (3Dmigoto inline constant buffer)
+        # e.g. "const float4 icb[] = { { 1,0,0,0 }, { 0,1,0,0 } }"
+        if stmt.startswith('const ') and '[' in stmt and '{' in stmt and '=' in stmt:
+            m_icb = re.match(r'^const\s+\w+\s+(\w+)\s*\[\s*\d*\s*\]\s*=\s*(\{.+\})\s*;?$', stmt, re.DOTALL)
+            if m_icb:
+                arr_name = m_icb.group(1)
+                arr_body = m_icb.group(2)
+                elements = []
+                depth = 0
+                elem_start = None
+                for ki, kc in enumerate(arr_body):
+                    if kc == '{':
+                        depth += 1
+                        if depth == 2:
+                            elem_start = ki + 1
+                    elif kc == '}':
+                        depth -= 1
+                        if depth == 1 and elem_start is not None:
+                            raw = arr_body[elem_start:ki]
+                            try:
+                                vals = [float(p.strip()) for p in raw.split(',') if p.strip()]
+                            except ValueError:
+                                vals = [0.0]
+                            elements.append(vals if len(vals) > 1 else (vals[0] if vals else 0.0))
+                            elem_start = None
+                if elements:
+                    local_vars[arr_name] = elements
+                    self.debug_print(f"[STMT] icb {arr_name}[{len(elements)}] loaded")
+                return None
 
         # 变量声明语句: float4 pos = ...;
         match = self.patterns['variable_declaration'].match(stmt)
@@ -3284,7 +3348,7 @@ class HLSLInterpreter:
 
                 # Compute this field's byte offset.
                 if getattr(field, 'reg_offset', -1) >= 0:
-                    byte_off = field.reg_offset * 16
+                    byte_off = field.reg_offset * 16 + getattr(field, 'comp_off', 0) * 4
                     cursor = byte_off
                 else:
                     if base <= 16 and (cursor % 16) + base > 16:
@@ -3305,7 +3369,15 @@ class HLSLInterpreter:
                         row_ri = ri + j * elem_regs
                         if row_ri >= len(decoded):
                             break
-                        arr.append(decoded[row_ri])
+                        if base == 64 and row_ri + 3 < len(decoded):
+                            # float4x4: load all 4 column registers, transpose to row-major
+                            cols = [decoded[row_ri + k] for k in range(4)]
+                            arr.append([[cols[c][r] for c in range(4)] for r in range(4)])
+                        elif base == 48 and row_ri + 2 < len(decoded):
+                            # float3x4 / float4x3 / float3x3: 3 registers
+                            arr.append([decoded[row_ri], decoded[row_ri + 1], decoded[row_ri + 2]])
+                        else:
+                            arr.append(decoded[row_ri])
                     if arr:
                         field.data = arr
                     # Advance cursor past the whole array.
@@ -3590,6 +3662,9 @@ class HLSLInterpreter:
                         self.log_output(f"    [{i}] [{', '.join(f'{v:.5f}' for v in elem)}]")
                     else:
                         self.log_output(f"    [{i}] {elem}")
+                continue
+            if data is None:
+                self.log_output(f"  {f.name} ({ft}): <not loaded>")
                 continue
             if 'float4x4' in ft:
                 self.log_output(f"  {f.name} ({ft}):")
