@@ -95,11 +95,12 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
     )
 
 
-# 3Dmigoto dumps shader-resource textures, one BMP per mip/array slice, as
-# <Stage>_slot_<slot>_res_<resid>_mip<mip>_arr<arr>.bmp
+# 3Dmigoto dumps shader-resource textures as
+# <Stage>_slot_<slot>_res_<resid>_mip<mip>_arr<arr>.img  (raw DXGI, preferred)
+# <Stage>_slot_<slot>_res_<resid>_mip<mip>_arr<arr>.bmp  (converted, fallback)
 def _texture_file_re(stage: str):
     return re.compile(
-        r'^' + re.escape(stage) + r'_slot_(\d+)_res_(\d+)_mip(\d+)_arr(\d+)\.bmp$',
+        r'^' + re.escape(stage) + r'_slot_(\d+)_res_(\d+)_mip(\d+)_arr(\d+)\.(img|bmp)$',
         re.IGNORECASE,
     )
 
@@ -668,11 +669,13 @@ def _save_depth_bitmap(pixels, viewport, path, log) -> bool:
 
 def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mips):
     """Ordered texture data paths for a texture's view mip range (mip0, mip1,
-    ...). Prefers raw .img data (decoded per the texture's DXGI format),
-    falling back to the .bmp for a level when no .img was dumped.
+    ...). Uses raw .img data exclusively (decoded per the DXGI format captured
+    by RenderDoc) — .bmp files are not used because they are converted/lossy
+    representations that can lose precision for floating-point formats.
 
-    Stops at the first level with neither .img nor .bmp so the chain never
-    indexes past real captured data."""
+    Falls back to .bmp for a mip level when no .img exists (older captures).
+    Stops at the first level with neither file so the chain never indexes
+    past real captured data."""
     paths = []
     for m in range(first_mip, first_mip + max(1, num_mips)):
         stem = f"{stage}_slot_{slot}_res_{resource_id}_mip{m}_arr0"
@@ -681,6 +684,7 @@ def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mip
         if os.path.exists(img):
             paths.append(img)
         elif os.path.exists(bmp):
+            # Older capture: no .img dumped, use .bmp as last resort.
             paths.append(bmp)
         else:
             break
@@ -688,27 +692,32 @@ def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mip
 
 
 def _discover_stage_textures_from_bmp(data_folder, stage, log=None):
-    """Fallback texture discovery: scan dumped BMPs directly when
-    texture_params.csv is absent. Groups every mip slice (arr0) per slot so
-    the real captured mip chain is loaded, and pairs each texture with a
-    default sampler at the same slot index."""
+    """Fallback texture discovery: scan dumped texture files directly when
+    texture_params.csv is absent. Prefers .img (raw DXGI data) over .bmp
+    (converted). Groups every mip slice (arr0) per slot so the real captured
+    mip chain is loaded, and pairs each texture with a default sampler."""
     try:
         from texture import TextureDesc, Sampler, Texture
     except Exception:
         return None, [], []
 
     pattern = _texture_file_re(stage)
-    slot_mips = {}  # slot -> {mip: path}
-    slot_res = {}   # slot -> resource id
+    slot_mips = {}   # slot -> {mip: path}
+    slot_res = {}    # slot -> resource id
     for name in os.listdir(data_folder):
         m = pattern.match(name)
         if not m:
             continue
         slot, resid, mip, arr = (int(m.group(1)), int(m.group(2)),
                                  int(m.group(3)), int(m.group(4)))
+        ext = m.group(5).lower()
         if arr != 0:
             continue
-        slot_mips.setdefault(slot, {})[mip] = os.path.join(data_folder, name)
+        path = os.path.join(data_folder, name)
+        # Prefer .img over .bmp — only replace an existing entry when .img wins.
+        existing = slot_mips.get(slot, {}).get(mip)
+        if existing is None or ext == 'img':
+            slot_mips.setdefault(slot, {})[mip] = path
         slot_res[slot] = resid
 
     if not slot_mips:
@@ -984,14 +993,64 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     vs_interp.log_output(f"VS inputs:  {[(p['name'], p['type'], p['semantic']) for p in vs_input_params]}")
     vs_interp.log_output(f"VS outputs: {[(p['name'], p['type'], p['semantic'], 'slot', p['slot']) for p in vs_output_params]}")
 
-    # Load vertex data
-    vertex_data = vs_interp.load_ia_vertex_data(ia_vertex_csv, vs_input_params)
-    vs_interp.log_output(f"Loaded {len(vertex_data)} vertices from ia_vertex_data.csv")
+    # Load vertex data — prefer raw binary captures for maximum precision
+    # (ia_vertex_data.csv uses rounded floats and may store some formats as zeros).
+    ia_layouts_csv = os.path.join(data_folder, 'ia_input_layouts.csv')
+    draw_call_info_csv = os.path.join(data_folder, 'draw_call_info.csv')
+
+    # Step 1: Build the per-draw index list from the binary index buffer.
+    # Fall back to the CSV IDX column when no binary IB is available.
+    idx_list = vs_interp.load_index_list_from_binary(
+        ia_layouts_csv, data_folder, draw_call_info_csv
+    )
+    if idx_list:
+        vs_interp.log_output(f"Loaded {len(idx_list)} indices from binary index buffer")
+    else:
+        idx_list = vs_interp.load_index_column(ia_vertex_csv)
+
+    # Step 2: Load per-vertex attributes.  Binary VBs are preferred for
+    # precision; CSV (ia_vertex_data.csv) fills in any attributes whose
+    # binary slot is absent (e.g. ResourceId::0 / no bin file).
+    #
+    # Strategy: start from CSV so every attribute has a baseline value,
+    # then overlay binary overrides for attributes that DO have bin files.
+    # csv_vertex_data=None skips the CSV-agreement gate so every binary
+    # decode is accepted unconditionally (exact bit patterns, not rounded).
+    if idx_list:
+        csv_vertex_data = vs_interp.load_ia_vertex_data(ia_vertex_csv, vs_input_params)
+        # Re-index CSV rows to match idx_list order when lengths differ
+        # (CSV rows are in draw order; they should already match idx_list).
+        if len(csv_vertex_data) == len(idx_list):
+            vertex_data = csv_vertex_data
+        else:
+            vertex_data = csv_vertex_data[:len(idx_list)] if csv_vertex_data else \
+                          [{} for _ in range(len(idx_list))]
+        bin_overrides = vs_interp.load_per_vertex_binary_data(
+            ia_layouts_csv, data_folder, vs_input_params, idx_list,
+            csv_vertex_data=None,
+        )
+        overridden: set = set()
+        if bin_overrides:
+            for i, ov in enumerate(bin_overrides):
+                if ov and i < len(vertex_data):
+                    vertex_data[i].update(ov)
+                    overridden.update(ov.keys())
+        if overridden:
+            vs_interp.log_output(
+                f"Loaded {len(vertex_data)} vertices from binary VBs "
+                f"(attributes: {sorted(overridden)})"
+            )
+        else:
+            vs_interp.log_output(
+                f"Loaded {len(vertex_data)} vertices from ia_vertex_data.csv"
+            )
+    else:
+        vertex_data = vs_interp.load_ia_vertex_data(ia_vertex_csv, vs_input_params)
+        vs_interp.log_output(f"Loaded {len(vertex_data)} vertices from ia_vertex_data.csv")
 
     # Load per-instance inputs (INSTANCE_TRANSFORM*, etc.) from the binary
-    # vertex buffers. ia_vertex_data.csv only carries the per-vertex stream;
-    # instanced inputs come from a separate slot and would otherwise be zero.
-    ia_layouts_csv = os.path.join(data_folder, 'ia_input_layouts.csv')
+    # vertex buffers. The per-vertex stream above covers slot 0; instanced
+    # inputs come from a separate slot and would otherwise be zero.
     instance_inputs = vs_interp.load_per_instance_data(
         ia_layouts_csv, data_folder, vs_input_params, instance_index=0
     )
@@ -1003,11 +1062,6 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             f"{ {k: (v if not isinstance(v, list) else [round(x, 4) for x in v]) for k, v in instance_inputs.items()} }"
         )
 
-    # Re-decode per-vertex inputs that ia_vertex_data.csv stored as zeros
-    # because RenderDoc could not represent their format (e.g. NORMAL/TANGENT
-    # dumped as 'R0G0B0A0_UNORM'). These come from a separate VB slot and are
-    # fetched by index-buffer value, then override the zero CSV columns.
-    idx_list = vs_interp.load_index_column(ia_vertex_csv)
     # SV_VertexID is a per-vertex system value (the index-buffer value for an
     # indexed draw, +BaseVertex=0). Used e.g. to index a Buffer<float4> texcoord
     # table (Octopath). Without it every vertex reads element 0.
@@ -1018,20 +1072,6 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             vid = idx_list[i] if i < len(idx_list) else i
             for pname in sv_vid_params:
                 vtx[pname] = vid
-    pv_overrides = vs_interp.load_per_vertex_binary_data(
-        ia_layouts_csv, data_folder, vs_input_params, idx_list,
-        csv_vertex_data=vertex_data,
-    )
-    if pv_overrides:
-        overridden = set()
-        for i, ov in enumerate(pv_overrides):
-            if i < len(vertex_data) and ov:
-                vertex_data[i].update(ov)
-                overridden.update(ov.keys())
-        if overridden:
-            vs_interp.log_output(
-                f"Re-decoded per-vertex inputs from binary VB: {sorted(overridden)}"
-            )
 
     # Load golden VS output (optional)
     golden_vs_rows = []

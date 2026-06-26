@@ -3263,17 +3263,97 @@ class HLSLInterpreter:
             self._cb_raw[f'cb{slot}'] = [
                 list(struct.unpack_from('<4i', data, i * 16)) for i in range(n4)
             ]
-            # Fill EVERY array field from its own register window, not just the
-            # first. A cbuffer with two arrays (e.g. mvp[2]@c0 + texgen[2]@c2)
-            # would otherwise leave the second array as [None,...] (the combined
-            # float CSV only stores a single representative value per array name,
-            # never the per-element mvp_v0/mvp_v1 keys), so texgen[i] read 0.
-            reg_offsets = self._field_register_offsets(cb_def.fields)
-            for field, reg_off in zip(cb_def.fields, reg_offsets):
-                if getattr(field, 'array_size', 0) > 0 and reg_off is not None:
-                    m = min(field.array_size, max(0, len(decoded) - reg_off))
-                    if m > 0:
-                        field.data = decoded[reg_off:reg_off + m]
+            # Fill ALL fields from binary: arrays, matrices, scalars, and vectors.
+            # This replaces any values previously loaded from the float CSV so
+            # exact bit patterns (needed for asint/asuint) survive.
+            total_floats = len(data) // 4
+            # Flat decoded float list (with FTZ applied) and raw int/uint views.
+            decoded_flat = [v for row in decoded for v in row]
+            raw_ints  = list(struct.unpack_from(f'<{total_floats}i', data))
+            raw_uints = list(struct.unpack_from(f'<{total_floats}I', data))
+
+            # Walk fields tracking the running byte cursor (same packing rules
+            # as _field_register_offsets, but at byte granularity so
+            # sub-register fields like float3 / float2 / float are positioned
+            # correctly).
+            cursor = 0
+            for field in cb_def.fields:
+                ftype = field.field_type
+                array_size = getattr(field, 'array_size', 0)
+                base = self._CB_TYPE_BYTES.get(ftype, 16)
+
+                # Compute this field's byte offset.
+                if getattr(field, 'reg_offset', -1) >= 0:
+                    byte_off = field.reg_offset * 16
+                    cursor = byte_off
+                else:
+                    if base <= 16 and (cursor % 16) + base > 16:
+                        cursor = (cursor + 15) // 16 * 16
+                    if base > 16:
+                        cursor = (cursor + 15) // 16 * 16
+                    byte_off = cursor
+
+                fi = byte_off // 4   # flat float index
+                ri = byte_off // 16  # register index
+
+                if array_size > 0:
+                    # Array: each element is register-aligned.
+                    elem_stride = (base + 15) // 16 * 16
+                    elem_regs = elem_stride // 16
+                    arr = []
+                    for j in range(array_size):
+                        row_ri = ri + j * elem_regs
+                        if row_ri >= len(decoded):
+                            break
+                        arr.append(decoded[row_ri])
+                    if arr:
+                        field.data = arr
+                    # Advance cursor past the whole array.
+                    cursor = byte_off + array_size * elem_stride
+                else:
+                    # Non-array field.
+                    if base == 64:      # float4x4
+                        if ri + 3 < len(decoded):
+                            # D3D HLSL stores float4x4 column-major in cbuffer registers:
+                            # decoded[ri+k] is column k.  The interpreter accesses elements
+                            # as matrix[row][col], so transpose to row-major here.
+                            cols = [decoded[ri], decoded[ri+1],
+                                    decoded[ri+2], decoded[ri+3]]
+                            field.data = [[cols[c][r] for c in range(4)] for r in range(4)]
+                    elif base == 48:    # float3x4 / float4x3 / float3x3
+                        if ri + 2 < len(decoded):
+                            field.data = [decoded[ri], decoded[ri+1], decoded[ri+2]]
+                    elif base == 16:    # float4 / int4 / uint4
+                        if ri < len(decoded):
+                            if 'int' in ftype or 'uint' in ftype or 'bool' in ftype:
+                                raw = raw_ints if 'uint' not in ftype else raw_uints
+                                field.data = raw[fi:fi+4] if fi+4 <= total_floats else decoded[ri]
+                            else:
+                                field.data = decoded[ri]
+                    elif base == 12:    # float3 / int3 / uint3
+                        if fi + 2 < total_floats:
+                            if 'int' in ftype or 'uint' in ftype:
+                                raw = raw_ints if 'uint' not in ftype else raw_uints
+                                field.data = raw[fi:fi+3]
+                            else:
+                                field.data = [decoded_flat[fi], decoded_flat[fi+1],
+                                              decoded_flat[fi+2]]
+                    elif base == 8:     # float2 / int2 / uint2
+                        if fi + 1 < total_floats:
+                            if 'int' in ftype or 'uint' in ftype:
+                                raw = raw_ints if 'uint' not in ftype else raw_uints
+                                field.data = raw[fi:fi+2]
+                            else:
+                                field.data = [decoded_flat[fi], decoded_flat[fi+1]]
+                    elif base == 4:     # float / int / uint / bool / dword
+                        if fi < total_floats:
+                            if 'int' in ftype and 'uint' not in ftype:
+                                field.data = raw_ints[fi]
+                            elif 'uint' in ftype or 'bool' in ftype or 'dword' in ftype:
+                                field.data = raw_uints[fi]
+                            else:
+                                field.data = decoded_flat[fi]
+                    cursor = byte_off + base
 
     def _structured_buffer_member(self, sb: dict, index: int, member_name: str):
         """Decode one member of structured-buffer element `index` on demand.
@@ -4060,8 +4140,20 @@ class HLSLInterpreter:
             elif 'UNORM' in fmt_u and comp_byte_width == 1:
                 ints = struct.unpack_from(f'<{comp_count}B', raw)
                 vals = [v / 255.0 for v in ints]
+            elif 'SNORM' in fmt_u and comp_byte_width == 2:
+                ints = struct.unpack_from(f'<{comp_count}h', raw)
+                vals = [max(-1.0, v / 32767.0) for v in ints]
+            elif 'SNORM' in fmt_u and comp_byte_width == 1:
+                ints = struct.unpack_from(f'<{comp_count}b', raw)
+                vals = [max(-1.0, v / 127.0) for v in ints]
             elif ('UINT' in fmt_u or 'SINT' in fmt_u) and comp_byte_width == 4:
                 code = 'i' if 'SINT' in fmt_u else 'I'
+                vals = list(struct.unpack_from(f'<{comp_count}{code}', raw))
+            elif ('UINT' in fmt_u or 'SINT' in fmt_u) and comp_byte_width == 2:
+                code = 'h' if 'SINT' in fmt_u else 'H'
+                vals = list(struct.unpack_from(f'<{comp_count}{code}', raw))
+            elif ('UINT' in fmt_u or 'SINT' in fmt_u) and comp_byte_width == 1:
+                code = 'b' if 'SINT' in fmt_u else 'B'
                 vals = list(struct.unpack_from(f'<{comp_count}{code}', raw))
             else:
                 # Fallback: treat as float32
@@ -4250,6 +4342,117 @@ class HLSLInterpreter:
             except (ValueError, IndexError):
                 out.append(0)
         return out
+
+    def load_index_list_from_binary(self, ia_layouts_csv: str, data_folder: str,
+                                    draw_call_csv: str) -> list:
+        """Load the per-drawn-vertex index list directly from the captured index-buffer
+        binary (ib_res_{id}.bin) using ia_input_layouts.csv for the IB resource ID /
+        stride and draw_call_info.csv for the draw parameters.
+
+        For non-indexed draws (Indexed=False) returns a sequential list
+        [VertexOffset, ..., VertexOffset+N-1].  Returns [] if the binary file is
+        absent so the caller can fall back to ia_vertex_data.csv.
+        """
+        # --- Read draw-call parameters ---
+        num_indices = 0
+        index_offset = 0   # StartIndexLocation (in index units, NOT bytes)
+        base_vertex = 0
+        vertex_offset = 0
+        is_indexed = False
+        if os.path.exists(draw_call_csv):
+            for row in self.load_csv(draw_call_csv)[1:]:
+                if len(row) < 2:
+                    continue
+                key, val = row[0].strip(), row[1].strip()
+                if key == 'NumIndicesOrVertices':
+                    try:
+                        num_indices = int(val)
+                    except ValueError:
+                        pass
+                elif key == 'IndexOffset':
+                    try:
+                        index_offset = int(val)
+                    except ValueError:
+                        pass
+                elif key == 'BaseVertex':
+                    try:
+                        base_vertex = int(val)
+                    except ValueError:
+                        pass
+                elif key == 'VertexOffset':
+                    try:
+                        vertex_offset = int(val)
+                    except ValueError:
+                        pass
+                elif key == 'Indexed':
+                    is_indexed = val.strip().lower() == 'true'
+        if num_indices <= 0:
+            return []
+
+        if not is_indexed:
+            return list(range(vertex_offset, vertex_offset + num_indices))
+
+        # --- Find IB resource id, binding byte-offset, and stride from
+        #     ia_input_layouts.csv.  The binding ByteOffset is the start of
+        #     the IB VIEW within the binary file; IndexOffset (from the draw
+        #     call) is the additional skip in index units. ---
+        ib_resid = None
+        ib_bind_byte_off = 0   # ByteOffset from the IB binding row
+        ib_stride = 4           # default 4-byte (uint32) indices
+        if os.path.exists(ia_layouts_csv):
+            section = None
+            for row in self.load_csv(ia_layouts_csv):
+                if not row or all(str(c).strip() == '' for c in row):
+                    section = None
+                    continue
+                c0 = str(row[0]).strip()
+                if c0 == 'IndexBuffer':
+                    section = 'ibuffer'
+                    continue
+                if c0 in ('Index', 'VertexBuffer'):
+                    section = c0.lower()
+                    continue
+                if section == 'ibuffer' and len(row) >= 3:
+                    resid = self._extract_resid(row[0])
+                    if resid is not None:
+                        ib_resid = resid
+                        try:
+                            ib_bind_byte_off = int(row[1])
+                        except (ValueError, IndexError):
+                            ib_bind_byte_off = 0
+                        try:
+                            ib_stride = int(row[2])
+                        except (ValueError, IndexError):
+                            ib_stride = 4
+
+        if ib_resid is None:
+            return []
+
+        bin_path = os.path.join(data_folder, f'ib_res_{ib_resid}.bin')
+        if not os.path.exists(bin_path):
+            return []
+
+        # The actual read position in the binary:
+        #   binding byte-offset  (VIEW start in the resource binary)
+        # + StartIndexLocation   (draw-call skip, in index units → convert to bytes)
+        actual_byte_off = ib_bind_byte_off + index_offset * ib_stride
+        with open(bin_path, 'rb') as f:
+            f.seek(actual_byte_off)
+            raw = f.read(num_indices * ib_stride)
+
+        if len(raw) < num_indices * ib_stride:
+            actual = len(raw) // ib_stride
+            self.log_output(
+                f"Warning: IB binary too short; got {actual} of {num_indices} indices"
+            )
+            num_indices = actual
+
+        fmt = '<H' if ib_stride == 2 else '<I'
+        indices = [
+            struct.unpack_from(fmt, raw, i * ib_stride)[0] + base_vertex
+            for i in range(num_indices)
+        ]
+        return indices
 
     def load_per_vertex_binary_data(self, layouts_csv_path: str, data_folder: str,
                                     vs_input_params: list, idx_list: list,

@@ -2085,7 +2085,6 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ## Claude Code Session
 
 
-
 # 46 从bin/raw data中加载数据
 ## Prompts
 1. 为了保证输入数据的精确，我们不能从下列已经解析的csv文件中加载数据
@@ -2099,10 +2098,28 @@ Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit: feat: load VB/IB/cbuffer/texture from binary for full float32 precision
 
 ## Claude Code Session
+**Binary input data precision: VB/IB/cbuffer/texture binary loading** (Step 121)
 
+Upgraded pipeline input loading to use binary files captured by RenderDoc/3Dmigoto for exact float32 precision, replacing the rounded CSV text values.
+
+**4 changes implemented:**
+1. **Vertex/Index buffer** — read `ib_res_{id}.bin` / `vb_slot{N}_res_{id}.bin` directly; `ia_input_layouts.csv` provides resource IDs and formats.
+2. **Constant buffers** — `**_constant_buffer_info.csv` → load `constant_{id}.bin`; `**_constant_buffers.csv` provides field layout.
+3. **SRV/RTV/UAV textures** — `.img` files replace `.bmp`.
+4. **CSV baseline + binary override** — CSV always loaded first as fallback for slots with no binary (`ResourceId::0`); binary `dict.update()` overrides where available.
+
+**4 regression bugs fixed:**
+- **SNORM decode** (`R8G8B8A8_SNORM`): was falling to float32 branch → struct.error → zeros. Fixed: `max(-1.0, b/127.0)` for 8-bit, `max(-1.0, s/32767.0)` for 16-bit.
+- **float4x4 cbuffer column-major storage**: D3D11 stores float4x4 column-major in cbuffer registers (`decoded[ri+k]` = column k). Must transpose when loading so `matrix[row][col]` access is correct. Fixed in `override_cbuffers_from_binary`.
+- **UINT/SINT 1-byte/2-byte decode** (`R8G8B8A8_UINT` BLENDINDICES): was falling to float32 branch → struct.error → zeros, overwriting correct CSV bone indices. Fixed: explicit `'B'`/`'b'` struct codes for 1-byte components.
+- **CSV fallback missing for no-binary slots**: binary-only path left NORMAL/TANGENT/COLOR/TEXCOORD empty for VB slots 2–3 (ResourceId::0). Fixed by loading CSV baseline first.
+
+**Result: 45/46 regression cases pass.** Only `Collision-event399` fails (pre-existing: `r1.w` uninitialized + integer vector `==` semantics in `-(ColorMaterialMode == int4(...))`).
+
+Session file: `Sessions/hlsl-interpreter-step121-binary-input-data-precision.md`
 
 
 # 47
@@ -2916,12 +2933,12 @@ Notice:
 # 99
 ## Prompts
 
-
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit: feat: binary VB/IB/cbuffer/texture loading for input data precision
 
 ## Claude Code Session
+
