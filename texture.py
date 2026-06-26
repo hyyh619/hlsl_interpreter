@@ -675,6 +675,12 @@ class Texture:
         h = len(mip_level)
         w = len(mip_level[0])
 
+        # Guard NaN/Inf UV so int() can't crash the draw (see _sample_linear).
+        if u != u or u in (float('inf'), float('-inf')):
+            u = 0.0
+        if v != v or v in (float('inf'), float('-inf')):
+            v = 0.0
+
         x = int(u * w) % w
         y = int(v * h) % h
 
@@ -686,6 +692,14 @@ class Texture:
     def _sample_linear(self, mip_level: List[List[List[float]]], u: float, v: float) -> List[float]:
         h = len(mip_level)
         w = len(mip_level[0])
+
+        # A NaN/Inf UV (e.g. from a divide-by-zero in the shader) must not crash
+        # the int() conversion below; treat it as 0 like the GPU's well-defined
+        # out-of-range behaviour rather than aborting the whole draw.
+        if u != u or u in (float('inf'), float('-inf')):
+            u = 0.0
+        if v != v or v in (float('inf'), float('-inf')):
+            v = 0.0
 
         fu = u * w
         fv = v * h

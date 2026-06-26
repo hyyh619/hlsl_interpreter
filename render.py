@@ -957,8 +957,8 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # Parse cbuffers, texture/sampler bindings, and functions from VS code
     vs_interp._parse_texture_and_sampler_bindings(vs_code)
     vs_interp._parse_structured_buffers(vs_code)
-    for cb_match in vs_interp.patterns['cbuffer_finditer'].finditer(vs_code):
-        cb_def = vs_interp.parse_cbuffer(cb_match.group())
+    for cb_block in vs_interp._extract_cbuffer_blocks(vs_code):
+        cb_def = vs_interp.parse_cbuffer(cb_block)
         if cb_def:
             vs_interp.cbuffers[cb_def.name] = cb_def
     vs_interp.parse_all_functions(vs_code)
@@ -1217,8 +1217,8 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             )
 
         ps_interp._parse_texture_and_sampler_bindings(ps_code)
-        for cb_match in ps_interp.patterns['cbuffer_finditer'].finditer(ps_code):
-            cb_def = ps_interp.parse_cbuffer(cb_match.group())
+        for cb_block in ps_interp._extract_cbuffer_blocks(ps_code):
+            cb_def = ps_interp.parse_cbuffer(cb_block)
             if cb_def:
                 ps_interp.cbuffers[cb_def.name] = cb_def
         ps_interp.parse_all_functions(ps_code)

@@ -177,7 +177,74 @@ Regression suite grew from **46 → 117 cases** (71 new cases including 2 from C
 
 ---
 
-## Final State
+## Final State (first commit)
 
 - 4 interpreter fixes committed
 - Regression: 117 cases, **117/117 PASS**
+
+---
+
+## Part 2 — Full Dump/ sweep + struct-in-cbuffer + texture-NaN crash fix
+
+A complete triage of **all 513 Dump/ zips** was run: **332/513 pass (~65%)**.
+Failure breakdown of the 181:
+
+| Reason | Count | Nature |
+|---|---|---|
+| VS-vs-golden value mismatch | 125 | wrong output values (various root causes) |
+| timeout (>300s) | 37 | correct-but-slow (large vertex/pixel counts) |
+| no VS-vs-golden comparison | 17 | 0 vertices / no golden mesh in capture |
+| crash | ~3 | texture sampling NaN UV (fixed below) |
+
+### Fix 5 — struct-in-cbuffer support (`struct {...} NAME[N]` inside a cbuffer)
+
+TombRaider shaders declare `cbuffer WorldBuffer { struct { row_major float4x4 WorldViewProject;
+World; ViewProject; } WorldParameters[12] : packoffset(c0); }`. Three problems:
+
+1. **Brace truncation** — both `cbuffer_finditer` and `cbuffer_definition` regexes use `[^}]+`,
+   which stops at the struct's nested `}`, so the cbuffer was never fully captured. Added
+   `_extract_cbuffer_blocks()` (manual brace-balanced scan) and rewired the three call sites
+   (`hlsl_interpreter.py` parse loop + `render.py` VS/PS loops).
+2. **Struct member parsing** — `parse_cbuffer` now detects `struct {...} NAME[N] : packoffset(cM)`,
+   computes the per-element register stride from the members, and registers a `__struct__` field
+   (`FieldDefinition.struct_elem_regs`).
+3. **Binary loading** — `override_cbuffers_from_binary` loads each struct-array element as a list
+   of its raw float4 register rows (no transpose), so `NAME[i]._mRC` reads register R, component C
+   (correct for the row_major matrices these structs hold).
+
+**Result**: `WorldParameters[i]._m30_m31_m32_m33` and the position output (`o1`/SV_POSITION) are
+now computed correctly (597.939, matching golden).
+
+### Fix 6 — golden uint→float reinterpret for SV_Position
+
+When a shader declares a leading `uint4` output (e.g. `out uint4 o0 : PSIZE0`) before
+SV_POSITION, RenderDoc's mesh CSV lays SV_Position data into that first (uint-typed) column and
+prints its floats as **uint32 bit-patterns** (integer text like `1142258707` = 597.94f). The
+golden loader already reorders SV_Position to that physical column; added `_golden_float()` to
+reinterpret integer-formatted tokens (no `.`/exponent) as float32 bits. SV_Position now matches.
+
+### Fix 7 — texture NaN/Inf UV crash guard
+
+`_sample_linear`/`_sample_nearest` did `int(u*w)`, which raised
+`ValueError: cannot convert float NaN to integer` when a shader produced a NaN UV (divide-by-zero)
+and then sampled — aborting the entire draw (sekiro2_event13516, sekiro4_event20560). Now NaN/Inf
+UV is clamped to 0 (well-defined GPU-like out-of-range behaviour) so the draw completes.
+
+### TombRaider limitation (cannot be fixed from HLSL)
+
+TombRaider's **normals/tangents still fail** — and this is unfixable from the decompiled HLSL.
+The disassembly shows the normal transform uses `cb0[base+4..6]` (the *second* struct matrix,
+`World`), but 3Dmigoto's decompiled HLSL writes the *same* `._m00/_m10/_m20` tokens that the
+position uses for `cb0[base+0..2]` (the *first* matrix, `WorldViewProject`). The struct-member
+selector is dropped, so the same `_m00` token maps to different registers depending on context —
+information that exists only in the disassembly. Position (`o1`) and `o2`/TEXCOORD0 now pass;
+the normal-derived outputs (TEXCOORD2/3/4) require disasm-level register info, out of scope for an
+HLSL interpreter. Verified: computing `o3` with the World matrix (regs +4/+5/+6) gives 0.5929,
+exactly the golden value — confirming the diagnosis.
+
+### Net
+
+Fixes 5–7 are correct general improvements (struct-in-cbuffer, golden bit-pattern reinterpret,
+texture crash robustness). They do not make TombRaider fully pass (lossy decompiled source) but
+fix its position output, fix the texture crashes, and support single-matrix struct-in-cbuffer
+captures. Regression remains green.

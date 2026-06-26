@@ -61,6 +61,7 @@ class FieldDefinition:
     array_size: int = 0  # 数组长度（0表示非数组，如 float4 cb1[4] → 4）
     reg_offset: int = -1  # packoffset(cN) 的寄存器号（16字节单位）；-1 表示未指定
     comp_off: int = 0     # packoffset(cN.x/y/z/w) 的组件偏移（0-3）；用于子寄存器字段
+    struct_elem_regs: int = 0  # struct{...} NAME[N] 时每个元素占用的 16 字节寄存器数；0 表示非内嵌结构体
 
 
 @dataclass
@@ -882,22 +883,80 @@ class HLSLInterpreter:
                 fields.append(FieldDefinition(field_type, field_name, semantic))
         return StructDefinition(name, fields)
 
+    def _extract_cbuffer_blocks(self, code: str) -> list:
+        """Return each `cbuffer NAME : ... { ... }` block with **balanced** braces.
+
+        The `[^}]+`-based regexes stop at the first `}`, which truncates a cbuffer
+        whose body contains a nested `struct { ... }` (3Dmigoto emits these for
+        struct-typed constant arrays, e.g. TombRaider's `struct {...} Params[12]`).
+        A manual brace scan captures the whole cbuffer including nested braces."""
+        blocks = []
+        for m in re.finditer(r'cbuffer\s+\w+', code):
+            brace_start = code.find('{', m.end())
+            if brace_start < 0:
+                continue
+            depth = 0
+            for i in range(brace_start, len(code)):
+                c = code[i]
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        blocks.append(code[m.start():i + 1])
+                        break
+        return blocks
+
     def parse_cbuffer(self, code: str) -> CbufferDefinition:
         """
         解析HLSL常量缓冲区定义
         code: cbuffer代码
         返回: CbufferDefinition对象
         """
-        match = self.patterns['cbuffer_definition'].search(code)
-        if not match:
+        header_m = re.match(r'cbuffer\s+(\w+)', code)
+        if not header_m:
             return None
-        name = match.group(1)
+        name = header_m.group(1)
         # register(bN) so the binary loader can match by slot regardless of the
         # cbuffer's name (cb0 / Constants / cbuffer0 all differ across captures).
-        reg_m = re.search(r'register\s*\(\s*b(\d+)\s*\)', code[match.start():match.end()])
+        reg_m = re.search(r'register\s*\(\s*b(\d+)\s*\)', code)
         register = int(reg_m.group(1)) if reg_m else None
         fields = []
-        lines = code[match.start():match.end()].split('\n')[1:]
+        # Body = everything between the outermost braces (brace-balanced input).
+        body_start = code.find('{')
+        body_end = code.rfind('}')
+        body = code[body_start + 1:body_end] if 0 <= body_start < body_end else ''
+
+        # Pull out any nested `struct { members } NAME[N] : packoffset(cM);`
+        # declarations first, register them as struct-array fields, and strip
+        # them from the body so the per-line scan below sees only flat fields.
+        def _consume_struct(struct_m):
+            members_src = struct_m.group(1)
+            field_name = struct_m.group(2)
+            arr_n = int(struct_m.group(3)) if struct_m.group(3) else 0
+            po_reg = int(struct_m.group(4)) if struct_m.group(4) else -1
+            # Element stride in bytes: sum members under HLSL cbuffer packing
+            # (each member 16-byte aligned for matrices; round element to 16).
+            elem_bytes = 0
+            for mline in members_src.split(';'):
+                mline = mline.strip().replace('row_major', '').replace('column_major', '').strip()
+                if not mline:
+                    continue
+                mtype = mline.split()[0]
+                sz = self._CB_TYPE_BYTES.get(mtype, 16)
+                if sz > 16:  # matrices align to a register
+                    elem_bytes = (elem_bytes + 15) // 16 * 16
+                elem_bytes += sz
+            elem_regs = max(1, (elem_bytes + 15) // 16)
+            fields.append(FieldDefinition('__struct__', field_name, '',
+                                          array_size=arr_n, reg_offset=po_reg,
+                                          struct_elem_regs=elem_regs))
+            return ''
+        body = re.sub(
+            r'struct\s*\{(.*?)\}\s*(\w+)\s*(?:\[(\d+)\])?\s*(?::\s*packoffset\(\s*c(\d+)[^)]*\))?\s*;',
+            _consume_struct, body, flags=re.DOTALL)
+
+        lines = body.split('\n')
         for line in lines:
             line = line.strip().rstrip(';')
             if not line or line.startswith('}'):
@@ -2901,9 +2960,9 @@ class HLSLInterpreter:
             if struct_def:
                 self.structs[struct_def.name] = struct_def
 
-        # 解析cbuffer定义
-        for cb_match in self.patterns['cbuffer_finditer'].finditer(code):
-            cb_def = self.parse_cbuffer(cb_match.group())
+        # 解析cbuffer定义（用大括号配平提取，以支持内嵌 struct 的 cbuffer）
+        for cb_block in self._extract_cbuffer_blocks(code):
+            cb_def = self.parse_cbuffer(cb_block)
             if cb_def:
                 self.cbuffers[cb_def.name] = cb_def
 
@@ -3345,6 +3404,29 @@ class HLSLInterpreter:
                 ftype = field.field_type
                 array_size = getattr(field, 'array_size', 0)
                 base = self._CB_TYPE_BYTES.get(ftype, 16)
+
+                # Struct-array field (struct {...} NAME[N]): each element spans
+                # `struct_elem_regs` consecutive registers. Store each element as
+                # a list of its raw float4 register rows (no transpose) so a
+                # `NAME[i]._mRC` accessor reads register R, component C directly —
+                # correct for the row_major matrices these structs hold.
+                if ftype == '__struct__':
+                    elem_regs = getattr(field, 'struct_elem_regs', 1) or 1
+                    if getattr(field, 'reg_offset', -1) >= 0:
+                        ri0 = field.reg_offset
+                    else:
+                        ri0 = (cursor + 15) // 16
+                    elements = []
+                    for j in range(array_size):
+                        elem_base = ri0 + j * elem_regs
+                        rows = [decoded[elem_base + k]
+                                for k in range(elem_regs)
+                                if elem_base + k < len(decoded)]
+                        elements.append(rows)
+                    if elements:
+                        field.data = elements
+                    cursor = (ri0 + array_size * elem_regs) * 16
+                    continue
 
                 # Compute this field's byte offset.
                 if getattr(field, 'reg_offset', -1) >= 0:
@@ -4904,7 +4986,15 @@ class HLSLInterpreter:
             entry = {}
             for key, cols in param_cols:
                 try:
-                    vals = [float(row[c]) for c in cols]
+                    raws = [row[c].strip() for c in cols]
+                    # SV_Position is always float, but when it physically lands
+                    # in a leading uint-typed column (e.g. a `uint4 PSIZE` output
+                    # declared before it), RenderDoc prints its floats as their
+                    # uint32 bit-pattern (integer text). Reinterpret those bits.
+                    if key == 'sv_position':
+                        vals = [self._golden_float(s) for s in raws]
+                    else:
+                        vals = [float(s) for s in raws]
                 except (ValueError, IndexError):
                     continue
                 if not vals:
@@ -4913,6 +5003,18 @@ class HLSLInterpreter:
             golden.append(entry)
 
         return golden
+
+    @staticmethod
+    def _golden_float(s: str) -> float:
+        """Parse a golden numeric token, reinterpreting integer-formatted text
+        (no '.', no exponent) as a float32 bit-pattern. RenderDoc emits this for
+        a float output dumped through a uint-typed column."""
+        if '.' not in s and 'e' not in s and 'E' not in s:
+            try:
+                return struct.unpack('<f', struct.pack('<I', int(s) & 0xFFFFFFFF))[0]
+            except ValueError:
+                pass
+        return float(s)
 
     def _get_output_semantic_to_key_map(self) -> dict:
         """Map VS/PS output semantic names to canonical dict keys for rasterizer/pixel."""
