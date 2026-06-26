@@ -3252,7 +3252,10 @@ class HLSLInterpreter:
             with open(binpath, 'rb') as f:
                 data = f.read()
             n4 = len(data) // 16
-            decoded = [list(struct.unpack_from('<4f', data, i * 16)) for i in range(n4)]
+            decoded = [
+                [self._flush_denormal(v) for v in struct.unpack_from('<4f', data, i * 16)]
+                for i in range(n4)
+            ]
             self._cb_raw[f'cb{slot}'] = [
                 list(struct.unpack_from('<4i', data, i * 16)) for i in range(n4)
             ]
@@ -4443,6 +4446,23 @@ class HLSLInterpreter:
     def _f32(self, x):
         """Apply float32 rounding when GPU-precision emulation is enabled."""
         return self._to_f32(x) if self.f32_emulation else x
+
+    # Smallest positive *normal* float32; anything strictly smaller (a subnormal)
+    # is flushed to zero, matching the flush-denormals-to-zero (FTZ) mode GPUs
+    # run shader arithmetic in.
+    _MIN_NORMAL_F32 = 1.1754943508222875e-38
+
+    @staticmethod
+    def _flush_denormal(v):
+        """Flush a subnormal float32 to 0.0 (GPU FTZ). A cbuffer slot holding an
+        integer's bit pattern (e.g. the int 1 -> 0x00000001 -> the float denormal
+        1.4e-45) is read by the shader as a *float* condition; on the GPU FTZ
+        turns it into 0.0 (falsy), so `cb[i].z ? a : b` takes the false branch.
+        Without this the interpreter saw a tiny-but-nonzero value and branched the
+        wrong way. asint/asuint are unaffected: they read exact bits from _cb_raw."""
+        if isinstance(v, float) and v == v and 0.0 < abs(v) < HLSLInterpreter._MIN_NORMAL_F32:
+            return 0.0
+        return v
 
     @staticmethod
     def _is_all_zero(v) -> bool:
