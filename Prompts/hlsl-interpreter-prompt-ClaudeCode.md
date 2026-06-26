@@ -2006,9 +2006,10 @@ Notice:
 
 
 
-# 45
+# 45 修复macOS tk.Tk()调用崩溃问题
 ## Prompts
-
+经过上一次修复后，发现enable meshview执行时，会崩溃，崩溃信息如下，
+请修复。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -2684,6 +2685,7 @@ Session 文件：`Sessions/hlsl-step89-fix-meshview-macos-threading.md`
 # 90
 ## Prompts
 
+经过上一次修复后，发现enable meshview执行时，会崩溃。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -2693,6 +2695,25 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**Fix MeshView macOS threading v2: three additional non-main-thread tkinter call sites**
+
+Step 89 修复了 `tk.Tk()` 和 `mainloop()` 的线程问题，但三处 tkinter 调用仍在后台 pipeline 线程发生，导致崩溃：
+
+1. `_start_gui_thread()`：直接调用 `self._root.title()` 和 `self._root.geometry()` —— 属于 Cocoa 窗口操作，必须在主线程。
+2. `show()`：直接调用 `self._root.deiconify()` —— 由 `display_input_mesh()`、`display_output_mesh()` 和 `_execute_pipeline` 从后台线程调用。
+3. `_draw_rasterizer_pixels/pixel_shader/output_merger()`：调用 `_draw_pixels_image()` 中的 `canvas.delete()`、`tk.PhotoImage()`、`canvas.create_image()` —— 全部属于 tkinter 调用。
+
+**修复（仅 `mesh_view.py`）**：
+- 从 `_start_gui_thread` 移除 `title()`/`geometry()`，移入 `_setup_ui_macos()`（已在主线程运行）。
+- 新增 `_schedule_on_main(func)` 辅助方法：macOS 共享 root 模式下用 `after(0, func)` 调度到主线程，其他平台直接调用。
+- `show()` 改用 `_schedule_on_main(self._root.deiconify)` 代替直接调用。
+- `_draw_rasterizer/pixel_shader/output_merger_pixels()` 全部改用 `_schedule_on_main` 包裹。
+
+`after()` 可安全地从后台线程调用（Tcl 内部互斥锁保护事件队列）。Windows/Linux 路径无变化。
+
+Session 文件：`Sessions/hlsl-step90-fix-meshview-macos-threading-v2.md`  
+回归测试：46/46 PASS
 
 
 

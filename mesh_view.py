@@ -162,11 +162,10 @@ class MeshView:
         global _main_thread_root
         if _main_thread_root is not None:
             # macOS path: tk.Tk() was already created on the main thread by render.py.
-            # Schedule UI setup on the main thread via after(); pipeline runs in a
-            # background thread and will call show() only after _gui_ready_event is set.
+            # On macOS Cocoa ALL tkinter calls must be on the main thread. Store the root
+            # reference here (safe — it's just a pointer assignment), then schedule all
+            # actual Tk work via after() so it runs on the main thread's event loop.
             self._root = _main_thread_root
-            self._root.title(self.title)
-            self._root.geometry("1700x700")
             self._root.after(0, self._setup_ui_macos)
         else:
             self._gui_thread = threading.Thread(target=self._gui_thread_run, daemon=True)
@@ -174,8 +173,18 @@ class MeshView:
 
     def _setup_ui_macos(self):
         """Called on the main thread (via after()) for macOS shared-root mode."""
+        self._root.title(self.title)
+        self._root.geometry("1700x700")
         self._setup_ui()
         self._gui_ready_event.set()
+
+    def _schedule_on_main(self, func):
+        """In macOS shared-root mode schedule func on the main thread; else call directly."""
+        global _main_thread_root
+        if self._root is not None and self._root is _main_thread_root:
+            self._root.after(0, func)
+        else:
+            func()
 
     def _gui_thread_run(self):
         """在单独线程中运行tkinter主循环"""
@@ -893,19 +902,23 @@ class MeshView:
 
     def _draw_rasterizer_pixels(self):
         """绘制光栅化后的像素到Rasterizer画布（单PhotoImage，按primitive着色）"""
-        self._draw_pixels_image(self._rasterizer_canvas, self._rasterizer_pixels,
-                                self._rasterizer_color_fn, 'rasterizer')
+        self._schedule_on_main(lambda: self._draw_pixels_image(
+            self._rasterizer_canvas, self._rasterizer_pixels,
+            self._rasterizer_color_fn, 'rasterizer'))
 
     def _draw_pixel_shader_pixels(self):
         """绘制Pixel Shader输出后的像素到Pixel Shader画布（单PhotoImage）"""
-        self._draw_pixels_image(self._pixel_shader_canvas, self._rasterizer_pixels,
-                                self._shaded_color_fn, 'pixel_shader')
+        self._schedule_on_main(lambda: self._draw_pixels_image(
+            self._pixel_shader_canvas, self._rasterizer_pixels,
+            self._shaded_color_fn, 'pixel_shader'))
 
     def _draw_output_merger_pixels(self):
         """绘制Output Merger处理后的像素到Output Merger画布（单PhotoImage）"""
-        pixels = self._output_merger_pixels if self._output_merger_pixels else self._rasterizer_pixels
-        self._draw_pixels_image(self._output_merger_canvas, pixels,
-                                self._shaded_color_fn, 'output_merger')
+        def _do():
+            pixels = self._output_merger_pixels if self._output_merger_pixels else self._rasterizer_pixels
+            self._draw_pixels_image(self._output_merger_canvas, pixels,
+                                    self._shaded_color_fn, 'output_merger')
+        self._schedule_on_main(_do)
 
     def _redraw_active_pixel_tab(self):
         """只重绘当前可见的输出子标签对应的像素画布（VS Result标签不涉及像素）"""
@@ -1831,7 +1844,8 @@ class MeshView:
         # set immediately but _setup_ui runs via after() on the main thread).
         self._gui_ready_event.wait(timeout=10)
         if self._root:
-            self._root.deiconify()
+            # deiconify() must run on the main thread on macOS.
+            self._schedule_on_main(self._root.deiconify)
             self._schedule_draw()
 
     def _schedule_draw(self):
