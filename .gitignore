@@ -170,3 +170,4 @@ dump_*
 *.bak
 *.zip
 Cases
+Dump/
