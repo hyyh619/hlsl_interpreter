@@ -2244,13 +2244,33 @@ Notice:
 
 Session文件：`Sessions/hlsl-step92-sweep-dump-zips-and-fix-interpreter.md`
 
-# 93 
+# 93 给剩余fail的case分类写成md文档
 ## Prompts
+1. 给剩余fail的case分类写成md文档，提交你的文档
+2. 每一类case需要告诉我fail的具体原因，以及提供修复建议
+3. 请用中文书写
 
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit: docs: classify remaining 181 Dump/ failures with root causes and fix suggestions
 
 ## Claude Code Session
+
+对 `Dump/` 中剩余的 **181 个失败 case** 按根因分类，逐类给出具体原因（含 HLSL/反汇编证据）与修复建议，写成中文文档 `Sessions/hlsl-step93-classify-remaining-dump-failures.md`。
+
+**6 大类**：
+- **A. 超时（37）**：纯 Python 逐顶点/逐像素 + 全屏 PS pass 太慢，非正确性 bug。建议加 `vs_only` 模式跳过光栅化/PS。
+- **B. 无 golden 对比（17）**：capture 缺 `*_vs_mesh.csv`（0 顶点/indirect draw），无法验证，建议标注 N/A。
+- **C. sekiro 实例索引 + struct-in-cbuffer（53，最大可修复群）**：反编译把 `ld_raw_indexable t20`（ByteAddressBuffer 实例索引加载）标为 "No code for instruction" 注释掉 → 对象矩阵索引未解析 → sv_position 全错。需实现 ByteAddressBuffer 原始加载 + struct 命名成员访问 + float4x3 `_mRC`。
+- **D. TombRaider struct 成员选择子丢失（43，不可从 HLSL 修复）**：3Dmigoto 丢弃 struct 多矩阵成员选择子，同一 `_m00` 在 position 指 WVP、在 normal 指 World，仅反汇编 `cb0[base+N]` 能区分。step92 后 position 已对，法线需反汇编驱动。
+- **E. 输入/输出 signature 映射 & 顶点格式解码（29）**：直接拷贝的输入属性（o4=v1）解码错、高编号 TEXCOORD 列映射错、精度边界。建议复核 `ia_input_layouts` 格式解码与 golden 列映射。
+- **F. 派生 quad 重执行崩溃（2）**：step92 修了 NaN UV 第一处；仍有 `list * float` TypeError，需 lane 重执行/二元运算类型护栏。
+
+**理论可达**：修复 C+E+F 约 84 个有望转通过；A 类 37 个可 `vs_only`/加时通过；B(17)+D(43) 超出 HLSL 解释器能力边界。
+
+Session文件：`Sessions/hlsl-step93-classify-remaining-dump-failures.md`
 
 
 
