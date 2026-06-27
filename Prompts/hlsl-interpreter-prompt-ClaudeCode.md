@@ -2274,18 +2274,34 @@ Session文件：`Sessions/hlsl-step93-classify-remaining-dump-failures.md`
 
 
 
-# 94
+# 94 修复#93提到的C类和F类问题
 ## Prompts
+修复前面提到的C类和F类问题
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-## Git commit: 
+## Git commit: feat: struct-in-cbuffer named members + ByteAddressBuffer + float4x3 transpose (fix sekiro C/F classes)
 
 ## Claude Code Session
 
+修复 step93 分类的 C 类（sekiro 实例索引/struct-in-cbuffer，53 个）与 F 类（派生 quad 崩溃，2 个）。
 
+**诊断**：F 类崩溃与 C 类同源——`VC_InstanceData[i].ShLightMask.xxx` 这种 struct **命名成员**访问没实现（step92 的 `__struct__` 只支持 `_mRC`），返回整个元素（矩阵）导致 `矩阵*float3` 抛 TypeError。结合反汇编确认 sekiro 还缺：ByteAddressBuffer t20 实例索引加载、float4x3 列主序转置。
+
+**4 处修复**：
+1. **struct 命名成员访问**：`parse_cbuffer` 计算成员布局 `struct_members=[(name,type,reg_off,comp_off,arr)]`，二进制加载额外存整数寄存器行 `struct_int_data`（供 uint 成员索引）；新增 `_struct_member_access` 解析 `NAME[i].member[k].swizzle`；索引兼容 3Dmigoto 的预乘步长约定（`cb4[idx*17]`）。
+2. **ByteAddressBuffer**：解析 `ByteAddressBuffer NAME : register(tN)`，从 `buffer_params.csv` 加载字节；`execute_statement` 识别被注释的裸指令 `ld_raw(...) DST, ADDR, tN`，执行 `DST=buf.Load(ADDR)` 并执行被粘连的尾部语句。
+3. **float4x3 转置**：二进制加载把列主序 float4x3（3 列寄存器）转成行主序逻辑 4×3，与 float4x4 一致；访问器/`mul()` 不变，TombRaider/Frame/witcher 不受影响。
+4. **二元运算护栏**：`execute_binary_op` 对嵌套 list 操作数塌缩首行，避免崩溃。
+
+**结果**：
+- F 类：`sekiro2_event13516`、`sekiro4_event20560` 不再崩溃。
+- C 类：sekiro 家族 **从 ~11 → 41/64 通过**（新增约 30 个），`sekiro2_event2282` sv_position 3/3 对。
+- 回归：117/117 保持通过（已用全新进程跑过确认）。
+
+Session文件：`Sessions/hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash.md`
 
 # 95
 ## Prompts

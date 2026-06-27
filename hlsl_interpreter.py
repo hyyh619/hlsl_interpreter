@@ -62,6 +62,8 @@ class FieldDefinition:
     reg_offset: int = -1  # packoffset(cN) 的寄存器号（16字节单位）；-1 表示未指定
     comp_off: int = 0     # packoffset(cN.x/y/z/w) 的组件偏移（0-3）；用于子寄存器字段
     struct_elem_regs: int = 0  # struct{...} NAME[N] 时每个元素占用的 16 字节寄存器数；0 表示非内嵌结构体
+    struct_members: List = None  # struct 成员布局 [(name, type, reg_off, comp_off, arr_size), ...]
+    struct_int_data: List = None  # struct 元素的整数寄存器行（用于 uint/int/bool 成员的精确位）
 
 
 @dataclass
@@ -357,6 +359,9 @@ class HLSLInterpreter:
         # Typed-buffer bindings (Buffer<float4> t1 : register(t1)).
         # name -> {register, comp, elem_size, data(bytes)}
         self.typed_buffers: Dict[str, dict] = {}
+        # Raw buffer bindings (ByteAddressBuffer g : register(t20)), accessed by
+        # byte address via .Load()/ld_raw.  name -> {register, data(bytes)}
+        self.byte_address_buffers: Dict[str, dict] = {}
         # Exact int32 bit patterns of binary-loaded cbuffers, so asint/asuint of
         # a direct cbuffer component recovers integers a float cannot round-trip
         # (e.g. -1 stored as NaN).  {'cb1': [[i0,i1,i2,i3], ...]}
@@ -935,22 +940,43 @@ class HLSLInterpreter:
             field_name = struct_m.group(2)
             arr_n = int(struct_m.group(3)) if struct_m.group(3) else 0
             po_reg = int(struct_m.group(4)) if struct_m.group(4) else -1
-            # Element stride in bytes: sum members under HLSL cbuffer packing
-            # (each member 16-byte aligned for matrices; round element to 16).
-            elem_bytes = 0
+            # Walk members under HLSL cbuffer packing rules, recording each one's
+            # (name, type, register offset, component offset, count, array size)
+            # within a single element so `NAME[i].member[.swizzle]` can be sliced
+            # from the binary later. Matrices / float4 align to a register; scalar
+            # & small-vector members pack into a register but never straddle it.
+            members = []
+            cur = 0  # running byte offset within one element
             for mline in members_src.split(';'):
                 mline = mline.strip().replace('row_major', '').replace('column_major', '').strip()
                 if not mline:
                     continue
-                mtype = mline.split()[0]
+                mparts = mline.split()
+                if len(mparts) < 2:
+                    continue
+                mtype = mparts[0]
+                mname = mparts[1]
+                m_arr = 0
+                am = re.match(r'(\w+)\[(\d+)\]', mname)
+                if am:
+                    mname, m_arr = am.group(1), int(am.group(2))
                 sz = self._CB_TYPE_BYTES.get(mtype, 16)
-                if sz > 16:  # matrices align to a register
-                    elem_bytes = (elem_bytes + 15) // 16 * 16
-                elem_bytes += sz
-            elem_regs = max(1, (elem_bytes + 15) // 16)
+                if sz > 16:                       # matrices align to a register
+                    cur = (cur + 15) // 16 * 16
+                elif sz <= 16 and (cur % 16) + sz > 16:  # vector would straddle
+                    cur = (cur + 15) // 16 * 16
+                if m_arr > 0:                     # array element register-aligned
+                    cur = (cur + 15) // 16 * 16
+                members.append((mname, mtype, cur // 16, (cur % 16) // 4, m_arr))
+                if m_arr > 0:
+                    cur += m_arr * ((sz + 15) // 16 * 16)
+                else:
+                    cur += sz
+            elem_regs = max(1, (cur + 15) // 16)
             fields.append(FieldDefinition('__struct__', field_name, '',
                                           array_size=arr_n, reg_offset=po_reg,
-                                          struct_elem_regs=elem_regs))
+                                          struct_elem_regs=elem_regs,
+                                          struct_members=members))
             return ''
         body = re.sub(
             r'struct\s*\{(.*?)\}\s*(\w+)\s*(?:\[(\d+)\])?\s*(?::\s*packoffset\(\s*c(\d+)[^)]*\))?\s*;',
@@ -1173,6 +1199,16 @@ class HLSLInterpreter:
             result = None
             self.debug_print(f"[BINARY OP] left={self._format_value(left)}, right={self._format_value(right)}, op={op}, result={self._format_value(result)}")
             return None
+        # Defensive guard: an arithmetic op on a nested list (a matrix where a
+        # vector was expected, e.g. an unresolved cbuffer/struct access) would
+        # raise `TypeError: can't multiply sequence ...` and abort the whole draw.
+        # Collapse a list-of-lists operand to its first row so we degrade to a
+        # wrong-but-finite value instead of crashing.
+        if op in ('+', '-', '*', '/'):
+            if isinstance(left, list) and left and isinstance(left[0], list):
+                left = left[0]
+            if isinstance(right, list) and right and isinstance(right[0], list):
+                right = right[0]
         if op == '+':
             if isinstance(left, list) and isinstance(right, list):
                 result = [l + r for l, r in zip(left, right)]
@@ -2104,6 +2140,56 @@ class HLSLInterpreter:
             return None
         return rows[idx][self._CB_COMP_IDX[m.group(3)]]
 
+    def _struct_member_access(self, field, elem_idx, rest):
+        """Resolve `NAME[elem_idx]<rest>` for a struct{...} NAME[N] cbuffer field.
+
+        `rest` is the text after the subscript: '' / '._mRC' / '.member' /
+        '.member.swizzle' / '.member[k].swizzle'. Named members are sliced from
+        the element's register rows using the layout captured in parse_cbuffer;
+        uint/int/bool members read the exact integer bits (struct_int_data) so
+        they can be used as indices. Returns None to fall back to default handling
+        (e.g. a bare `._mRC` matrix accessor on the whole element)."""
+        members = getattr(field, 'struct_members', None)
+        frows = field.data[elem_idx] if field.data and elem_idx < len(field.data) else None
+        irows = (field.struct_int_data[elem_idx]
+                 if field.struct_int_data and elem_idx < len(field.struct_int_data) else None)
+        if not rest.startswith('.') or not members or frows is None:
+            return None
+        accessor = rest[1:]
+        m = re.match(r'^([A-Za-z_]\w*)(?:\[([^\]]+)\])?(?:\.(\w+))?$', accessor)
+        if not m:
+            return None
+        mname, msub, mswz = m.group(1), m.group(2), m.group(3)
+        layout = next((x for x in members if x[0] == mname), None)
+        if layout is None:
+            return None  # not a named member (likely an _mRC accessor) → fall back
+        _, mtype, reg_off, comp_off, m_arr = layout
+        # Array member element select: member[k] → advance by k register-aligned slots.
+        if msub is not None:
+            try:
+                k = self._eval_subscript(msub, {})
+            except Exception:
+                k = 0
+            esz = self._CB_TYPE_BYTES.get(mtype, 16)
+            reg_off += k * ((esz + 15) // 16)
+        is_int = mtype.startswith(('uint', 'int', 'bool', 'dword'))
+        rows = irows if (is_int and irows is not None) else frows
+        if reg_off >= len(rows):
+            return None
+        base = self._CB_TYPE_BYTES.get(mtype, 16)
+        if base > 16:  # matrix member → list of its register rows
+            nregs = (base + 15) // 16
+            val = [rows[reg_off + r] for r in range(nregs) if reg_off + r < len(rows)]
+        else:
+            ncomp = max(1, min(4, base // 4))
+            row = rows[reg_off]
+            val = row[comp_off:comp_off + ncomp]
+            if len(val) == 1:
+                val = val[0]
+        if mswz:
+            return self.apply_swizzle(val, mswz)
+        return val
+
     def apply_swizzle(self, obj: Any, swizzle: str) -> Any:
         """
         对向量应用swizzle操作
@@ -2231,15 +2317,31 @@ class HLSLInterpreter:
                 arr = local_vars.get(arr_base)
                 if arr is None:
                     arr = self.variables.get(arr_base)
+                struct_field = None
                 if arr is None:
                     for cb_def in self.cbuffers.values():
                         if isinstance(cb_def, CbufferDefinition):
                             for field in cb_def.fields:
                                 if field.name == arr_base and field.data is not None:
                                     arr = field.data
+                                    if field.field_type == '__struct__':
+                                        struct_field = field
                                     break
                         if arr is not None:
                             break
+                # struct {...} NAME[N] element with a named-member accessor
+                # (NAME[i].member[.swizzle]). 3Dmigoto sometimes pre-multiplies the
+                # index by the element stride (cb4[idx*17]); map an out-of-range
+                # index back through the stride so element 0 still resolves.
+                if struct_field is not None:
+                    er = getattr(struct_field, 'struct_elem_regs', 1) or 1
+                    eidx = idx
+                    if eidx >= len(arr) and er > 0:
+                        eidx = eidx // er
+                    if 0 <= eidx < len(arr):
+                        res = self._struct_member_access(struct_field, eidx, rest)
+                        if res is not None:
+                            return res
                 if isinstance(arr, list) and 0 <= idx < len(arr):
                     elem = arr[idx]
                     if rest.startswith('.'):
@@ -2448,6 +2550,33 @@ class HLSLInterpreter:
         # if-else条件语句处理
         if stmt.startswith('if'):
             self.execute_if_statement(stmt, local_vars)
+            return None
+
+        # 3Dmigoto emits raw-buffer loads as a bare DXBC instruction it "could not
+        # decompile":  ld_raw[_indexable](raw_buffer)(...) DST, ADDR, tN.xxxx
+        # Execute it as DST = bufferAtRegisterN.Load(ADDR). Pervasive in GPU
+        # instancing (e.g. Sekiro's per-instance index table); without it the
+        # downstream matrix index is garbage and SV_Position is wrong.
+        if stmt.startswith('ld_raw'):
+            m = re.match(r'ld_raw\w*\s*\([^)]*\)\s*(?:\([^)]*\)\s*)?'
+                         r'([^,]+),\s*([^,]+),\s*t(\d+)\.?\w*', stmt)
+            if m:
+                dst = m.group(1).strip()
+                addr_expr = m.group(2).strip()
+                reg = int(m.group(3))
+                bab = next((b for b in self.byte_address_buffers.values()
+                            if b['register'] == reg), None)
+                if bab is not None:
+                    addr = self._eval_subscript(addr_expr, local_vars)
+                    ncomp = len(dst.split('.')[1]) if '.' in dst else 1
+                    val = self._byte_address_load(bab, addr, ncomp)
+                    self._assign_lvalue(dst, val, local_vars)
+                    self.debug_print(f"[STMT] {stmt} => {dst} = {val}")
+                # The bare instruction carries no ';', so the statement splitter
+                # may have glued the following statement onto it — run that tail.
+                tail = stmt[m.end():].strip()
+                if tail:
+                    self.execute_statement(tail, local_vars)
             return None
 
         # sincos(angle, s_out, c_out): no return value; writes sin(angle) to the
@@ -3191,6 +3320,15 @@ class HLSLInterpreter:
                 'register': reg, 'comp': comp, 'elem_size': 0, 'data': None,
             }
 
+        # Raw buffers:  ByteAddressBuffer g_InstanceIndexBuffer : register(t20);
+        # Accessed by byte address via .Load()/ld_raw (e.g. GPU instancing index
+        # tables). Bytes loaded later from buffer_params.csv.
+        for m in re.finditer(
+            r'\b(?:RW)?ByteAddressBuffer\s+(\w+)\s*:\s*register\s*\(\s*t(\d+)\s*\)', code
+        ):
+            name, reg = m.group(1), int(m.group(2))
+            self.byte_address_buffers[name] = {'register': reg, 'data': None}
+
     def load_structured_buffer_data(self, data_folder: str):
         """
         Load each parsed StructuredBuffer's contents from the captured binary
@@ -3220,9 +3358,11 @@ class HLSLInterpreter:
 
     def load_typed_buffer_data(self, data_folder: str):
         """Load each parsed typed Buffer<T>'s bytes from the capture, using
-        buffer_params.csv to map register -> .bin file and element byte size."""
+        buffer_params.csv to map register -> .bin file and element byte size.
+        Also loads ByteAddressBuffer raw bytes (same CSV, keyed by register)."""
         params_path = os.path.join(data_folder, 'buffer_params.csv')
-        if not os.path.exists(params_path) or not self.typed_buffers:
+        if not os.path.exists(params_path) or (
+                not self.typed_buffers and not self.byte_address_buffers):
             return
         rows = self.load_csv(params_path)
         if not rows or len(rows) < 2:
@@ -3268,6 +3408,36 @@ class HLSLInterpreter:
                 f"Loaded typed Buffer '{name}' (t{tb['register']}): {n} elements, "
                 f"{tb['elem_size']}B/elem from {os.path.basename(binpath)}"
             )
+
+        for name, bab in self.byte_address_buffers.items():
+            info = by_reg.get(bab['register'])
+            if not info:
+                continue
+            binfile, _ = info
+            binpath = os.path.join(data_folder, binfile)
+            if not binfile or not os.path.exists(binpath):
+                continue
+            with open(binpath, 'rb') as f:
+                bab['data'] = f.read()
+            self.log_output(
+                f"Loaded ByteAddressBuffer '{name}' (t{bab['register']}): "
+                f"{len(bab['data'])}B from {os.path.basename(binpath)}"
+            )
+
+    def _byte_address_load(self, bab: dict, byte_addr: int, ncomp: int = 1):
+        """Load `ncomp` uint32s from a ByteAddressBuffer at byte address
+        `byte_addr` (a multiple of 4). Returns an int or list of ints, 0 on OOB."""
+        data = bab.get('data')
+        if not data:
+            return 0 if ncomp == 1 else [0] * ncomp
+        out = []
+        for i in range(ncomp):
+            off = int(byte_addr) + i * 4
+            if 0 <= off and off + 4 <= len(data):
+                out.append(struct.unpack_from('<I', data, off)[0])
+            else:
+                out.append(0)
+        return out[0] if ncomp == 1 else out
 
     def _typed_buffer_load(self, tb: dict, index: int):
         """Fetch element `index` of a typed buffer as a float list padded to 4
@@ -3416,15 +3586,21 @@ class HLSLInterpreter:
                         ri0 = field.reg_offset
                     else:
                         ri0 = (cursor + 15) // 16
-                    elements = []
+                    int_rows_all = self._cb_raw[f'cb{slot}']
+                    elements, int_elements = [], []
                     for j in range(array_size):
                         elem_base = ri0 + j * elem_regs
                         rows = [decoded[elem_base + k]
                                 for k in range(elem_regs)
                                 if elem_base + k < len(decoded)]
+                        irows = [int_rows_all[elem_base + k]
+                                 for k in range(elem_regs)
+                                 if elem_base + k < len(int_rows_all)]
                         elements.append(rows)
+                        int_elements.append(irows)
                     if elements:
                         field.data = elements
+                        field.struct_int_data = int_elements
                     cursor = (ri0 + array_size * elem_regs) * 16
                     continue
 
@@ -3455,8 +3631,14 @@ class HLSLInterpreter:
                             # float4x4: load all 4 column registers, transpose to row-major
                             cols = [decoded[row_ri + k] for k in range(4)]
                             arr.append([[cols[c][r] for c in range(4)] for r in range(4)])
+                        elif ftype == 'float4x3' and row_ri + 2 < len(decoded):
+                            # float4x3 column-major: 3 registers = 3 columns; transpose to
+                            # row-major logical (4 rows x 3 cols) so the _mRC accessor and
+                            # mul() read elements consistently with float4x4.
+                            cols = [decoded[row_ri + k] for k in range(3)]
+                            arr.append([[cols[c][r] for c in range(3)] for r in range(4)])
                         elif base == 48 and row_ri + 2 < len(decoded):
-                            # float3x4 / float4x3 / float3x3: 3 registers
+                            # float3x4 / float3x3: 3 registers, kept as-is
                             arr.append([decoded[row_ri], decoded[row_ri + 1], decoded[row_ri + 2]])
                         else:
                             arr.append(decoded[row_ri])
@@ -3474,7 +3656,11 @@ class HLSLInterpreter:
                             cols = [decoded[ri], decoded[ri+1],
                                     decoded[ri+2], decoded[ri+3]]
                             field.data = [[cols[c][r] for c in range(4)] for r in range(4)]
-                    elif base == 48:    # float3x4 / float4x3 / float3x3
+                    elif ftype == 'float4x3':   # column-major: 3 cols -> row-major 4x3
+                        if ri + 2 < len(decoded):
+                            cols = [decoded[ri], decoded[ri+1], decoded[ri+2]]
+                            field.data = [[cols[c][r] for c in range(3)] for r in range(4)]
+                    elif base == 48:    # float3x4 / float3x3
                         if ri + 2 < len(decoded):
                             field.data = [decoded[ri], decoded[ri+1], decoded[ri+2]]
                     elif base == 16:    # float4 / int4 / uint4
