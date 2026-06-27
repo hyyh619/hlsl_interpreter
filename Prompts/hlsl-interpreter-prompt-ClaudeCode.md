@@ -2244,19 +2244,8 @@ Notice:
 
 Session文件：`Sessions/hlsl-step92-sweep-dump-zips-and-fix-interpreter.md`
 
-# 93 增加更多的占位符
+# 93 
 ## Prompts
-增加50个如下占位符，请根据当前number，增加序号
-# num
-## Prompts
-
-Notice:
-把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
-把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
-
-## Git commit: 
-
-## Claude Code Session
 
 
 ## Git commit: 
