@@ -3174,3 +3174,33 @@ Notice:
 
 ## Claude Code Session
 
+
+
+# 150 AI 辅助开发手册（HTML + Markdown 两版）
+## Prompts
+回答 11 个关于"如何与 AI 协作开发"的问题（提示词/需求分析/执行/数据流/调试/回归/TDD/
+纠错/记忆系统/两 agent 周期对比），用本次开发的真实例子佐证，并产出 HTML（带图）与
+Markdown 两版手册。
+
+## Git commit:
+
+## Claude Code Session
+
+**Step 123 — 撰写《AI 辅助开发手册》两版**
+
+把"如何与 AI 协作开发"沉淀成手册，全部用本仓库可核对的真实材料佐证，选定三个贯穿案例：
+C1 多数组 cbuffer(提交 1716ee5)、C2 反规格化数 FTZ(c398d86)、C3 (int) 强转语义(122e4f4)。
+逐题取材：①提示词=CLAUDE.md 四层上下文+编号任务清单；②计划=triage 129 zip→聚类根因→
+TodoWrite 按 ROI 排序；③执行=七步闭环，以 C1 沿数据流回溯到那行 break；④数据流=AI 累积
+上下文输入/工具调用输出/项目 zip→管线→golden；⑤调试=[STMT]/[BINARY OP]/[METHOD] 轨迹+
+分量级 Error+Total PASSED，以 C3 的 [1073741824] smoking gun 与 C2 分支回溯为例；⑥回归=
+数据驱动 CSV+三判据+每类加代表 case；⑦TDD="golden 即测试"红→绿→防回退；⑧纠错=自我纠错
+(C2 翻案)/回归当裁判(C3 先证伪)/CLAUDE.md 护栏/用户预标约束；⑨记忆=memory 一事一文件+
+MEMORY.md 索引；⑩两周期=前期 opencode+minimax-m2.7 奠基小步 vs 后期 claude code+opus 攻坚
+闭环。
+
+产出：Docs/AI-Development-Handbook.md(302 行)、Docs/AI-Development-Handbook.html(自包含、
+深色技术文档风、内嵌 5 个 SVG 图：提示词四层/开发闭环/输入输出数据流/TDD 红绿/两周期，
+无外部依赖、本地可直接打开看图)。第 10 题基于 Sessions/ 日志与 git 时间线的可见证据归纳。
+
+详见 Sessions/hlsl-interpreter-step123-ai-development-handbook.md。

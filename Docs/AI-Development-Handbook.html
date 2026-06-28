@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 辅助开发手册 — HLSL 解释器项目</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e6e9ef; --muted:#9aa4b2;
+    --accent:#5db0ff; --green:#46d39a; --amber:#ffcb6b; --red:#ff6b6b; --line:#2a2f3a;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+    line-height:1.7;font-size:16px}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+  header.hero{padding:54px 22px 30px;background:
+    radial-gradient(1200px 400px at 20% -10%,rgba(93,176,255,.18),transparent),
+    radial-gradient(900px 360px at 90% 0%,rgba(70,211,154,.12),transparent);
+    border-bottom:1px solid var(--line)}
+  .hero h1{margin:0 0 8px;font-size:30px;letter-spacing:.3px}
+  .hero p{margin:6px 0;color:var(--muted);max-width:760px}
+  .tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent);
+    border:1px solid var(--line);border-radius:20px;padding:3px 11px;margin:8px 6px 0 0;background:var(--panel)}
+  h2{margin:46px 0 14px;font-size:23px;border-left:4px solid var(--accent);padding-left:12px}
+  h3{margin:26px 0 10px;font-size:18px;color:#cdd6e4}
+  p,li{color:#d4dae4}
+  code{font-family:var(--mono);font-size:13.5px;background:#11151c;border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:#bfe1ff}
+  pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
+  pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:13px;line-height:1.55}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cdd6e4}
+  tr:nth-child(even) td{background:#13161d}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .callout{border-left:4px solid var(--accent);background:#12202e;border-radius:8px;padding:12px 16px;margin:16px 0}
+  .callout.green{border-color:var(--green);background:#102420}
+  .callout.amber{border-color:var(--amber);background:#241f12}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
+  .grid3 .c{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:13px 14px}
+  .grid3 .c b{color:var(--accent)}
+  .c2 b{color:var(--green)} .c3 b{color:var(--amber)}
+  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:24px 0;
+    columns:2;column-gap:30px}
+  nav.toc a{color:#bcd3ea;text-decoration:none;display:block;padding:3px 0;font-size:14.5px}
+  nav.toc a:hover{color:var(--accent)}
+  .svgbox{background:#0c0f14;border:1px solid var(--line);border-radius:12px;padding:10px;margin:18px 0;overflow:auto}
+  svg{display:block;max-width:100%;height:auto}
+  .legend{font-size:12.5px;color:var(--muted);text-align:center;margin-top:6px}
+  .mono{font-family:var(--mono)}
+  .red{color:var(--red)} .grn{color:var(--green)} .amb{color:var(--amber)} .acc{color:var(--accent)}
+  @media(max-width:680px){nav.toc{columns:1}.grid3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap" style="padding:0">
+    <h1>AI 辅助开发手册</h1>
+    <p>以纯 Python 的 <b>D3D11 管线 / HLSL 解释器</b> 项目的真实开发记录为案例，系统说明如何与 AI 协作完成一个工程。所有例子取自本仓库的提交、<code>Sessions/</code> 步骤日志与 <code>Prompts/</code> 提示词历史。</p>
+    <div>
+      <span class="tag">C1 · 多数组 cbuffer</span>
+      <span class="tag">C2 · 反规格化数 FTZ</span>
+      <span class="tag">C3 · (int) 强转语义</span>
+      <span class="tag">step1 → step123</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<div class="card">
+  <b>贯穿全篇的三个真实案例（step119–120）</b>
+  <div class="grid3">
+    <div class="c"><b>C1 多数组 cbuffer</b><br><span class="mono">texgen[2]</span> 读成 0 → 二进制重载只填首个数组字段的 bug。一修复同时绿了 5 个 case。</div>
+    <div class="c c2"><b>C2 反规格化数 FTZ</b><br>大气散射输出 o0/o1 错 → 常量是整数位型的反规格化数，GPU 按 flush-to-zero 取 0。</div>
+    <div class="c c3"><b>C3 (int) 强转</b><br><span class="mono">(int2)v1.zw</span> 被位重解释成天文数字 → 越界读纹理 → 0/0 = NaN 位置。</div>
+  </div>
+</div>
+
+<nav class="toc">
+  <a href="#q1">1 · 如何给 AI 提供提示词</a>
+  <a href="#q2">2 · 分析需求、生成开发计划</a>
+  <a href="#q3">3 · 如何按计划执行</a>
+  <a href="#q4">4 · 输入 / 输出数据流</a>
+  <a href="#q5">5 · 什么输出能帮助调试</a>
+  <a href="#q6">6 · 回归测试的建立与应用</a>
+  <a href="#q7">7 · TDD 在本项目的应用</a>
+  <a href="#q8">8 · 如何纠正 AI 的错误</a>
+  <a href="#q9">9 · 记忆系统避免重复开发</a>
+  <a href="#q10">10 · 两个 Agent 周期对比</a>
+</nav>
+
+<!-- Q1 -->
+<h2 id="q1">1 · 如何给 AI 提供提示词</h2>
+<p>提示词不是"一句话指令"，而是一个<b>分层的上下文系统</b>。本项目里有效的提示词由四层组成：</p>
+<div class="svgbox">
+<svg viewBox="0 0 900 260" role="img" aria-label="提示词四层结构">
+  <defs><style>.b{fill:#1e222b;stroke:#2a2f3a;rx:10}.t{fill:#e6e9ef;font:14px sans-serif}.s{fill:#9aa4b2;font:12px sans-serif}.h{fill:#5db0ff;font:bold 14px sans-serif}</style></defs>
+  <rect class="b" x="20" y="20" width="860" height="50" rx="10"/>
+  <text class="h" x="36" y="42">① 常驻项目说明 CLAUDE.md</text>
+  <text class="s" x="36" y="60">项目是什么 · 怎么运行 · verify-by-log 工作流 · 两个陷阱 · 必跑回归</text>
+  <rect class="b" x="20" y="80" width="860" height="50" rx="10"/>
+  <text class="h" x="36" y="102">② 任务指令（可执行循环）</text>
+  <text class="s" x="36" y="120">挨个修 → 跑 → 找 Error → 定位 → 修 → 验证 → 回归 → 提交 → 加回归 → 写文档</text>
+  <rect class="b" x="20" y="140" width="860" height="50" rx="10"/>
+  <text class="h" x="36" y="162">③ 现状 / 约束清单</text>
+  <text class="s" x="36" y="180">已知未修长尾 + 标注"capture 限制、无解" → AI 不在死路上空转</text>
+  <rect class="b" x="20" y="200" width="860" height="44" rx="10"/>
+  <text class="h" x="36" y="222">④ 留痕要求</text>
+  <text class="s" x="36" y="238">写 Sessions/ 文档 + 填提示词历史 → 既是交付物，也是下一轮记忆</text>
+</svg>
+<div class="legend">提示词四层：越靠上越"常驻"，越靠下越"本轮"</div>
+</div>
+<div class="callout">
+<b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。C1 修复时 AI 直接知道要看 golden 对比日志、改完跑回归——都来自 <code>CLAUDE.md</code>。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>。
+</div>
+
+<!-- Q2 -->
+<h2 id="q2">2 · 分析需求、生成开发计划</h2>
+<p>面对"挨个修复 issue"这种开放任务，AI 先 <b>侦察(triage) → 聚类 → 排序 → 立计划</b>，而不是盲目动手。</p>
+<h3>侦察：把"未知"变"已知"</h3>
+<p>Dump 目录 355 个 zip，其中 witcher3 有 160 个、仅 31 个在回归、<b>129 个从未验证</b>。AI 写并行 triage 脚本，把每个 zip 跑成 headless 管线并分类 <code>PASS/FAIL/CRASH/NOCMP/TIMEOUT</code>。</p>
+<h3>聚类：129 个失败 → 少数根因类</h3>
+<table>
+  <tr><th>问题类</th><th>代表 case</th><th>处置</th></tr>
+  <tr><td>sv_position/TexCoord 读成 0</td><td class="mono">23341/23141/23251/23183/23195</td><td class="grn">一个 bug(C1) 一次修 5 个</td></tr>
+  <tr><td>大气输出错</td><td class="mono">20899</td><td class="grn">C2 已修</td></tr>
+  <tr><td>(int) 强转 / 顶点纹理取样</td><td class="mono">16834/16215</td><td class="amb">C3 修 + 受阻</td></tr>
+  <tr><td>raw buffer 未 dump</td><td class="mono">22201</td><td>受阻：capture 限制</td></tr>
+  <tr><td>慢绘制</td><td class="mono">~26 + Tank</td><td>perf，非 bug</td></tr>
+</table>
+<div class="callout green">
+<b>关键洞察 — 先找杠杆点</b>：聚类让"129 个失败"坍缩成"少数根因"。修一个根因(C1)就让 5 个 case 同时变绿。AI 用 <code>TodoWrite</code> 把计划落成可勾选清单，并按 <b>ROI（确定性高、风险低、影响面大）</b> 排序：先 C1，再 C2，再谨慎做 C3，受阻类诚实暂缓。
+</div>
+
+<!-- Q3 -->
+<h2 id="q3">3 · 如何按计划执行</h2>
+<p>每个 case 走同一个<b>闭环</b>：</p>
+<div class="svgbox">
+<svg viewBox="0 0 900 180" role="img" aria-label="开发闭环">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
+    <style>.n{fill:#1e222b;stroke:#2a2f3a}.nt{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}.fl{stroke:#5db0ff;stroke-width:1.6;fill:none;marker-end:url(#ar)}</style>
+  </defs>
+  <g>
+    <rect class="n" x="14"  y="30" width="98" height="40" rx="8"/><text class="nt" x="63"  y="55">运行</text>
+    <rect class="n" x="140" y="30" width="118" height="40" rx="8"/><text class="nt" x="199" y="55">读日志找 Error</text>
+    <rect class="n" x="286" y="30" width="128" height="40" rx="8"/><text class="nt" x="350" y="48">顺管线</text><text class="nt" x="350" y="63">定位根因</text>
+    <rect class="n" x="442" y="30" width="92" height="40" rx="8"/><text class="nt" x="488" y="55">改代码</text>
+    <rect class="n" x="562" y="30" width="118" height="40" rx="8"/><text class="nt" x="621" y="55">单 case 验证</text>
+    <rect class="n" x="708" y="30" width="92" height="40" rx="8"/><text class="nt" x="754" y="55">跑回归</text>
+    <rect class="n" x="300" y="118" width="120" height="40" rx="8"/><text class="nt" x="360" y="143">提交 + 加回归</text>
+    <rect class="n" x="452" y="118" width="92" height="40" rx="8"/><text class="nt" x="498" y="143">写文档</text>
+    <rect class="n" x="576" y="118" width="96" height="40" rx="8"/><text class="nt" x="624" y="143">下一个</text>
+    <path class="fl" d="M112,50 L138,50"/><path class="fl" d="M258,50 L284,50"/>
+    <path class="fl" d="M414,50 L440,50"/><path class="fl" d="M534,50 L560,50"/><path class="fl" d="M680,50 L706,50"/>
+    <path class="fl" d="M754,70 L754,138 L546,138"/>
+    <path class="fl" d="M420,138 L450,138"/><path class="fl" d="M544,138 L574,138"/>
+    <path class="fl" d="M624,158 L624,168 L63,168 L63,72"/>
+  </g>
+</svg>
+<div class="legend">回归不绿不提交；提交后把代表 case 加进回归集，循环下一个</div>
+</div>
+<h3>以 C1 为例：沿数据流回溯</h3>
+<p>从错误输出值逆推到那行 <code>break</code>：</p>
+<pre><code>Error: Row 0 TexCoord[0]: output=0.000000 golden=0.129650   ← 输出恒为 0
+   ↑ o1.x = dot(v1, texgen[0])              （读 VS_shader.hlsl）
+   ↑ texgen 是 float4 texgen[2] : packoffset(c2)
+   ↑ 组合 CSV 每个数组名只有一个代表值 → texgen 加载成 [None,None]
+   ↑ override_cbuffers_from_binary:
+        for field in cb_def.fields:
+            if field.array_size > 0:
+                field.data = decoded[:m]
+                break          # ← 只填第一个数组就退出！texgen 仍是 [None,None]</code></pre>
+<p><b>修复</b>：解析 <code>packoffset(cN)</code>、新增 <code>_field_register_offsets()</code>、重载循环改为给每个数组按各自寄存器窗口 <code>decoded[reg_off:reg_off+size]</code> 填充。<b>验证</b>：23341 由 0→30/30，另 4 个同类全过；回归 44/44；提交 <code>1716ee5</code>。</p>
+
+<!-- Q4 -->
+<h2 id="q4">4 · 输入 / 输出数据流</h2>
+<div class="svgbox">
+<svg viewBox="0 0 900 300" role="img" aria-label="AI 输入输出数据流">
+  <defs>
+    <marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#46d39a"/></marker>
+    <style>.bx{fill:#1e222b;stroke:#2a2f3a}.bt{fill:#e6e9ef;font:13px sans-serif}.bs{fill:#9aa4b2;font:11.5px sans-serif}.fa{stroke:#46d39a;stroke-width:1.6;fill:none;marker-end:url(#ar2)}.hd{fill:#5db0ff;font:bold 13px sans-serif}</style>
+  </defs>
+  <rect class="bx" x="20" y="20" width="380" height="120" rx="10"/>
+  <text class="hd" x="36" y="42">输入：累积对话上下文</text>
+  <text class="bs" x="36" y="64">· CLAUDE.md（规则/陷阱/纪律）</text>
+  <text class="bs" x="36" y="84">· MEMORY.md 索引 + 召回的记忆</text>
+  <text class="bs" x="36" y="104">· 用户提示词（任务/约束/现状）</text>
+  <text class="bs" x="36" y="124">· 每轮工具结果不断追加（过长则摘要）</text>
+  <rect class="bx" x="20" y="160" width="380" height="118" rx="10"/>
+  <text class="hd" x="36" y="182">工具结果（每轮追加到输入）</text>
+  <text class="bs" x="36" y="204">· Read 文件内容 / Grep 命中</text>
+  <text class="bs" x="36" y="224">· Bash 输出：render.py 日志、回归摘要</text>
+  <text class="bs" x="36" y="244">· system-reminder：后台任务完成等</text>
+  <text class="bs" x="36" y="264">· git 状态</text>
+  <rect class="bx" x="500" y="60" width="380" height="180" rx="10"/>
+  <text class="hd" x="516" y="84">输出：文字 或 工具调用</text>
+  <text class="bs" x="516" y="108">· Read/Grep/Glob — 取信息（无副作用）</text>
+  <text class="bs" x="516" y="132">· Edit/Write — 改源码 / 写文档</text>
+  <text class="bs" x="516" y="156">· Bash — render.py / 回归 / git</text>
+  <text class="bs" x="516" y="180">· TodoWrite — 维护计划</text>
+  <text class="bs" x="516" y="212">输出产生新的工具结果，</text>
+  <text class="bs" x="516" y="230">回流成下一轮输入（闭环）</text>
+  <path class="fa" d="M400,150 L498,150"/>
+  <path class="fa" d="M690,240 L690,262 L210,262 L210,278" />
+</svg>
+<div class="legend">AI 的输入是累积上下文；输出是文字或工具调用；工具结果回流形成闭环</div>
+</div>
+<h3>项目自身的数据流（被解释的对象）</h3>
+<pre><code>zip(capture) → 解压 → CSV / HLSL / BMP / bin
+   ├─ ia_vertex_data + 二进制 VB ─┐
+   ├─ cbuffers(CSV) + constant_*.bin ─┤   ← C1 在这段；C2 在 .bin 解码
+   └─ VS_shader.hlsl ───────────────┤
+                                     ▼
+        VertexShader 解释执行 → VS 输出 → 与 golden(*_vs_mesh.csv) 对比
+                                     ▼
+        Rasterizer → Depth/Stencil → PixelShader → OutputMerger</code></pre>
+
+<!-- Q5 -->
+<h2 id="q5">5 · 什么样的数据流输出能帮助调试</h2>
+<p class="callout"><b>结论</b>：能把"中间状态"暴露成<b>可 grep 的文本</b>，最有价值。本项目刻意把解释器做成"会自述"的。</p>
+<h3>C3 的 smoking gun — 逐语句轨迹</h3>
+<pre><code>[STMT] r0.xy = (int2)v1.zw => r0.xy = <span class="red">[1073741824, 1073741824]</span>   ← 把 2.0 当位型！应为 [2,2]
+[METHOD] t1.Load((1073741824,0,0)) = ['0','0','0','0']             ← 越界读 0
+[BINARY OP] left=['312.5','500.0'] right=['0','0'] op=/ => <span class="red">['inf','inf']</span>   ← 0/0
+... → sv_position = <span class="red">nan</span></code></pre>
+<p>正是这条轨迹让 C3 一眼可见：<code>(int2)v1.zw</code> 把 <code>2.0</code> 变成它的位型 <code>1073741824</code> 而不是 <code>2</code>。只看最终 <code>nan</code> 是无从下手的。</p>
+<h3>分量级报错 + 可机判汇总</h3>
+<pre><code>Error: Row 0 TexCoord2[0]: output=2.466900 golden=0.679580 diff=1.787320
+Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
+<div class="callout green">
+<b>C2 全靠轨迹</b>：event20899 一度被误判"精度不可解"。重新打开逐语句 + 逐分支轨迹，把 o0/o1 回溯到 <code>cb12[271].z ? r2.x : 1</code> 分支选错，再发现 <code>cb12[271].z</code> 字节是 <code>0x00000001</code>（反规格化数 <span class="mono">1.4e-45</span>）。<b>没有逐步轨迹，这个根因不可能被发现。</b>
+</div>
+<p><b>设计准则</b>：让被测系统打印"每一步的输入、运算、输出"，且保证可被 <code>grep Error:</code> / <code>grep '[STMT]'</code> 提取。<b>可观测性 = 可调试性。</b></p>
+
+<!-- Q6 -->
+<h2 id="q6">6 · 回归测试如何建立与应用</h2>
+<div class="grid3">
+  <div class="c"><b>数据驱动</b><br><code>regression_test_zip_files.csv</code> 一行一个必过的 capture zip。</div>
+  <div class="c"><b>headless 跑</b><br><code>run_regression.py</code> 逐个跑 <code>render.py</code>，写 per-case 日志，打印 PASS/FAIL，失败则退出码非零。</div>
+  <div class="c"><b>三条通过判据</b><br>① 干净退出 ② 无 <code>Error:</code> 行 ③ <code>Total PASSED rows: X/X</code></div>
+</div>
+<table>
+  <tr><th>改动</th><th>回归结果</th><th>动作</th></tr>
+  <tr><td>C1 多数组 cbuffer</td><td>44/44</td><td>提交 + 加入 event23341</td></tr>
+  <tr><td>C2 FTZ</td><td>45/45 → <b>46/46</b>（含新加 20899）</td><td>提交 + 加入 event20899</td></tr>
+  <tr><td>C3 ftoi（改变既有语义，高风险）</td><td><b>46/46</b></td><td>回归绿才敢提交</td></tr>
+</table>
+<div class="callout">每修好一类就把代表 case 加进回归 → 这两类<b>永不回退</b>。回归是"提交闸门"，尤其保护 C3 这种改变既有语义的高风险改动。（回归 CSV 与 zip 是 gitignore 的本地基础设施。）</div>
+
+<!-- Q7 -->
+<h2 id="q7">7 · TDD 在本项目的应用</h2>
+<p>本项目是 TDD 的变体 —— <b>"golden 即测试"</b>：测试（GPU 真机 <code>*_vs_mesh.csv</code>）先于实现存在且必然正确。</p>
+<div class="svgbox">
+<svg viewBox="0 0 760 150" role="img" aria-label="红绿循环">
+  <defs><marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#9aa4b2"/></marker></defs>
+  <rect x="30" y="45" width="190" height="60" rx="10" fill="#241316" stroke="#ff6b6b"/>
+  <text x="125" y="72" fill="#ff6b6b" font="bold 14px sans-serif" text-anchor="middle" style="font:bold 14px sans-serif">红</text>
+  <text x="125" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">0/2160 + 一堆 Error</text>
+  <rect x="285" y="45" width="190" height="60" rx="10" fill="#0c1f17" stroke="#46d39a"/>
+  <text x="380" y="72" fill="#46d39a" text-anchor="middle" style="font:bold 14px sans-serif">绿</text>
+  <text x="380" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">最小修复 → 2160/2160</text>
+  <rect x="540" y="45" width="190" height="60" rx="10" fill="#171a21" stroke="#2a2f3a"/>
+  <text x="635" y="72" fill="#5db0ff" text-anchor="middle" style="font:bold 14px sans-serif">防回退</text>
+  <text x="635" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">加进回归集</text>
+  <path d="M222,75 L283,75" stroke="#9aa4b2" stroke-width="1.6" fill="none" marker-end="url(#ar3)"/>
+  <path d="M477,75 L538,75" stroke="#9aa4b2" stroke-width="1.6" fill="none" marker-end="url(#ar3)"/>
+</svg>
+<div class="legend">先让失败可复现可量化（红），写最小修复（绿），加回归防回退</div>
+</div>
+<p>与单元 TDD 的差别：测试用例不是手写断言，而是<b>真机 golden 数据</b>；框架是 verify-by-log + 回归脚本。但红绿节奏、"测试驱动最小实现"、"测试防回归"三大要义完全一致。C1/C2 都是先确认"红"（读成 0 / 0 通过），再写最小修复转"绿"。</p>
+
+<!-- Q8 -->
+<h2 id="q8">8 · 如何纠正 AI 的错误</h2>
+<div class="grid3">
+  <div class="c c3"><b>① 自我纠错</b><br>step119 把 C2 判为"精度不可解"。step120 回到逐语句轨迹深挖，发现真因是反规格化数分支——从"不可解"变"一行修复"。</div>
+  <div class="c"><b>② 客观裁判</b><br>C3 改语义前先证伪担忧：翻出 event1031/1399 的 <code>v1</code> 是 <code>uint</code> 声明（不受影响），再改；回归 46/46 复核。</div>
+  <div class="c c2"><b>③ 护栏固化</b><br>把历史坑写进 <code>CLAUDE.md</code>（golden 尾部 float3 错位、一元/二元 +/-），AI 不再重犯。</div>
+</div>
+<div class="callout amber"><b>④ 用户直接纠偏</b>：用户在提示词里预标"哪些是 capture 限制、无解"，提前纠正 AI"什么都想修"的倾向，避免在死路上空转。<br><b>纠错的核心</b>：回到数据流、要更细的证据，不要停在第一个看似合理的结论。</div>
+
+<!-- Q9 -->
+<h2 id="q9">9 · 记忆系统如何避免重复开发</h2>
+<p>记忆系统 = <code>memory/</code> 下"<b>一事一文件</b>" + 一个会话开始即载入的索引 <code>MEMORY.md</code>。</p>
+<table>
+  <tr><th>记忆</th><th>内容</th><th>避免的重复劳动</th></tr>
+  <tr><td class="mono">golden-vs-mesh-sv-position-first</td><td>golden CSV 把 SV_Position 列排最前，按位置而非表头映射</td><td>C2 分析时无需重推列序，直接确认 o6 对得上</td></tr>
+  <tr><td class="mono">per-vertex-binary-vb-decode-r10a2</td><td>NORMAL/TANGENT 在二进制 VB 是 R10G10B10A2</td><td>不必重新逆向顶点格式</td></tr>
+  <tr><td class="mono">raw-img-texture-loading</td><td>纹理按 DXGI 从 .img 读、BC7 回退 BMP</td><td>直接复用</td></tr>
+  <tr><td class="mono">witcher3-array-cbuffers-…</td><td>数组 cbuffer 与实例化输入的坑</td><td>C1 的背景知识</td></tr>
+</table>
+<div class="callout green">当一个"<b>非显而易见、未来还会用到</b>"的事实被发现，就写成一条记忆（带"为什么/怎么用"），并在索引留一行指针。<b>同一个坑只踩一次</b>。纪律：不记录代码/git 已记录的东西；先查重再写；召回的记忆引用到具体文件/函数时先核实仍存在。</div>
+
+<!-- Q10 -->
+<h2 id="q10">10 · 两个 Agent 开发周期的对比</h2>
+<p>本项目历经两个 agent 周期（约 step1→step123，2026-06-05 起）。以下基于 <code>Sessions/</code> 日志与提交历史的可见证据。</p>
+<div class="svgbox">
+<svg viewBox="0 0 900 130" role="img" aria-label="两个开发周期">
+  <rect x="30" y="40" width="400" height="56" rx="10" fill="#1a1430" stroke="#7a6cff"/>
+  <text x="48" y="64" fill="#b3a8ff" style="font:bold 14px sans-serif">前期 · opencode + minimax-m2.7</text>
+  <text x="48" y="84" fill="#cdd6e4" style="font:12px sans-serif">奠基期：小步快跑，搭起解释器与管线骨架</text>
+  <rect x="470" y="40" width="400" height="56" rx="10" fill="#0c1f2a" stroke="#5db0ff"/>
+  <text x="488" y="64" fill="#9ecbff" style="font:bold 14px sans-serif">后期 · claude code + opus</text>
+  <text x="488" y="84" fill="#cdd6e4" style="font:12px sans-serif">攻坚期：真机数据 + 回归纪律，按根因啃长尾</text>
+  <path d="M430,68 L468,68" stroke="#9aa4b2" stroke-width="2" fill="none" marker-end="url(#ar3)"/>
+</svg>
+</div>
+<table>
+  <tr><th>维度</th><th>前期 · minimax-m2.7</th><th>后期 · opus</th></tr>
+  <tr><td>目标</td><td>从无到有搭骨架</td><td>真机数据攻坚长尾</td></tr>
+  <tr><td>步幅</td><td>小而多（单功能/单算子）</td><td>大而少（整条闭环 / 整类根因）</td></tr>
+  <tr><td>上下文</td><td>短、聚焦单点</td><td>长、可持有整条管线</td></tr>
+  <tr><td>验证</td><td>加打印、人工看</td><td>verify-by-log + 自动回归 gate</td></tr>
+  <tr><td>工具用法</td><td>基本编辑 / 运行</td><td>并行 triage、后台任务、记忆、git 闸门</td></tr>
+  <tr><td>典型产物</td><td class="mono">step11 修向量×矩阵</td><td class="mono">step119 一 bug 修 5 case + 扩回归</td></tr>
+</table>
+<div class="callout"><b>两周期互补</b>：前期的小步与可观测性铺垫（那些 <code>[STMT]/[BINARY OP]</code> 打印），正是后期能"沿数据流快速回溯根因"的前提。没有前期的轨迹输出，后期的 C2/C3 根因不可能被一眼看穿。</div>
+
+<p style="color:#9aa4b2;margin-top:40px;font-size:13px">本手册随项目演进更新；Markdown 版见 <code>AI-Development-Handbook.md</code>。生成于 step123。</p>
+
+</div>
+</body>
+</html>
