@@ -205,6 +205,123 @@ class Depth:
             return 0
         return count
 
+    def load_pre_draw_depth_stencil_raw(self, data_folder: str) -> int:
+        """Initialize the depth/stencil buffers from the raw DSV resource dump.
+
+        Newer captures ship the depth/stencil buffer contents *before* this draw
+        as the raw GPU resource (``pre_draw_ds_res_<id>_<W>x<H>_<FORMAT>.raw``)
+        instead of the decoded ``pre_draw_depth_stencil.csv``. The pixel layout
+        (resource id, view format, width/height, sample count) is described by
+        the ``DSV`` row of ``output_merger.csv``:
+
+            ViewType,Slot,ResourceId,...,ViewFormat,Width,Height,...,SampleCount
+            DSV,,50,Texture2D,D24_UNORM_S8_UINT,640,480,...,1
+
+        The raw buffer is tightly packed, row-major (one element per pixel). For
+        multisample resources (``Texture2DMS``, SampleCount > 1) the dump is
+        split into per-sample files (``..._sample0.raw`` ...); we read sample 0,
+        which is what the rasterizer's single-sample depth test compares against.
+
+        Supported formats: ``D24_UNORM_S8_UINT``, ``D32_FLOAT_S8X24_UINT``,
+        ``D32_FLOAT``, ``D16_UNORM``.
+
+        Returns the number of pixels loaded (0 if the dump is absent/unreadable).
+        """
+        import os as _os
+        import glob as _glob
+        import csv as _csv
+        import struct as _struct
+
+        om_path = _os.path.join(data_folder, 'output_merger.csv')
+        if not _os.path.exists(om_path):
+            return 0
+
+        # Locate the DSV row describing the depth/stencil resource.
+        dsv = None
+        try:
+            with open(om_path, 'r', encoding='utf-8-sig', newline='') as f:
+                for row in _csv.DictReader(f):
+                    if (row.get('ViewType') or '').strip().upper() == 'DSV':
+                        dsv = row
+                        break
+        except Exception as e:
+            print(f"Warning: Failed to read {om_path}: {e}")
+            return 0
+        if dsv is None:
+            return 0
+
+        try:
+            res_id = (dsv.get('ResourceId') or '').strip()
+            view_format = (dsv.get('ViewFormat') or '').strip().upper()
+            width = int(float(dsv['Width']))
+            height = int(float(dsv['Height']))
+        except (KeyError, TypeError, ValueError):
+            return 0
+
+        # Find the raw dump for this resource. Prefer the plain (single-sample)
+        # file; for multisample captures fall back to sample 0.
+        candidates = _glob.glob(
+            _os.path.join(data_folder, f'pre_draw_ds_res_{res_id}_*.raw'))
+        raw_path = None
+        for c in candidates:
+            if 'sample' not in _os.path.basename(c):
+                raw_path = c
+                break
+        if raw_path is None:
+            for c in candidates:
+                if _os.path.basename(c).rsplit('.', 1)[0].endswith('sample0'):
+                    raw_path = c
+                    break
+        if raw_path is None:
+            return 0
+
+        try:
+            raw = open(raw_path, 'rb').read()
+        except Exception as e:
+            print(f"Warning: Failed to read {raw_path}: {e}")
+            return 0
+
+        # Per-format pixel decoder: returns (depth_float, stencil_int) at byte
+        # offset for pixel index i.
+        if view_format == 'D24_UNORM_S8_UINT':
+            stride = 4
+            def decode(off):
+                word = _struct.unpack_from('<I', raw, off)[0]
+                return (word & 0xFFFFFF) / float(0xFFFFFF), (word >> 24) & 0xFF
+        elif view_format == 'D32_FLOAT_S8X24_UINT':
+            stride = 8
+            def decode(off):
+                d = _struct.unpack_from('<f', raw, off)[0]
+                s = _struct.unpack_from('<I', raw, off + 4)[0] & 0xFF
+                return d, s
+        elif view_format == 'D32_FLOAT':
+            stride = 4
+            def decode(off):
+                return _struct.unpack_from('<f', raw, off)[0], 0
+        elif view_format == 'D16_UNORM':
+            stride = 2
+            def decode(off):
+                return _struct.unpack_from('<H', raw, off)[0] / float(0xFFFF), 0
+        else:
+            print(f"Warning: Unsupported DSV format '{view_format}' in {raw_path}")
+            return 0
+
+        expected = width * height * stride
+        if len(raw) < expected:
+            print(f"Warning: {raw_path} is {len(raw)} bytes, expected >= "
+                  f"{expected} for {width}x{height} {view_format}")
+            return 0
+
+        count = 0
+        for y in range(height):
+            base = y * width * stride
+            for x in range(width):
+                depth, stencil = decode(base + x * stride)
+                self._depth_buffer[(x, y)] = depth
+                self._stencil_buffer[(x, y)] = stencil
+                count += 1
+        return count
+
     def execute(self, pixels: List[Pixel], early_z: bool = True) -> List[Pixel]:
         """
         Execute depth/stencil operations on pixels.

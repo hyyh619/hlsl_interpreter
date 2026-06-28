@@ -2122,6 +2122,40 @@ Upgraded pipeline input loading to use binary files captured by RenderDoc/3Dmigo
 Session file: `Sessions/hlsl-interpreter-step121-binary-input-data-precision.md`
 
 
+# 122
+## Prompts
+1. 执行 draw 前，需要加载 pre-draw 的 depth/stencil buffer 的内容，以前是使用 pre_draw_depth_stencil.csv
+2. 现在替换成加载原始的 depth/stencil buffer 的数据文件 pre_draw_ds_res_*.raw
+3. 加载 pre_draw_ds_res_*.raw 的具体数据格式解析，请根据 output_merger.csv 来获取
+4. 改动完成后执行 regression test
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+## Git commit:
+
+## Claude Code Session
+**Load pre-draw depth/stencil buffer from raw DSV resource dump** (Step 122)
+
+将 draw 前 depth/stencil buffer 的初始化从解码后的 `pre_draw_depth_stencil.csv` 替换为读取原始 GPU 资源 dump `pre_draw_ds_res_<id>_<W>x<H>_<FORMAT>.raw`，获得完整 float32 精度。
+
+**布局来源 (`output_merger.csv` 的 DSV 行):** `ResourceId`→raw 文件 id，`ViewFormat`→字节解码方式，`Width`/`Height`→行主序尺寸，`SampleCount`→MSAA 时 dump 拆为 `..._sampleN.raw`（取 sample0）。
+
+**格式解码（已对照旧 CSV ground truth 验证 0 mismatch）:**
+- `D24_UNORM_S8_UINT`（4B）：depth=`(word & 0xFFFFFF)/0xFFFFFF`（低24位），stencil=`(word>>24)&0xFF`（高8位）。
+- `D32_FLOAT_S8X24_UINT`（8B）：depth=offset+0 float32，stencil=offset+4 uint32 &0xFF。
+- 另支持 `D32_FLOAT`（4B）、`D16_UNORM`（2B）。
+
+**实现:**
+- `output_merger.py` 新增 `Depth.load_pre_draw_depth_stencil_raw(data_folder)`：读 `output_merger.csv` 找 DSV 行 → glob `pre_draw_ds_res_<id>_*.raw`（优先无 sample，否则 sample0）→ 按格式逐像素填入 `_depth_buffer`/`_stencil_buffer`；缺文件/不支持格式/字节不足均安全返回 0。旧 CSV 方法保留作回退。
+- `render.py`：优先调用 raw 加载，`loaded==0` 时回退 CSV；深度测试启用条件改为 `loaded>0`。
+
+**Result: 123/123 regression cases pass**（含 MSAA D32 的 `4k1w_event1124` 444/444、所有 D24 `Collision-*`）。
+
+Session file: `Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.md`
+
+
 # 47 遍历整个Dump目录下的zip draw，修复问题
 ## Prompts
 1. 遍历整个Dump目录下的zip draw，修复问题
@@ -2303,9 +2337,12 @@ Notice:
 
 Session文件：`Sessions/hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash.md`
 
-# 95
+# 95 使用原始的depth/stencil pre-draw buffer内容
 ## Prompts
-
+1. 执行draw前，需要加载pre-draw的depth/stencil buffer的内容，以前是使用pre_draw_depth_stencil.csv
+2. 现在替换成加载原始的depth/stencil buffer的数据文件，pre_draw_ds_res_*.raw
+3. 加载pre_draw_ds_res_*.raw的具体数据格式解析，请根据output_merger.csv来获取
+4. 改动完成后执行regression test
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写

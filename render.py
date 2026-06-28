@@ -1164,14 +1164,19 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     depth_failed = 0
 
     # Depth/stencil. The zip ships the depth/stencil buffer contents from
-    # *before* this draw (pre_draw_depth_stencil.csv). Loading it lets the
-    # depth test compare each fragment against the real pre-existing depth
-    # (geometry already on screen) rather than a synthetic clear value, so
-    # fragments occluded by earlier draws are correctly rejected.
+    # *before* this draw as the raw DSV resource dump
+    # (pre_draw_ds_res_<id>_<W>x<H>_<FORMAT>.raw), with its layout described by
+    # the DSV row of output_merger.csv. Loading it lets the depth test compare
+    # each fragment against the real pre-existing depth (geometry already on
+    # screen) rather than a synthetic clear value, so fragments occluded by
+    # earlier draws are correctly rejected. Falls back to the decoded
+    # pre_draw_depth_stencil.csv for older captures that lack the raw dump.
     depth = Depth()
+    loaded = depth.load_pre_draw_depth_stencil_raw(data_folder)
     pre_draw_ds_csv = os.path.join(data_folder, 'pre_draw_depth_stencil.csv')
-    if os.path.exists(pre_draw_ds_csv):
+    if loaded == 0 and os.path.exists(pre_draw_ds_csv):
         loaded = depth.load_pre_draw_depth_stencil(pre_draw_ds_csv)
+    if loaded > 0:
         # Enable the depth test now that there is a real depth buffer to test
         # against. pipeline_state.csv does not capture DepthEnable/DepthFunc for
         # these dumps, so use D3D's standard depth state (LESS, depth-write on),
