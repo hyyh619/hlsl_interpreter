@@ -73,7 +73,7 @@ def get_first_errors(log_path, n=5):
     return errors
 
 
-def run_case(zip_name, idx, total):
+def run_case(zip_name, idx, total, vs_only=False, timeout=300):
     stem = os.path.splitext(zip_name)[0]
     os.makedirs(LOG_DIR, exist_ok=True)
     # log_file_path in config is relative to the config file (which lives in Cases/)
@@ -83,6 +83,8 @@ def run_case(zip_name, idx, total):
     config = dict(BASE_CONFIG)
     config['data_path'] = './Dump/' + zip_name
     config['log_file_path'] = log_rel
+    if vs_only:
+        config['vs_only'] = True
     cfg_path = os.path.join(ROOT, 'Cases', '.triage_tmp_' + stem + '.json')
     with open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4)
@@ -91,7 +93,7 @@ def run_case(zip_name, idx, total):
     try:
         proc = subprocess.run(
             [sys.executable, 'render.py', os.path.relpath(cfg_path, ROOT)],
-            cwd=ROOT, capture_output=True, text=True, timeout=300,
+            cwd=ROOT, capture_output=True, text=True, timeout=timeout,
         )
         error_count, passed, total_rows = analyze_log(log_abs)
         if proc.returncode != 0:
@@ -109,7 +111,7 @@ def run_case(zip_name, idx, total):
             result['status'] = 'PASS'
             result['detail'] = f"passed {passed}/{total_rows}"
     except subprocess.TimeoutExpired:
-        result['detail'] = "timeout (>300s)"
+        result['detail'] = f"timeout (>{timeout}s)"
     finally:
         if os.path.exists(cfg_path):
             os.remove(cfg_path)
@@ -125,29 +127,47 @@ def main():
     args = sys.argv[1:]
     workers = 4
     name_filter = None
+    list_file = None
+    vs_only = False
+    timeout = 300
     for i, a in enumerate(args):
         if a == '--workers' and i + 1 < len(args):
             workers = int(args[i + 1])
         if a == '--filter' and i + 1 < len(args):
             name_filter = args[i + 1]
+        if a == '--list' and i + 1 < len(args):
+            list_file = args[i + 1]
+        if a == '--timeout' and i + 1 < len(args):
+            timeout = int(args[i + 1])
+        if a == '--vs-only':
+            vs_only = True
 
-    zips = sorted(f for f in os.listdir(DUMP_DIR) if f.endswith('.zip'))
+    if list_file:
+        # Explicit list of zip names (one per line; '#'/blank lines ignored).
+        with open(list_file, encoding='utf-8') as f:
+            wanted = {ln.strip() for ln in f if ln.strip() and not ln.startswith('#')}
+        zips = sorted(z for z in (f for f in os.listdir(DUMP_DIR) if f.endswith('.zip'))
+                      if z in wanted)
+    else:
+        zips = sorted(f for f in os.listdir(DUMP_DIR) if f.endswith('.zip'))
     if name_filter:
         zips = [z for z in zips if name_filter in z]
 
-    print(f"Triaging {len(zips)} zips from Dump/ with {workers} worker(s)\n")
+    mode = "vs_only" if vs_only else "full-pipeline"
+    print(f"Triaging {len(zips)} zips from Dump/ with {workers} worker(s), "
+          f"{mode}, timeout={timeout}s\n")
 
     results = []
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(run_case, z, i + 1, len(zips)): z
+            futures = {ex.submit(run_case, z, i + 1, len(zips), vs_only, timeout): z
                        for i, z in enumerate(zips)}
             for fut in as_completed(futures):
                 results.append(fut.result())
         results.sort(key=lambda r: r['name'])
     else:
         for i, z in enumerate(zips):
-            results.append(run_case(z, i + 1, len(zips)))
+            results.append(run_case(z, i + 1, len(zips), vs_only, timeout))
 
     passed = [r for r in results if r['status'] == 'PASS']
     failed = [r for r in results if r['status'] != 'PASS']

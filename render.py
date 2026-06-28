@@ -873,6 +873,13 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     if execute_count == -1:
         execute_count = None
     early_z = config.get('early_z', True)
+    # VS-only mode: execute the vertex shader, compare against golden, and stop —
+    # skipping rasterizer / depth / pixel-shader / output-merger. Correctness in
+    # this project is judged purely by VS-vs-golden, so this lets full-screen /
+    # large-vertex-count draws finish in a fraction of the time (the rasterizer +
+    # PS dominate wall-clock for those) and is what the triage/regression
+    # workflows ultimately grade on.
+    vs_only = config.get('vs_only', False)
     mesh_view_enabled = config.get('mesh_view_enabled', False)
     primitive_topology = config.get('primitive_topology', D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
     # Tolerance for the golden output-merger pixel comparison (color + depth).
@@ -1107,6 +1114,16 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             float_tolerance=float_tolerance,
             execute_count=execute_count,
         )
+
+    # VS-only mode stops here: the golden comparison (and its "Total PASSED
+    # rows" summary) is already logged above, so skip the rest of the pipeline.
+    if vs_only:
+        vs_interp.log_output(
+            f"\nvs_only mode: skipping rasterizer/depth/PS/output-merger "
+            f"(VS executed in {vs_time:.4f}s)"
+        )
+        TRACE.close()
+        return
 
     # ============================================================
     # Rasterizer

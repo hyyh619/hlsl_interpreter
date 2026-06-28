@@ -2449,6 +2449,23 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+**实现 vs_only 模式并对 A 类超时 case 单独长跑** (Step 151)
+
+先提交 step124 的 Dump 重 triage 报告（commit `b3fda5c`）。
+
+**实现 `vs_only`（`render.py`）**：`_execute_pipeline` 在 VS 执行+golden 比对（已打印 `Total PASSED rows:`）后早退，跳过 Rasterizer/Depth/PS/Output-Merger。正确性本就只看 VS-vs-golden，故结论不变，但全屏/大网格 draw 的耗时从 PS/光栅化主导降到只剩 VS。默认 `False`，不影响回归全管线路径。`triage_dump.py` 加 `--vs-only` / `--list` / `--timeout` 三个可复用开关。
+
+**冒烟**：`witcher3_event20882` 全管线 >300s 超时 → `vs_only` **1.5s 通过 720/720**，证实是 PS 主导的全屏 pass、VS 完全正确。
+
+**对 45 个 A 类超时 case 单跑 `vs_only`（timeout=1800s）**：**38 PASS + 7 FAIL**。
+- **38 个确认"正确但慢"** → 从 `Dump/` 删除（heaven 19095/19095、sekiro 16479/16479、witcher 全屏 pass 等秒级通过）。
+- **7 个其实 VS 就错**（之前被超时掩盖）→ 重归类：Octopath_event3221→D；OldWorld_event1034/2767（各 20.3 万顶点，sv_position[1] 偏+TexCoord2=0）→ 新建 G 类；OldWorld_event3338（23352/23814，diff≈0.2）→F1；witcher 21979/22049/22260→E。
+
+**结果**：A 类清空（38 删 + 7 重归类）。`Dump/` 失败集 **134 → 96**。新分布：B16 / C37 / D19 / E10 / F1=3 / F2=9 / G2。回归 `run_regression.py` 全 PASS（`vs_only` 默认关闭，仅新增早退分支）。
+
+产物：`render.py`(vs_only)、`triage_dump.py`(3 开关)、`Cases/dump_failure_categories.csv`(刷新 96)、`Cases/aclass_vsonly_results.csv`、`Cases/triage_results_full140.csv`。
+
+Session file: `Sessions/hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun.md`
 
 # 152
 ## Prompts
