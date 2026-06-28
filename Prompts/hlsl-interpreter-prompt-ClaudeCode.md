@@ -2467,8 +2467,10 @@ Notice:
 
 Session file: `Sessions/hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun.md`
 
-# 152
+# 152 修复D类问题
 ## Prompts
+修复D类问题：
+D（19，Octopath）/E（10，witcher）：可修的解释器问题——packed 法线/切线 UNORM/SNORM 未按 ia_input_layouts.csv 解码、golden 列被当 uint 解析、切线矩阵主序
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -2478,6 +2480,17 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+**修复 D 类（Octopath）—— typed buffer 格式感知解码 + golden 列 uint 解析** (Step 152)
+
+D 类 Octopath 是蒙皮/实例化 VS，错的 `TEXCOORD10/11`（法线/切线）/`TexCoord` 来自 `Buffer<float4>` 的 `.Load()`。两个根因：
+
+**Bug 1 — typed buffer 4 字节元素视图格式被错误解码**：`buffer_params.csv` 只给 `ElementByteSize` 不给 DXGI 格式，DXBC 一律声明 `(float,float,float,float)`。一个 4B 元素实际可能是 R8G8B8A8_SNORM（法线，byte127→1.0）/ R8G8B8A8_UNORM（颜色，byte255→1.0）/ R16G16_FLOAT（纹理坐标，2×half）。旧代码 1B/分量一律 UNORM(`b/255`)，法线 byte127 解成 0.498 而 golden 期望 1.0。新增 `_infer_4byte_typed_buffer_fmt`：**先判 half**（全 buffer 每个元素都能解成有限且 |v|<1024 的两个 half——R8 归一化数据高字节多为 0x7F/0xFF→half 指数全 1→Inf/NaN，故可靠排除），**否则按 R8G8B8A8**（#0xFF>#0x7F→unorm 否则 snorm）。（最初用 special 字节占比门控导致 event2384 任意朝向法线 special 仅 0.26 被误判回归，改为 half 有限性作唯一正信号修正。）
+
+**Bug 2 — golden 列被当 uint 解析**：float 输出 `o2:TEXCOORD0` 物理落在 uint 列 `PRIMITIVE_ID.x` 下，float 0.4375 被打成位模式 1054867456。`_golden_float` 位重解释原本只对 `sv_position` 生效；改为对**所有 float 类型输出**生效（RenderDoc 真实 float 必带小数点，float 列里的裸整数必是位模式）。
+
+**结果**：19 个 D 类 → **10 PASS**（删除）+ 9 FAIL（更深子类：四元数解码残留 event2135、sv_position 数值溢出 event2651/2682/576、蒙皮索引 event2912/3012/3601/664、高编号 TEXCOORD12/13 列映射 event3502）。`Dump/` 失败 96→86（D 19→9）。**回归 123/123（vs_only）**，event1320 UNORM 仍 6/6；新增代表 event1828(SNORM)/event1357(R16G16_FLOAT) 入回归（→125）。
+
+Session file: `Sessions/hlsl-interpreter-step152-fix-dclass-octopath-typed-buffer-and-golden-parse.md`
 
 # 153
 ## Prompts

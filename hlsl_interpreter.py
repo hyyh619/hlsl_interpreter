@@ -3439,11 +3439,48 @@ class HLSLInterpreter:
                 out.append(0)
         return out[0] if ncomp == 1 else out
 
+    @staticmethod
+    def _infer_4byte_typed_buffer_fmt(data: bytes) -> str:
+        """Infer the view format of a 4-byte-element typed buffer from its byte
+        distribution. buffer_params.csv records only the element byte size, and a
+        4-byte element is equally an R8G8B8A8 (SNORM normal/tangent/quaternion or
+        UNORM colour) or an R16G16_FLOAT (packed texcoord). Returns one of
+        'snorm' / 'unorm' / 'half'.
+
+        Discriminator (validated against Octopath captures):
+        - R16G16_FLOAT first: texcoords are finite and modestly ranged, so every
+          element decodes as two finite halfs with |v| < 1024. Conversely
+          R8G8B8A8 normalized data almost always yields Inf/NaN when misread as
+          a half, because its high bytes are frequently 0x7F/0xFF/0x80 (SNORM
+          +/-1, UNORM +1), whose half exponent field is all-ones. So "every
+          half across the whole buffer is finite and in range" is a reliable
+          positive signal for R16G16_FLOAT (e.g. foliage texcoords 0.2344,
+          0.4575), with false positives effectively excluded by checking all
+          elements.
+        - Otherwise it is R8G8B8A8; SNORM vs UNORM is decided by whether 0xFF
+          (UNORM 1.0) outnumbers 0x7F (SNORM 1.0). Normals (0x7F) / quaternions
+          (0x7F + 0x81) -> snorm; colour table (all 0xFF) -> unorm; ties ->
+          snorm (the common skinning normal/tangent case)."""
+        n = len(data) // 4
+        if n:
+            all_half = True
+            for i in range(n):
+                for v in struct.unpack_from('<2e', data, i * 4):
+                    if not math.isfinite(v) or abs(v) >= 1024.0:
+                        all_half = False
+                        break
+                if not all_half:
+                    break
+            if all_half:
+                return 'half'
+        return 'unorm' if data.count(0xFF) > data.count(0x7F) else 'snorm'
+
     def _typed_buffer_load(self, tb: dict, index: int):
         """Fetch element `index` of a typed buffer as a float list padded to 4
         with D3D's (0,0,0,1) defaults. buffer_params.csv gives only the element
         byte size, not the view format, so infer from bytes-per-declared-
-        component: 1 -> R8G8B8A8_UNORM (e.g. a colour table), otherwise float32
+        component: 1 -> R8G8B8A8 SNORM/UNORM or R16G16_FLOAT (disambiguated by
+        byte histogram, see _infer_4byte_typed_buffer_fmt), otherwise float32
         with elem_size//4 components (8B -> R32G32, 16B -> R32G32B32A32)."""
         data = tb.get('data')
         esize = tb.get('elem_size') or 0
@@ -3454,7 +3491,19 @@ class HLSLInterpreter:
             return None
         comp = tb.get('comp') or 4
         if comp and esize // comp == 1:
-            vals = [b / 255.0 for b in data[off:off + min(esize, 4)]]
+            fmt = tb.get('norm_fmt')
+            if fmt is None:
+                fmt = self._infer_4byte_typed_buffer_fmt(data)
+                tb['norm_fmt'] = fmt
+            if fmt == 'half':
+                vals = list(struct.unpack_from('<2e', data, off))
+            elif fmt == 'snorm':
+                # D3D SNORM8: c/127 clamped to [-1, 1] (0x80 -> -1.0).
+                raw = data[off:off + min(esize, 4)]
+                vals = [max((b - 256 if b > 127 else b) / 127.0, -1.0) for b in raw]
+            else:
+                raw = data[off:off + min(esize, 4)]
+                vals = [b / 255.0 for b in raw]
         else:
             ncomp = min(esize // 4, 4)
             vals = list(struct.unpack_from('<%df' % ncomp, data, off))
@@ -5165,19 +5214,26 @@ class HLSLInterpreter:
             # with >4 TEXCOORD outputs would silently overwrite each other in
             # the golden dict. sem_full is unique per output.
             key = sem_to_key.get(sem_full, sem_full)
-            param_cols.append((key, cols))
+            # A float-typed output whose data physically lands in a uint-typed
+            # column (RenderDoc lays out columns positionally — see above — so a
+            # float output can fall under a `uint PRIMITIVE_ID`/`uint4 PSIZE`
+            # header) is printed as its uint32 bit-pattern (bare integer text).
+            # Such outputs must be bit-reinterpreted, not read as the integer.
+            # Genuinely integer outputs (uint/int) keep their value.
+            is_float = str(param.get('type', 'float')).startswith('float')
+            param_cols.append((key, cols, is_float))
 
         golden = []
         for row in rows[1:]:
             entry = {}
-            for key, cols in param_cols:
+            for key, cols, is_float in param_cols:
                 try:
                     raws = [row[c].strip() for c in cols]
-                    # SV_Position is always float, but when it physically lands
-                    # in a leading uint-typed column (e.g. a `uint4 PSIZE` output
-                    # declared before it), RenderDoc prints its floats as their
-                    # uint32 bit-pattern (integer text). Reinterpret those bits.
-                    if key == 'sv_position':
+                    # RenderDoc always prints real floats with a decimal point,
+                    # so a bare-integer token in a float column is a float
+                    # dumped through a uint-typed column — reinterpret the bits
+                    # (_golden_float is a no-op on normal decimal/exponent text).
+                    if is_float:
                         vals = [self._golden_float(s) for s in raws]
                     else:
                         vals = [float(s) for s in raws]
