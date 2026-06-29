@@ -2581,8 +2581,16 @@ instance 0（`base_off+0*stride`）取偏移，绕过 CSV 一致性门（CSV 永
 反编译问题）。另含科学计数法字面量解析修复（`4.65e-10` 的指数 `-` 不再被当减法切开）+ 回归 `vs_only` 开关。
 **回归 125/125 PASS（exit 0），零回归。** 后续：实现 VS 端 Texture2DArray 切片采样即可推动 o2/o3 收敛（同时惠及两个解释器）。
 
-# 155
+# 155 检查下列7类失败，还有几类没有修复的
 ## Prompts
+检查下列7类失败，还有几类没有修复的
+A. 超时(45)：纯 Python 逐顶点/逐像素太慢，被 300s 杀掉前无 Error: 行——正确但慢（witcher17/sekiro8/Tank8…）。修：加 vs_only 跳过光栅化+PS / 热路径 AST 预编译。
+B. 无 golden(16)：capture 无可对比 VS 网格（0 顶点/indirect/缺导出）——不可验证，标 N/A。
+C. TombRaider struct 矩阵选择子丢失(37)：3Dmigoto 反编译丢弃了 WorldParameters[] 的矩阵成员选择子，位置(~22)与法线(~15)取到错误矩阵——反编译有损，只能靠反汇编 cb0[base+N] 寄存器号修复，超出 HLSL 解释器边界。
+D. Octopath 输入解码 + golden 列解析(18)：packed 法线/切线 UNORM/SNORM 未按 ia_input_layouts.csv 解码（0.498=127/255）；golden 某列以 uint 存 float-bit（golden=1054867456=0x3EE00000=0.4375，我方实为正确）。可修。
+E. witcher3 切线/拷贝属性解码(7)：纯拷贝输出 o4=v1 都对不上→输入格式解码错；另有切线矩阵主序、除零 nan。可修。
+F1. 精度边界(2)：sekiro2 两个 case passed 43329/45576，失败行 diff 恰好 0.005 略超容差。
+F2. 其它(9)：sekiro 实例索引残留、Nobu586 VS 全 0（cbuffer 未加载）、ES2 golden 全 0 等。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
