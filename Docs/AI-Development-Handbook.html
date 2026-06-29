@@ -168,6 +168,13 @@
 <b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。C1 修复时 AI 直接知道要看 golden 对比日志、改完跑回归——都来自 <code>CLAUDE.md</code>。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>。本轮"可执行循环规范 + 约束清单"的提示词原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42 继续修复</a>。
 </div>
 
+<div class="callout amber">
+<b>反例：缺"不要做什么" → AI 改错了地方</b>
+<p style="margin:6px 0">步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2 修复前序提交引入的 bug</a> 的提示词只说"请修复 Color/WorldPos 的 Error"，<b>没有声明"golden 数据是基准、不要动它"</b>。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的<b>尾部 <code>float3</code> 错位</b>陷阱——golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐。</p>
+<p style="margin:6px 0">由于提示词没禁止改基准，AI 把矛头指向了 <b>golden 比较侧</b>：<code>load_vs_golden_from_mesh_csv</code> 里的 WorldPos 重映射一度被<b>注释掉（禁用）</b>，直到步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 才不得不"<i>恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过</i>"。正因吃过这个亏，紧接着的步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4">#4</a> 才在提示词里补上明确禁令——"<b>不要更改 golden data 的加载函数，golden data 加载数据是正确的</b>"（即下方好例 G1）。</p>
+<b>教训</b>：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"<b>基准是对的，只许改解释器</b>"就堵死了后一条错路；漏掉它，就要付出 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2</a>→<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 这样的来回与返工。
+</div>
+
 <h3>好提示词 vs 差提示词：本项目的真实对照</h3>
 <p>以下例子全部摘自本仓库 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code> 的真实提示词，可逐条核对。</p>
 

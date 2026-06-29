@@ -114,8 +114,12 @@ python render.py ./Cases/Default.json
 ### 1.4 给提示词的实操建议
 - **给可验证的成功标准**，而不是"修好它"。本项目的标准是机器可判的：日志无 `Error:` 且 `Total PASSED rows: X/X`。
 - **指明数据/代码在哪**（zip 目录、配置文件），省去 AI 猜测。
-- **把"不要做什么"写出来**（已知无解的类别），避免无效探索。
+- **把"不要做什么"写出来**（已知无解的类别、不可改动的基准），避免无效探索与改错地方。
 - **要求留痕**（写 session 文档），既是交付物，也是下一轮的记忆。
+
+> **反例（缺"不要做什么"→ AI 改错了地方）**：步骤 [#2 修复前序提交引入的 bug](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) 的提示词只说"请修复 Color/WorldPos 的 Error"，**没有声明"golden 数据是基准、不要动它"**。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的**尾部 `float3` 错位**陷阱（golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐）。由于提示词没有禁止改基准，AI 把矛头指向了 **golden 比较侧**——`load_vs_golden_from_mesh_csv` 里的 WorldPos 重映射一度被**注释掉（禁用）**，直到步骤 [#3](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) 才不得不"**恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过**"。正因为吃过这个亏，紧接着的步骤 [#4](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4) 才在提示词里补上明确禁令——"**不要更改 golden data 的加载函数，golden data 加载数据是正确的**"（即下文 §1.5 的好例 G1）。
+>
+> **教训**：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"**基准是对的，只许改解释器**"就能堵死后一条错路；漏掉它，就要付出 #2→#3 这样的来回与返工。〔证据链：[#2 缺禁令](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) → [#3 恢复被注释的重映射](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) → [#4 补上禁令](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4)〕
 
 ### 1.5 好提示词 vs 差提示词：本项目的真实对照
 
