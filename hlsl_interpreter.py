@@ -2083,6 +2083,45 @@ class HLSLInterpreter:
                         return result
             return None
 
+        # Texture.SampleLevel: sample at an EXPLICIT LOD (no derivatives).
+        # Format: tex.SampleLevel(sampler, coords, lod). Pervasive in vertex
+        # shaders (which have no screen-space derivatives) — e.g. Witcher3's
+        # ambient/shadow probes sample t22/t19 in the VS. Unhandled, it returned
+        # None and silently zeroed the sampled term. coords carries u,v (and for
+        # Texture2DArray/Cube a 3rd/4th array-slice or direction component we
+        # approximate by sampling slice 0); the LOD is the trailing scalar arg,
+        # passed through as the explicit-LOD `w` (derivatives None).
+        if method_name == 'SampleLevel' and len(args) >= 2:
+            if obj_node is None:
+                return None
+            obj_name = obj_node.value if obj_node.node_type == 'value' else None
+            if obj_name is None:
+                return None
+            sampler_node = args[0]
+            sampler_name = (sampler_node.value
+                            if sampler_node is not None and sampler_node.node_type == 'value'
+                            else None)
+            coords = self.evaluate_syntax_tree(args[1], local_vars)
+            lod = self.evaluate_syntax_tree(args[2], local_vars) if len(args) > 2 else 0.0
+            if isinstance(lod, list):
+                lod = lod[0] if lod else 0.0
+            if coords and isinstance(coords, list) and len(coords) >= 2:
+                u, v = coords[0], coords[1]
+                binding = self._find_texture_binding(obj_name)
+                if binding and self._texture_exec and self._texture_desc_list:
+                    reg_id = binding.register_id
+                    if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
+                        texture_desc = self._texture_desc_list[reg_id]
+                        sampler = self._resolve_sampler(sampler_name, reg_id)
+                        result = self._texture_exec.sample(
+                            u, v, float(lod or 0.0), texture_desc, sampler,
+                            None, None, name=obj_name)
+                        self.debug_print(
+                            f"[METHOD] {obj_name}.SampleLevel({sampler_name}, "
+                            f"({u:.4f}, {v:.4f}), {lod}) = {self._format_float(result)}")
+                        return result
+            return None
+
         # Texture2D.Load: integer texel fetch, no filtering.
         # Format: t1.Load(int3(x, y, mip)).  location.xy = texel coords,
         # location.z = mip level.
