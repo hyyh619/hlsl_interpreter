@@ -12,6 +12,7 @@
 ---
 
 ## 目录
+0. [项目概述](#0-项目概述)
 1. [如何给 AI 提供提示词](#1-如何给-ai-提供提示词)
 2. [AI 如何分析需求、生成开发计划](#2-ai-如何分析需求生成开发计划)
 3. [AI 如何按计划执行](#3-ai-如何按计划执行)
@@ -22,6 +23,59 @@
 8. [如何纠正 AI 的错误](#8-如何纠正-ai-的错误)
 9. [记忆系统如何避免重复开发](#9-记忆系统如何避免重复开发)
 10. [两个 Agent 开发周期的对比](#10-两个-agent-开发周期的对比)
+
+---
+
+## 0. 项目概述
+
+### 0.1 这是什么
+本项目是一个**纯 Python 实现的 Direct3D 11 图形管线软件仿真器**，核心特点是**直接解释执行 HLSL 着色器源码**——不编译、不调用 `eval`，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段：
+
+```
+Vertex Shader → Rasterizer → Depth/Stencil → Pixel Shader → Output Merger
+```
+
+然后把顶点着色器（VS）的输出与真机捕获的 **golden 参考数据**逐分量对比，以此验证解释器的正确性。
+
+### 0.2 输入从哪来
+输入是 **RenderDoc / 3Dmigoto 抓帧 dump**，打包成 `Cases/*.zip`。每个 zip 解压后是一组松散文件：
+
+| 文件 | 作用 |
+|---|---|
+| `VS_shader.hlsl` / `PS_shader.hlsl` | 着色器源码（`main()` 用带语义的参数声明输入输出） |
+| `*_input_output_signature.csv` | 参数 ↔ 寄存器槽位映射 |
+| `ia_vertex_data.csv` + `ia_input_layouts.csv` + 二进制 VB/IB | 输入装配阶段的顶点/索引数据 |
+| `*_constant_buffers.csv` + `constant_*.bin` | 常量缓冲区（文本布局 + 二进制精确值） |
+| `pipeline_state.csv` | 光栅化/混合/深度模板状态 + 图元拓扑 |
+| `output_merger.csv` + `pre_draw_ds_res_*.raw` | 输出合并阶段的 RTV/DSV 布局与 draw 前的深度模板内容 |
+| `MeshOut_*_mesh.csv` | golden VS 输出（验证基准） |
+| `.img` / BMP 纹理 | `Texture2D.Sample(...)` 的后备数据 |
+
+### 0.3 怎么运行
+唯一入口是一个 JSON 配置文件：
+```bash
+python render.py ./Cases/Default.json
+```
+`render.py` 是编排器，根据配置在 **zip 工作流**（当前主路径）与 **legacy struct 工作流**（旧配置后向兼容）之间分支。
+
+### 0.4 模块构成
+**零第三方依赖**——只用 Python 标准库，外加可选的 `tkinter`（网格查看器 GUI）。无 `requirements.txt`、无构建步骤、无独立单元测试框架。
+
+| 模块 | 职责 |
+|---|---|
+| `hlsl_interpreter.py`（~3300 行，核心） | 解析 HLSL（cbuffer/struct/函数/纹理采样器绑定），遍历语句、求值表达式 |
+| `hlsl_syntax_tree.py` | 手写递归下降表达式解析器，产出 `SyntaxTreeNode` 树；运算符优先级表在此 |
+| `rasterizer.py` | 按图元拓扑光栅化；边函数 + 透视正确重心插值；视口变换与剔除 |
+| `output_merger.py` | 深度/模板测试，支持 early-Z / late-Z |
+| `texture.py` | 纹理解析、mipmap、采样与寻址模式 |
+| `pixel.py` / `d3d.py` / `mesh_view.py` | 像素交换记录 / D3D 枚举常量 / 可选网格查看器 |
+
+### 0.5 正确性如何保证
+项目没有传统单元测试，正确性靠 **verify-by-log 工作流**与**数据驱动回归套件**：
+- **verify-by-log**：跑管线 → 在 `output.log` 里 grep `Error:` 行（VS-vs-golden 的分量级不符）→ 迭代到无错。日志里的 `[STMT]` / `[BINARY OP]` 轨迹是调试主要面。
+- **回归套件**：`run_regression.py` 读 `Cases/regression_test_zip_files.csv` 列出的 capture，逐个 headless 跑通，三条判据（干净退出、无 `Error:`、`Total PASSED rows: X/X`）全满足才算过。目前覆盖 **123 个真机 case**，是每次改动的提交闸门。
+
+> 本手册后续各章，都是围绕"**如何与 AI 协作、在这样一个无单测、靠真机 golden 数据验证的解释器项目上持续修 bug**"展开的方法论总结。
 
 ---
 

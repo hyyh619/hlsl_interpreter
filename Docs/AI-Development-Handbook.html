@@ -80,6 +80,7 @@
 </div>
 
 <nav class="toc">
+  <a href="#q0">0 · 项目概述</a>
   <a href="#q1">1 · 如何给 AI 提供提示词</a>
   <a href="#q2">2 · 分析需求、生成开发计划</a>
   <a href="#q3">3 · 如何按计划执行</a>
@@ -91,6 +92,56 @@
   <a href="#q9">9 · 记忆系统避免重复开发</a>
   <a href="#q10">10 · 两个 Agent 周期对比</a>
 </nav>
+
+<!-- Q0 -->
+<h2 id="q0">0 · 项目概述</h2>
+<p>本项目是一个<b>纯 Python 实现的 Direct3D 11 图形管线软件仿真器</b>，核心特点是<b>直接解释执行 HLSL 着色器源码</b>——不编译、不调用 <code>eval</code>，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段，再把顶点着色器输出与真机捕获的 <b>golden 参考数据</b>逐分量对比，以此验证解释器的正确性。</p>
+<div class="svgbox">
+<svg viewBox="0 0 900 150" role="img" aria-label="D3D11 管线阶段与验证">
+  <defs>
+    <marker id="ar0" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
+    <style>.p{fill:#1e222b;stroke:#2a2f3a}.pt{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}.pf{stroke:#5db0ff;stroke-width:1.6;fill:none;marker-end:url(#ar0)}.gold{fill:#1e2620;stroke:#3a4a32}.gt{fill:#cfe6b0;font:12px sans-serif;text-anchor:middle}.gf{stroke:#46d39a;stroke-width:1.6;fill:none;stroke-dasharray:5 4;marker-end:url(#ar0)}</style>
+  </defs>
+  <rect class="p" x="10"  y="30" width="120" height="44" rx="8"/><text class="pt" x="70"  y="57">Vertex Shader</text>
+  <rect class="p" x="160" y="30" width="120" height="44" rx="8"/><text class="pt" x="220" y="57">Rasterizer</text>
+  <rect class="p" x="310" y="30" width="130" height="44" rx="8"/><text class="pt" x="375" y="50">Depth /</text><text class="pt" x="375" y="65">Stencil</text>
+  <rect class="p" x="470" y="30" width="120" height="44" rx="8"/><text class="pt" x="530" y="57">Pixel Shader</text>
+  <rect class="p" x="620" y="30" width="130" height="44" rx="8"/><text class="pt" x="685" y="50">Output</text><text class="pt" x="685" y="65">Merger</text>
+  <path class="pf" d="M130,52 L158,52"/><path class="pf" d="M280,52 L308,52"/>
+  <path class="pf" d="M440,52 L468,52"/><path class="pf" d="M590,52 L618,52"/>
+  <rect class="gold" x="10" y="110" width="200" height="34" rx="8"/><text class="gt" x="110" y="132">golden MeshOut_*_mesh.csv</text>
+  <path class="gf" d="M70,74 L70,108"/>
+  <text class="gt" x="300" y="132" style="text-anchor:start">↑ VS 输出逐分量对比，不符则记 Error:</text>
+</svg>
+<div class="legend">蓝实线 = 管线数据流；绿虚线 = VS 输出与 golden 的验证对比</div>
+</div>
+<h3>输入从哪来</h3>
+<p>输入是 <b>RenderDoc / 3Dmigoto 抓帧 dump</b>，打包成 <code>Cases/*.zip</code>。每个 zip 解压后是一组松散文件：</p>
+<table>
+  <tr><th>文件</th><th>作用</th></tr>
+  <tr><td class="mono">VS_shader.hlsl / PS_shader.hlsl</td><td>着色器源码（<code>main()</code> 用带语义的参数声明输入输出）</td></tr>
+  <tr><td class="mono">*_input_output_signature.csv</td><td>参数 ↔ 寄存器槽位映射</td></tr>
+  <tr><td class="mono">ia_vertex_data.csv + 二进制 VB/IB</td><td>输入装配阶段的顶点 / 索引数据</td></tr>
+  <tr><td class="mono">*_constant_buffers.csv + constant_*.bin</td><td>常量缓冲区（文本布局 + 二进制精确值）</td></tr>
+  <tr><td class="mono">pipeline_state.csv</td><td>光栅化 / 混合 / 深度模板状态 + 图元拓扑</td></tr>
+  <tr><td class="mono">output_merger.csv + pre_draw_ds_res_*.raw</td><td>输出合并阶段 RTV/DSV 布局与 draw 前深度模板内容</td></tr>
+  <tr><td class="mono">MeshOut_*_mesh.csv</td><td>golden VS 输出（验证基准）</td></tr>
+  <tr><td class="mono">.img / BMP 纹理</td><td><code>Texture2D.Sample(...)</code> 的后备数据</td></tr>
+</table>
+<h3>怎么运行 · 模块构成</h3>
+<p>唯一入口是一个 JSON 配置：<code>python render.py ./Cases/Default.json</code>。<code>render.py</code> 是编排器，在 zip 工作流（当前主路径）与 legacy struct 工作流（旧配置兼容）间分支。<b>零第三方依赖</b>——只用标准库，外加可选的 <code>tkinter</code>（网格查看器）。</p>
+<table>
+  <tr><th>模块</th><th>职责</th></tr>
+  <tr><td class="mono">hlsl_interpreter.py（~3300 行，核心）</td><td>解析 HLSL（cbuffer/struct/函数/纹理采样器绑定），遍历语句、求值表达式</td></tr>
+  <tr><td class="mono">hlsl_syntax_tree.py</td><td>手写递归下降表达式解析器，产出 <code>SyntaxTreeNode</code> 树；运算符优先级表在此</td></tr>
+  <tr><td class="mono">rasterizer.py</td><td>按图元拓扑光栅化；边函数 + 透视正确重心插值；视口变换与剔除</td></tr>
+  <tr><td class="mono">output_merger.py</td><td>深度 / 模板测试，支持 early-Z / late-Z</td></tr>
+  <tr><td class="mono">texture.py</td><td>纹理解析、mipmap、采样与寻址模式</td></tr>
+  <tr><td class="mono">pixel.py / d3d.py / mesh_view.py</td><td>像素交换记录 / D3D 枚举常量 / 可选网格查看器</td></tr>
+</table>
+<div class="callout green">
+<b>正确性如何保证</b>：项目没有传统单元测试，靠两条防线。① <b>verify-by-log</b>：跑管线 → grep <code>output.log</code> 里的 <code>Error:</code> 行（VS-vs-golden 分量级不符）→ 迭代到无错；<code>[STMT]</code> / <code>[BINARY OP]</code> 轨迹是调试主面。② <b>数据驱动回归套件</b>：<code>run_regression.py</code> 逐个 headless 跑 <code>regression_test_zip_files.csv</code> 列出的 capture，三条判据（干净退出、无 <code>Error:</code>、<code>Total PASSED rows: X/X</code>）全满足才算过，目前覆盖 <b>123 个真机 case</b>，是每次改动的提交闸门。本手册后续各章即围绕"如何与 AI 协作、在这样一个无单测、靠真机 golden 验证的解释器项目上持续修 bug"展开。
+</div>
 
 <!-- Q1 -->
 <h2 id="q1">1 · 如何给 AI 提供提示词</h2>
