@@ -2597,9 +2597,34 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+docs: re-triage Dump/ 7-class status (step 155, audit only — no interpreter change).
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step155-retriage-7class-status.md`。纯审计步，未改解释器代码。
+
+复跑 `triage_dump.py --vs-only`（86 例失败重新归类）。**各类 原始→现 Dump 数**：
+
+| 类 | 原始 | 现 | 状态 |
+|----|------|----|------|
+| A 超时 | 45 | **2** | 大幅修复（vs_only 解掉 43）；残 2=OldWorld 20 万顶点，0 个 `Error:`，纯性能非正确性 |
+| B 无 golden | 16 | **16** | 结构性不可修（无可比网格/0 顶点）|
+| C TombRaider 矩阵选择子 | 37 | **37** | 出界（反编译丢选择子，需反汇编寄存器级 golden）|
+| D Octopath 解码 | 18 | **9** | 部分修复（fbf1313 转 PASS 删 10）；残 9 深层子 bug 可修 |
+| E witcher 切线 | 7 | **10** | 已根因定位（step 153/154）；残因=Texture2DArray 采样缺口（两解释器共有，非反编译）|
+| F1 精度 | 2 | **2** | sekiro2 3207/9493 均 43329/45576，diff 略超 0.005 容差 |
+| F2 其它 | 9 | **10** | 混合；首推 Nobu586 VS 全 0（cbuffer 未加载）|
+
+计 2+16+37+9+10+2+10 = **86** ✓。核验：OldWorld 超时日志 `Loaded 203328 vertices` + 0 `Error:`（正确但慢）；
+无 golden 案例确为「无 golden mesh / 0 顶点执行」。
+
+**答「还有几类没修」**：7 类无一在 Dump 内清零，按可修性分三档——
+①**结构性不可修（B 16 + C 37 = 53 例）**：靠解释 HLSL 源 + 仅 VS 输出 golden 无解；
+②**已基本关闭（A）**：vs_only 解 43/45，残 2 仅缺性能优化；
+③**仍需写代码修的 4 类（~31 例）**：D(9)、E(10)、F1(2)、F2(10)。
+**真正待修 = D/E/F1/F2 四类**；A 仅差性能；B/C 当前架构不可修。
+优先级建议：① E 类 Texture2DArray 切片采样（解释器+DXBC VM 双收益）；② F2 Nobu586 cbuffer 加载；
+③ D 蒙皮/溢出收尾；④ 给 C(TombRaider) 上 `dxbc_diff` 寄存器级 golden；⑤ F1 统一容差。
 
 # 156
 ## Prompts
