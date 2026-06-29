@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 113 — Load textures from raw .img data (format-aware) instead of BMP</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step113-raw-img-texture-loading</span></div>
+<div class="wrap">
+<h1>Step 113 — Load textures from raw .img data (format-aware) instead of BMP</h1>
+<h2>Task</h2>
+<p>The case zips now ship texture data as <b>raw <code>.img</code> files</b> (alongside the old<br><code>.bmp</code> previews). Change texture loading to use the raw <code>.img</code> data, decoding it<br>according to each texture's DXGI <b>format</b> (from <code>texture_params.csv</code>).</p>
+<h2>1. Investigation</h2>
+<p>The zips now contain, per mip/array slice, both<br><code>&lt;Stage&gt;_slot_&lt;slot&gt;_res_&lt;resid&gt;_mip&lt;m&gt;_arr0.bmp</code> <b>and</b> <code>…_mip&lt;m&gt;_arr0.img</code>.<br>The <code>.img</code> is the raw, untransformed texel dump; the <code>.bmp</code> is RenderDoc's<br>8-bit-per-channel preview.</p>
+<p>Texture formats present across the cases (<code>texture_params.csv</code> <code>Format</code> column):</p>
+<table>
+<tr><th>Format</th><th>Where</th><th>Notes</th></tr>
+<tr><td><code>R8G8B8A8_UNORM</code></td><td>Collision PS, witcher PS slot1/2</td><td>uncompressed, 4 B/texel</td></tr>
+<tr><td><code>R32G32B32A32_FLOAT</code></td><td>witcher3 event1399 VS t1</td><td>uncompressed, 16 B/texel</td></tr>
+<tr><td><code>R0G0B0A0_UNORM</code></td><td>witcher3 event1433/1450 PS slot0</td><td><b>block-compressed</b> (16 B/block → BC7; RenderDoc shows 0-bit channels)</td></tr>
+</table>
+<p>Two findings that shaped the design:</p>
+<ul>
+<li><b>R8G8B8A8 <code>.img</code> vs BMP differ by an R/B swap.</b> For event28 PS t0, the raw <code>.img</code> bytes at texel (0,0) are <code>(8,10,11,255)</code> = R,G,B,A per the format, while the existing BMP path decoded them as <code>(11,10,8,255)</code> (R/B swapped). The raw <code>.img</code> is authoritative — using it fixes a latent channel swap.</li>
+<li><b><code>R0G0B0A0_UNORM</code> is BC7, not BC3.</b> mip0 of the 128×256 texture is 32768 B = 16 B/block. A trial BC3 decode produced nonsensical alpha, so the block format is BC7 (also 16 B/block). BC7 decoding is large/complex and these are PS-only (non-gating) textures, so raw decode is deferred and the loader falls back to the captured <code>.bmp</code> (RenderDoc's correct decode) for block-compressed formats.</li>
+</ul>
+<h2>2. Implementation</h2>
+<p><code>texture.py</code>:</p>
+<ul>
+<li><code>TextureDesc</code> gains <code>FormatStr</code> (raw DXGI format name).</li>
+<li>New <code>_decode_raw_texels(data, fmt, w, h)</code>: decodes uncompressed formats from a <code>_FMT_SPECS</code> table (component type × channel order) into the existing top-left-origin RGBA-float grid. Supports unorm8/snorm8/unorm16/float16/ float32 and RGBA/BGRA/BGRX/RG/R/A channel orders. Returns <code>None</code> for unsupported (block-compressed) formats.</li>
+<li><code>_load_img_pixels</code> reads a <code>.img</code> and decodes it; <code>_load_level_pixels</code> routes <code>.img → raw decode</code>, falling back to the <b>sibling <code>.bmp</code></b> when the raw format is unsupported. <code>_load_mip_levels</code> computes each level's dimensions by halving the base (ViewFirstMip = 0 for all captures) and decodes per level.</li>
+<li>Raw <code>.img</code> is row-major top-left origin (no vertical flip, unlike BMP).</li>
+</ul>
+<p><code>render.py</code>:</p>
+<ul>
+<li><code>_collect_mip_paths</code> now prefers <code>.img</code> per mip level, falling back to <code>.bmp</code>.</li>
+<li><code>_load_stage_textures</code> passes the <code>Format</code> string into <code>TextureDesc</code>.</li>
+</ul>
+<h2>3. Verification</h2>
+<pre><code># Collision event28 PS t0 (R8G8B8A8_UNORM) — raw .img, correct channel order
+slot0 (0,0) decoded RGBA: [0.0314, 0.0392, 0.0431, 1.0]   (== 8,10,11 / 255)
+
+# event1433 PS slot0 (R0G0B0A0 / BC7) → falls back to sibling .bmp  (ok)
+# event1433 PS slot1/2 (R8G8B8A8) → raw .img  (ok)
+
+# event1399 VS t1 (R32G32B32A32_FLOAT) — now EXACT floats from .img:
+t1 texel(0,0) RGBA: [0.5549, 0.0959, 1.3417, 1.0]   # values &gt; 1.0, impossible in the 8-bit BMP</code></pre>
+<p>Regression suite: <b>14/14 passed</b> — no gating regression (PS-color changes are<br>reported as non-gating <code>Error [PixelDiff]</code>, and VS-stage validation is<br>unaffected for every passing case).</p>
+<h2>4. Side effect: event1399 data limitation lifted</h2>
+<p>Step110 documented event1399 as blocked because its <code>t1</code> SRV<br>(<code>R32G32B32A32_FLOAT</code>) was only dumped as a lossy 8-bit BMP. The capture now<br>ships <code>VS_slot_1_res_113813_mip0_arr0.img</code> (1296 B = 81×16) and the loader reads<br>the exact floats. The remaining piece to fully pass event1399 is interpreter<br>support for <b><code>Texture2D.Load</code></b> in the VS stage (integer texel fetch); the data<br>is no longer the blocker.</p>
+<h2>5. Commit</h2>
+<p>Committed <code>texture.py</code> + <code>render.py</code> + this session doc.</p>
+</div></body></html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 105 — Golden VS-mesh column order: SV_Position is dumped first (witcher3_countryside_event907)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step105-golden-mesh-sv-position-first-column-order</span></div>
+<div class="wrap">
+<h1>Step 105 — Golden VS-mesh column order: SV_Position is dumped first (witcher3_countryside_event907)</h1>
+<h2>Goal</h2>
+<p>Second case in the witcher3_countryside loop: <code>witcher3_countryside_event907.zip</code>.<br>Run, find/fix errors, keep regression green, commit, document.</p>
+<h2>1. Symptom</h2>
+<pre><code>Total PASSED rows: 0/13680
+Error: 82080 "Error:" lines</code></pre>
+<p>Sample (row 0):</p>
+<pre><code>Error: Row 0 TexCoord[0]:   output=0.000000  golden=-0.838130
+Error: Row 0 TexCoord[1]:   output=0.000000  golden=-0.901420
+Error: Row 0 sv_position[0]: output=-0.838269 golden=0.484680
+Error: Row 0 sv_position[1]: output=-0.901458 golden=1.000000
+Error: Row 0 sv_position[2]: output=0.484790  golden=0.000000
+Error: Row 0 sv_position[3]: output=1.000000  golden=0.000000</code></pre>
+<p>Yet the depth comparison <b>matched 1513/1519</b> (~99%). A genuinely wrong<br>SV_Position cannot match the golden depth buffer — so the VS output was not<br>actually wrong. Something about the <i>comparison</i> was off.</p>
+<h2>2. Root-cause investigation</h2>
+<p>This shader declares its outputs as <code>out float2 o0 : TEXCOORD0</code> <b>then</b><br><code>out float4 o1 : SV_Position0</code>, and the body literally sets <code>o0.xy = float2(0,0)</code><br>— so our <code>TexCoord = (0,0)</code> is correct, and our <code>SV_Position</code> is correct (it<br>reproduces the golden depth at the right screen pixels).</p>
+<p>The golden <code>*_vs_mesh.csv</code>:</p>
+<pre><code>header: VTX,IDX,TEXCOORD.x,TEXCOORD.y,SV_Position.x,SV_Position.y,SV_Position.z,SV_Position.w
+row 0 : 0,2551,-0.83813,-0.90142,0.48468,1.00000,0.00000,0.00000</code></pre>
+<p>Our correct VS output row 0: <code>SV_Position=(-0.838,-0.901,0.485,1.0)</code>,<br><code>TexCoord=(0,0)</code>. So the golden <b>data</b> columns are:</p>
+<pre><code>[-0.838, -0.901, 0.485, 1.0, 0.0, 0.0]  ==  [SV_Position.xyzw, TexCoord.xy]</code></pre>
+<p>but the <b>header</b> labels them <code>[TEXCOORD.xy, SV_Position.xyzw]</code>.</p>
+<p><b>Root cause:</b> RenderDoc's VS-output mesh export lays the data out with the<br><b>SV_Position attribute first</b>, then the remaining outputs in declared order —<br>even though the column header names follow declaration order. When SV_Position<br>is <i>not</i> output register 0, the header labels are shifted relative to the data.<br><code>load_vs_golden_from_mesh_csv</code> mapped golden columns purely by header name, so<br>it read the (position) data under the <code>TEXCOORD.*</code> labels as TexCoord and the<br>(next) data under <code>SV_Position.*</code> as position → everything mis-compared.</p>
+<p>The Collision suite never hit this because its SV_Position is already output<br>register 0, so header order == data order.</p>
+<h2>3. Fix</h2>
+<p>Rewrote <code>load_vs_golden_from_mesh_csv</code> to assign the physical component columns<br><b>positionally</b> in <code>[SV_Position, then remaining outputs in declared order]</code>,<br>instead of trusting header labels:</p>
+<ol>
+<li>Collect physical component-column indices (those ending in <code>.x/.y/.z/.w</code>).</li>
+<li>Reorder <code>vs_output_params</code> with the SV_Position param first.</li>
+<li>Walk the params, giving each a contiguous slice of physical columns sized by its type's component count.</li>
+</ol>
+<p>When SV_Position is already first (Collision suite), this produces the exact<br>same column assignment as before — a no-op. For event907 it correctly maps the<br>first 4 data columns to SV_Position and the last 2 to TexCoord.</p>
+<h2>4. Result for event907</h2>
+<pre><code>Total PASSED rows: 13680/13680
+0 lines starting with "Error:"
+Depth: golden 1519 | matched 1513 | missing 6 | extra 3</code></pre>
+<p>Residual: 6 missing + 3 extra edge-pixel <code>Error [DepthDiff]</code> (the step102<br>sub-pixel coverage limitation, non-gating).</p>
+<h2>5. Regression</h2>
+<p>Added <code>witcher3_countryside_event907.zip</code> to the suite. Result:</p>
+<pre><code>8/8 passed   (6 Collision + event895 + event907)</code></pre>
+<p>No regression — the positional mapping is identical to the previous<br>header-based mapping for every case whose SV_Position is output register 0.</p>
+<h2>6. Commit</h2>
+<p>Committed interpreter change + this session doc.</p>
+</div></body></html>

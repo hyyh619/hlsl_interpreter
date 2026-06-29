@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 90 — Fix MeshView macOS Threading (Continued)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step90-fix-meshview-macos-threading-v2</span></div>
+<div class="wrap">
+<h1>Step 90 — Fix MeshView macOS Threading (Continued)</h1>
+<h2>Problem</h2>
+<p>After step 89's fix (running tkinter on the main thread via <code>set_main_thread_root()</code>), MeshView still crashed on macOS when <code>mesh_view_enabled = true</code>.</p>
+<h2>Root Cause Analysis</h2>
+<p>Step 89 correctly moved <code>tk.Tk()</code> and <code>mainloop()</code> to the main thread via the macOS-specific path in <code>render.py</code>. However, three categories of tkinter calls were <b>still being made from the background pipeline thread</b>:</p>
+<h3>Crash 1 — <code>_start_gui_thread</code> (immediate crash)</h3>
+<pre><code># mesh_view.py:168-170  (old code)
+self._root = _main_thread_root
+self._root.title(self.title)       # ← background thread! Cocoa crash
+self._root.geometry("1700x700")    # ← background thread! Cocoa crash
+self._root.after(0, self._setup_ui_macos)</code></pre>
+<p><code>title()</code> and <code>geometry()</code> are direct Cocoa window operations. On macOS, any direct Tk/Cocoa call from a non-main thread triggers an NSException or Python runtime crash.</p>
+<h3>Crash 2 — <code>show()</code> (deiconify from background thread)</h3>
+<pre><code># mesh_view.py:1843  (old code)
+self._root.deiconify()   # ← background thread!</code></pre>
+<p><code>deiconify()</code> is called from <code>hlsl_interpreter.display_input_mesh()</code>, <code>display_output_mesh()</code>, and from <code>_execute_pipeline</code> in render.py — all running in the background pipeline thread on macOS.</p>
+<h3>Crash 3 — <code>_draw_*_pixels()</code> (PhotoImage + canvas ops from background thread)</h3>
+<pre><code>vs_interp._mesh_view._draw_rasterizer_pixels()    # ← background thread
+vs_interp._mesh_view._draw_pixel_shader_pixels()  # ← background thread
+vs_interp._mesh_view._draw_output_merger_pixels() # ← background thread</code></pre>
+<p>These call <code>_draw_pixels_image()</code> which does:</p>
+<ul>
+<li><code>canvas.delete("all")</code></li>
+<li><code>canvas.winfo_width()</code></li>
+<li><code>tk.PhotoImage(width=w, height=h)</code></li>
+<li><code>canvas.create_image(...)</code></li>
+</ul>
+<p>All of these are unsafe from a non-main thread on macOS Cocoa.</p>
+<h2>Fix</h2>
+<h3><code>mesh_view.py</code></h3>
+<p><b>1. <code>_start_gui_thread</code></b> — remove <code>title()</code> / <code>geometry()</code> calls; only do the safe pointer assignment and <code>after()</code> queue:</p>
+<pre><code>def _start_gui_thread(self):
+    global _main_thread_root
+    if _main_thread_root is not None:
+        self._root = _main_thread_root   # pointer assignment — safe from any thread
+        self._root.after(0, self._setup_ui_macos)  # queue work for main thread
+    else:
+        self._gui_thread = threading.Thread(target=self._gui_thread_run, daemon=True)
+        self._gui_thread.start()</code></pre>
+<p><b>2. <code>_setup_ui_macos</code></b> — now owns the title/geometry too:</p>
+<pre><code>def _setup_ui_macos(self):
+    """Runs on the main thread via after()."""
+    self._root.title(self.title)
+    self._root.geometry("1700x700")
+    self._setup_ui()
+    self._gui_ready_event.set()</code></pre>
+<p><b>3. <code>_schedule_on_main</code> (new helper)</b>:</p>
+<pre><code>def _schedule_on_main(self, func):
+    global _main_thread_root
+    if self._root is not None and self._root is _main_thread_root:
+        self._root.after(0, func)
+    else:
+        func()</code></pre>
+<p><b>4. <code>show()</code></b> — replace direct <code>deiconify()</code> with <code>_schedule_on_main</code>:</p>
+<pre><code>self._schedule_on_main(self._root.deiconify)
+self._schedule_draw()</code></pre>
+<p><b>5. <code>_draw_*_pixels()</code></b> — wrap with <code>_schedule_on_main</code>:</p>
+<pre><code>def _draw_rasterizer_pixels(self):
+    self._schedule_on_main(lambda: self._draw_pixels_image(
+        self._rasterizer_canvas, self._rasterizer_pixels,
+        self._rasterizer_color_fn, 'rasterizer'))
+
+def _draw_pixel_shader_pixels(self):
+    self._schedule_on_main(lambda: self._draw_pixels_image(
+        self._pixel_shader_canvas, self._rasterizer_pixels,
+        self._shaded_color_fn, 'pixel_shader'))
+
+def _draw_output_merger_pixels(self):
+    def _do():
+        pixels = self._output_merger_pixels if self._output_merger_pixels else self._rasterizer_pixels
+        self._draw_pixels_image(self._output_merger_canvas, pixels,
+                                self._shaded_color_fn, 'output_merger')
+    self._schedule_on_main(_do)</code></pre>
+<h2>Why <code>after()</code> is safe from a background thread</h2>
+<p><code>tk.after()</code> posts a timer event to Tcl's event queue via <code>Tcl_CreateTimerHandler</code>, which is protected by Tcl's internal mutex. It does <b>not</b> make direct Cocoa/AppKit calls; it simply queues a callback for the event loop on the main thread to process. This is the standard pattern for thread-safe tkinter communication.</p>
+<h2>Non-macOS path unchanged</h2>
+<p>On Windows/Linux, <code>_main_thread_root</code> is None, so <code>_schedule_on_main</code> calls the function directly — identical to previous behavior. No regression risk on those platforms.</p>
+<h2>Result</h2>
+<ul>
+<li>All three crash sites fixed.</li>
+<li>Regression suite: 46/46 PASS.</li>
+</ul>
+</div></body></html>

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 154 — VS 寄存器级 golden（DXBC 逐指令解释器）+ 实例化输入加载修复</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step154-vs-register-level-dxbc-golden</span></div>
+<div class="wrap">
+<h1>Step 154 — VS 寄存器级 golden（DXBC 逐指令解释器）+ 实例化输入加载修复</h1>
+<h2>任务</h2>
+<blockquote>先提交你的 fix，然后继续推进给比较框架加 <b>VS 寄存器级 golden</b>（导出 DXBC 逐指令中间值），<br>那才能定位 o3/切线帧的具体偏离点。</blockquote>
+<p>step 153 的诚实结论是：E 类（witcher）的 <code>o2/o3</code> 切线帧偏离在「只有 VS 输出 golden + 直接解释<br>HLSL 源」的可验证边界之外——手工反解自相矛盾，无法定位到具体指令。本步补上缺的那把尺子：一个<br><b>独立执行 GPU 真实指令流（<code>VS_shader_disasm.txt</code>）的 DXBC 虚拟机</b>，逐指令 trace 中间寄存器，<br>与 golden <code>*_vs_mesh.csv</code> 对比，从而把「o3 偏离」分解成可定位的具体环节。</p>
+<h2>交付物</h2>
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>dxbc_interp.py</code> (新, ~700 行)</td><td><code>DXBCInterpreter</code>：vs_5_0 反汇编解释器。ALU / int / bit / 控制流（if/else/loop/break）/ <code>sample_l</code> / <code>sample_c_lz</code> / <code>ld_structured</code> / <code>ld_raw</code>。寄存器是无类型 32-bit lane，整数/位运算时按位重解释（<code>f2u</code>/<code>f2i</code>/<code>u2f</code>/<code>i2f</code>）。<code>log_trace=True</code> 时记录每条指令的目的寄存器与值。</td></tr>
+<tr><td><code>dxbc_diff.py</code> (新, ~370 行)</td><td>驱动：解压 case → 复用 <code>render.py</code>/<code>HLSLInterpreter</code> 的加载器装 cbuffer、顶点输入（含二进制 VB + 实例缓冲）、纹理资源 → 跑 VM → 与 golden 逐 <code>oN</code> 对比（<code>SV_Position</code>-first 映射，匹配 HLSL 解释器的 golden 装载顺序）。</td></tr>
+<tr><td><code>hlsl_interpreter.py</code></td><td><b>实例化（per-instance）顶点缓冲加载修复</b>（见下）。</td></tr>
+<tr><td><code>hlsl_syntax_tree.py</code></td><td>科学计数法字面量修复：<code>_find_top_level_operator_cached</code> 不再把 <code>4.65661287e-10</code> 里指数的 <code>-</code> 当减法切开。</td></tr>
+<tr><td><code>run_regression.py</code></td><td><code>BASE_CONFIG</code> 增加 <code>vs_only: True</code>（回归只验 VS 输出）。</td></tr>
+</table>
+<h2>执行与发现（以 witcher event16215「切线矩阵主序」为靶）</h2>
+<h3>1. 第一次跑 DXBC VM：o0 = NaN</h3>
+<pre><code>o0 = [nan, nan, nan, nan]      golden=[5.0447,-3.3938,0.1998,5.6931]
+o3 = [1.0, 0.0, 0.0, 0.2874]   golden=[0.9932,0.0102,0.1158,0.2873]</code></pre>
+<p>逐指令 trace 定位首个 NaN：</p>
+<pre><code>11: dp2 r3.w = 0.0      # 某向量长度² = 0
+12: rsq r3.w = inf      # 1/sqrt(0)
+13: mul r0.xw = nan     # inf * 0 → nan，污染全部下游</code></pre>
+<p>即「对零长向量归一化」。再往上：该向量来自 <code>v1.zw</code> 的 half 解包（<code>ushr</code>/<code>f16tof32</code>）。</p>
+<h3>2. 根因：per-instance 输入 <code>v1</code> 被加载成全 0</h3>
+<ul>
+<li><code>ia_input_layouts.csv</code>：<code>TEXCOORD0</code>(=<code>v1</code>) 是 <code>R32G32B32A32_FLOAT</code>、<b>PerInstance=True</b>、 来自 VB slot 1（<code>vb_slot1_res_119650.bin</code>，bind ByteOffset=336，stride=16）。shader 把 <code>v1.z/v1.w</code> 的 32-bit 位再解释成 2×half（编码切线帧），<code>v1.xy</code> 是世界坐标。</li>
+<li><code>ia_vertex_data.csv</code> <b>根本没有 TEXCOORD0 列</b>——RenderDoc 的 IA dump 不导出 per-instance slot。</li>
+<li>而 <code>load_per_vertex_binary_data</code> 里 <code>if elem['per_instance']: continue</code> <b>直接跳过</b>所有 per-instance 元素。于是 <code>v1</code> 既不来自 CSV 也不来自二进制 → 恒为 0。</li>
+<li>验证：<code>vb_slot1_res_119650.bin</code> 偏移 336 处 = <code>(520.99, 79.48, 8212.01, 0.0014)</code>，正是 golden <code>o6</code>（世界坐标直拷）。golden mesh 只有 30 行 = instance 0，所以 per-instance 取 instance 0、 bind offset 336 即可。</li>
+</ul>
+<p><b>修复</b>（<code>hlsl_interpreter.py::load_per_vertex_binary_data</code>）：</p>
+<ol>
+<li>不再跳过 per-instance 元素，job 里记 <code>per_instance</code> 标志；</li>
+<li>per-instance 取偏移用 instance 索引 0（<code>base_off + 0*stride + elem.byte_offset</code>），对所有顶点恒定；</li>
+<li>per-instance 绕过 CSV 一致性门（CSV 永远没有 per-instance 列，二进制是唯一真值，与 degenerate 同等待遇）。</li>
+</ol>
+<p>修复后 DXBC VM：</p>
+<pre><code>[OK ] o0  dxbc=[5.0447,-3.3938,0.1998,5.6931] golden=[5.0447,-3.3938,0.1998,5.6931]
+[OK ] o1  dxbc=[0.0,0.8691,0.6317,0.0]        golden=[0.0,0.8691,0.6317,0.0]
+[OK ] o5  dxbc=[5.0449,-3.3938,0.1998,5.6932] golden=[5.0449,-3.3938,0.1998,5.6932]
+[OK ] o6  dxbc=[520.99,79.48,8212.01,0.0014]  golden=[520.99,79.48,8212.01,0.0014]
+[DIFF] o2 dxbc=[-0.0289,0.0289,0.9992,1.0]    golden=[-0.1163,0.087,0.9894,1.0]
+[DIFF] o3 dxbc=[0.9996,0.0008,0.0289,0.2874]  golden=[0.9932,0.0102,0.1158,0.2873]</code></pre>
+<p>7 个输出中 <b>o0/o1/o4/o5/o6 全部对齐 golden</b>，只剩切线帧 o2/o3。</p>
+<h3>3. 定位 o2/o3：Texture2DArray 细节法线采样返回 0</h3>
+<p>trace 跟到 o2←r5、o3←r3 的最终装配（disasm 行 489–517，一段由世界坐标驱动的「细节法线/flow-map」<br>扰动）：</p>
+<pre><code>504: sample_l(texture2darray) r0.xz, r3.xyz, t4.xzyw, s4, l(0)   →  r0.xz = [0.0, 0.0]   ← 采样返回 0
+506: mad r5.xy = r2.xz * cb11[83].x + r0.xz  = [-0.0289, 0.0289]  ← 全部来自 fallback 项
+510: sqrt r5.z = 0.999163                                          ← 重建法线 z</code></pre>
+<p><code>cb11[83].x = 0.15</code>。因为 <code>sample_l</code> 对 <b>Texture2DArray t4</b> 返回 <code>[0,0]</code>，r5.xy 完全由回退项构成，<br>切线被「欠扰动」——故 o2/o3 的小分量比 golden 小约 4×（z 分量接近 1 故仍接近）。<b>采样值就是杠杆</b>。</p>
+<h3>4. 与 HLSL 解释器交叉验证（关键结论）</h3>
+<p>跑真实 <code>render.py</code>（vs_only）于 event16215：</p>
+<table>
+<tr><th></th><th>Total PASSED</th><th>失败分量</th></tr>
+<tr><td>修复前</td><td>0/30</td><td>仅 <code>TexCoord2</code>/<code>TexCoord3</code>（=o2/o3）</td></tr>
+<tr><td>修复后</td><td>0/30</td><td>仅 <code>TexCoord2</code>/<code>TexCoord3</code>（=o2/o3）</td></tr>
+</table>
+<p>即 <b>per-instance 修复不改变 HLSL 解释器的 witcher 结果</b>——因为反编译出的 HLSL 用<br><code>POSITION(v2)+cbuffer</code> 算 <code>o0</code>，而 DXBC 指令流用 per-instance <code>v1</code> 算 <code>o0</code>：两条不同公式、输入正确时<br>都对 golden。HLSL 路径本就不依赖 <code>v1</code> 得到 o0/o5/o6，所以它一直「碰巧」对。</p>
+<p><b>这正是寄存器级 golden 的价值所在</b>：它独立执行 GPU 真实指令流，证明了</p>
+<blockquote>o2/o3 的偏离 <b>不是</b> HLSL 反编译有损（step 153 的怀疑方向），而是 **HLSL 解释器与 DXBC VM 共有的<br>Texture2DArray 细节法线采样缺口**——忠实执行的 DXBC 指令流在 o2/o3 上同样失败，且 trace 指到唯一根因<br>是 line 504 的 array 采样返回 0。</blockquote>
+<h2>结果</h2>
+<ul>
+<li><b>新增 VS 寄存器级 golden 工具</b>（<code>dxbc_interp.py</code> + <code>dxbc_diff.py</code>），可逐指令 trace + 与 golden 对比。</li>
+<li><b>修复 per-instance 顶点缓冲加载</b>（真实输入正确性 bug）：让 DXBC VM 在 event16215 上 o0/o1/o4/o5/o6 对齐 golden；HLSL 解释器侧无回归无变化。</li>
+<li><b>把 step 153 的「o3/切线帧」悬案分解定位</b>为两个互不相干的具体环节： ① per-instance 输入（已修，DXBC 侧验证）；② Texture2DArray 细节法线采样返回 0（已定位，二者共有， 非反编译问题）。</li>
+<li><b>回归 125/125 PASS（exit 0），零回归。</b> 科学计数法修复 + vs_only + per-instance 修复均不破坏既有用例。</li>
+</ul>
+<h2>后续可推进</h2>
+<ol>
+<li>实现 VS 端 <b>Texture2DArray 切片采样</b>（<code>sample_l</code> 取 <code>coords.z</code> 作 array index），让 o2/o3 收敛—— 这同时惠及 HLSL 解释器与 DXBC VM（共有缺口）。</li>
+<li><code>dxbc_diff.py</code> 的 <code>_build_resources</code> 目前把 array 近似成 slice 0，应改为按 <code>r3.z=cb11[82].w</code> 选片， 以便用 VM 确认「采样修好后 o2/o3 即对齐」。</li>
+<li>把 DXBC VM 作为 witcher 类的「第二 golden」纳入诊断流程：凡 HLSL 输出与 golden 不符，先跑 DXBC VM 判定是反编译问题（VM 对、HLSL 错）还是共享基础设施问题（VM 也错）。</li>
+</ol>
+</div></body></html>

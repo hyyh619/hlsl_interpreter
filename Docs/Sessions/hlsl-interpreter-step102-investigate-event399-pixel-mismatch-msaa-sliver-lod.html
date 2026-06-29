@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 102 — Investigate event399 output-merger pixel mismatches (MSAA / sub-pixel sliver LOD)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step102-investigate-event399-pixel-mismatch-msaa-sliver-lod</span></div>
+<div class="wrap">
+<h1>Step 102 — Investigate event399 output-merger pixel mismatches (MSAA / sub-pixel sliver LOD)</h1>
+<h2>Task</h2>
+<p><code>Collision-fix-constant-buffer-and-RdotV-zero_event399.zip</code> reports output-merger<br>color mismatches vs golden (<code>diff_ps_output_rt0.csv</code>): <b>150 mismatched / 2548</b><br>at tolerance 0.1 (72 at tol 0.15). Depth matches golden exactly on every<br>mismatched pixel; <code>missing=0, extra=0</code>. Analyze the whole pipeline and fix.</p>
+<h2>Method</h2>
+<p>Systematic debugging — root cause before any fix. Used the step-99 <code>debug_trace</code><br>facility (ps_pixels / texture_lod / derivatives) plus temporary fragment/VS dumps<br>(all removed afterward; <code>render.py</code> restored clean).</p>
+<h2>What was ruled OUT (with evidence)</h2>
+<table>
+<tr><th>Hypothesis</th><th>Verdict</th><th>Evidence</th></tr>
+<tr><td>step-101 rasterizer change caused it</td><td><b>No — it improved things</b></td><td>pre-101: 96 mismatched + 18 missing + 45 extra. post-101: 72 mismatched, 0 missing, 0 extra.</td></tr>
+<tr><td>Alpha blending</td><td><b>No</b></td><td><code>Blend Target[0]_Enable=False</code> in pipeline_state.csv.</td></tr>
+<tr><td>Overlapping / wrong depth-winner</td><td><b>No</b></td><td>each mismatched pixel has one rasterized fragment; its depth matches golden to 6 dp.</td></tr>
+<tr><td>Wrong vertex color</td><td><b>No</b></td><td>PS is <code>o0 = COLOR0 * Diffuse.Sample(uv)</code>; color interpolation verified.</td></tr>
+<tr><td>Wrong geometry (VS)</td><td><b>No</b></td><td>our VS <code>SV_POSITION</code> for the relevant verts matches the golden <code>vs_mesh.csv</code> to 5 dp.</td></tr>
+<tr><td><b>LOD computation bug</b></td><td><b>No — LOD is provably correct</b></td><td>hand-computed perspective-correct UV gradient of the triangle gives LOD <b>3.242</b>; the interpreter's quad derivative gives <b>3.245</b>. Identical.</td></tr>
+<tr><td>Mip=Point vs trilinear blend</td><td>doesn't fix</td><td><code>round(LOD)</code> makes several pixels worse.</td></tr>
+<tr><td>4× MSAA resolve</td><td><b>only 11/50</b></td><td>simulated D3D 4× sample pattern + per-sample depth + resolve-average.</td></tr>
+<tr><td>Global LOD bias</td><td>partial only</td><td>bias −0.7 → 72 drops to 40; cannot eliminate; physically unjustified.</td></tr>
+</table>
+<h2>Root cause (what the mismatches actually are)</h2>
+<p><code>pipeline_state.csv</code> has <b><code>Rasterizer,MultisampleEnable,True</code></b>. The mesh in this<br>region is <b>sub-pixel slivers</b> — e.g. prim221 is a ~2×4 px triangle whose three<br>UVs span ~27×36 texels of the 512² texture. Geometrically that is heavy<br>minification → LOD ≈ 3.24 → a dark, averaged-down mip. Our single-sample,<br>spec-correct pipeline produces exactly that.</p>
+<p>The golden RT0 is the GPU's <b>MSAA-resolved</b> image. Two distinct effects appear<br>in the 150 mismatched pixels, **neither of which a spec-correct single-sample<br>rasterizer reproduces**:</p>
+<ol>
+<li><b>Genuine MSAA edge coverage</b> (minority, e.g. (413,364)): golden is <i>darker</i> than our fragment because background / neighbouring-triangle samples average in. 4× resolve moves us toward golden here (0.417 → 0.193 vs golden 0.231).</li>
+</ol>
+<ol>
+<li><b>Sub-pixel sliver LOD</b> (majority, e.g. (367,352), (367,354)): golden is <i>brighter</i> than <b>every</b> triangle that covers the pixel, at any coverage. Per-sample enumeration at (367,352): the only covering triangles give 0.075 / 0.297 / 0.558 — a 4× resolve ≈ 0.43, but golden = <b>0.667</b>. At (367,354) all four samples are nearest prim221 (0.321) so resolve = single-sample = 0.321, yet golden = 0.647. The only value matching golden is the sliver sampled at <b>low LOD (mip0–2 ≈ 0.70)</b> — i.e. the GPU used a far lower LOD for these sub-pixel slivers than the triangle's analytic UV gradient dictates.</li>
+</ol>
+<p>Effect (2) is mathematically inconsistent with the triangle's own UV mapping, so<br>it is not a bug in our LOD math. It reflects **hardware-specific LOD/coverage<br>behaviour for sub-pixel primitives under MSAA** (how a particular GPU computes<br>derivatives for quads whose helper lanes lie outside a sliver, and how coverage<br>interacts with the resolve). This is not derivable from the D3D rasterization<br>spec and is the classic reason reference rasterizers do not match GPU edge AA<br>pixel-for-pixel.</p>
+<h2>Why "implement full MSAA" does not close this</h2>
+<p>A correct 4× MSAA implementation:</p>
+<ul>
+<li>helps the effect-(1) edge pixels, but</li>
+<li>cannot raise effect-(2) pixels above the brightest covering triangle, and</li>
+<li><i>regresses</i> some pixels (e.g. (367,354): single-sample already equals the resolve; (367,352): resolve 0.43 is farther from golden 0.667 than our current 0.518).</li>
+</ul>
+<p>The full 4× simulation confirmed this: <b>11/50</b> reproduced, with regressions.<br>The capture ships no per-sample buffer, so an MSAA implementation cannot even be<br>validated beyond the resolved image.</p>
+<h2>Outcome</h2>
+<p>No spec-compliant change fixes the bulk of these 150 pixels — they are inherent<br>MSAA edge-antialiasing + GPU-specific sub-pixel-sliver LOD differences (2.8–5.9%<br>of pixels, all at sliver edges, all near tolerance). Recommended handling:<br>document as a known limitation; optionally implement MSAA as a pipeline-feature<br>for the edge pixels it genuinely helps, with eyes open that it will not close<br>event399. Pending user direction (see conversation) before writing pipeline code.</p>
+<h2>Artifacts</h2>
+<p>Investigation only — no source changes committed. <code>render.py</code> instrumentation and<br>all temp files (<code>vs_dump.json</code>, <code>frag_all.csv</code>, trace configs/logs) removed.</p>
+</div></body></html>

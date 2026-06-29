@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hlsl-step94：修复 C 类（sekiro 实例索引/struct-in-cbuffer）与 F 类（派生 quad 崩溃）</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash</span></div>
+<div class="wrap">
+<h1>hlsl-step94：修复 C 类（sekiro 实例索引/struct-in-cbuffer）与 F 类（派生 quad 崩溃）</h1>
+<h2>目标</h2>
+<p>修复 step93 分类文档里的两类失败：</p>
+<ul>
+<li><b>C 类（53 个 sekiro）</b>：ByteAddressBuffer 实例索引未解析 + struct-in-cbuffer 命名成员访问缺失 + float4x3 矩阵布局错误，导致 sv_position 全错。</li>
+<li><b>F 类（2 个崩溃）</b>：派生（ddx/ddy）邻居 lane 重执行时 <code>list * float</code> TypeError 崩溃。</li>
+</ul>
+<h2>诊断（关键证据）</h2>
+<p>以 <code>sekiro2_event2282</code>（C 类）与 <code>sekiro2_event13516</code>（F 类）为样本，结合 <code>VS_shader_disasm.txt</code><br>反汇编逐条核对：</p>
+<ol>
+<li><b>F 类崩溃根因 = C 类同源</b>：崩溃语句是 <code>r3.xyz = VC_InstanceData[r0.w].ShLightMask.xxx * FC_DirLightCol_0.xyz</code>。 <code>VC_InstanceData</code> 是 struct-in-cbuffer 数组，但 step92 的 <code>__struct__</code> 只支持 <code>_mRC</code> 寄存器式 访问，<b>不支持命名成员</b>（<code>.ShLightMask</code>）。于是 <code>VC_InstanceData[i].ShLightMask.xxx</code> 返回了整个 元素（一个矩阵/嵌套 list），<code>矩阵 * float3</code> 抛 <code>can't multiply sequence by non-int</code>。</li>
+</ol>
+<ol>
+<li><b>ByteAddressBuffer 实例索引</b>：反汇编 <code>ld_raw(rawbuffer) r0.x, r0.x, g_InstanceIndexBuffer</code> 在 HLSL 里被 3Dmigoto 标为 "No code for instruction" 注释掉。t20 缓冲 <code>buffer_38386.bin</code> 内容是恒等表 <code>[0,1,2,3,…]</code>， <code>r0.y = r0.x*17</code>（struct 元素步长 17 寄存器），<code>cb4[r0.y+4]</code> = <code>matricesData</code> 成员。</li>
+</ol>
+<ol>
+<li><b>float4x3 行/列主序</b>：反汇编 <code>dp4 r2.x, v0, cb5[r0.x+0]</code> 直接用寄存器 0 与位置点乘。 HLSL 写作 <code>VC_aObjMatrix[i]._m00_m10_m20_m30</code>。<code>VC_aObjMatrix</code> 是默认 <b>列主序</b> <code>float4x3</code>， 3 个寄存器 = 3 列。而旧的二进制加载对 float4x3 <b>存原始寄存器不转置</b>，<code>_mRC</code> 访问器（<code>obj[r][c]</code>， 假定寄存器=行）取到的是错误转置。float4x4 早已转置成行主序逻辑存储，float4x3 被遗漏。</li>
+</ol>
+<h2>修复内容</h2>
+<h3>修复 1 — struct-in-cbuffer 命名成员访问（解决 F 类 + C 类前置）</h3>
+<ul>
+<li><code>parse_cbuffer._consume_struct</code> 现在按 HLSL cbuffer packing 规则计算每个成员的布局 <code>(name, type, reg_off, comp_off, arr_size)</code>，存入 <code>FieldDefinition.struct_members</code>。 （sekiro <code>cbInstanceData</code>：matricesData@reg4、ShLightMask@reg10、元素步长 17 寄存器，均与反汇编吻合。）</li>
+<li>二进制加载额外保存每个元素的整数寄存器行 <code>struct_int_data</code>，供 <code>uint4 matricesData</code> 等整数成员 取精确位（用于索引）。</li>
+<li>新增 <code>_struct_member_access(field, elem_idx, rest)</code>：解析 <code>NAME[i].member[.swizzle]</code> / <code>NAME[i].member[k]</code>，按成员布局从浮点或整数寄存器行切片；遇 <code>_mRC</code>（非命名成员）则回退到原有 矩阵访问器。</li>
+<li>索引兼容两种约定：3Dmigoto 有时把下标预乘元素步长（<code>cb4[idx*17]</code>），故越界索引按 <code>idx // elem_regs</code> 回退到元素号（element 0 仍正确）。</li>
+</ul>
+<h3>修复 2 — ByteAddressBuffer 原始加载（C 类）</h3>
+<ul>
+<li>解析 <code>ByteAddressBuffer NAME : register(tN);</code> → <code>self.byte_address_buffers</code>。</li>
+<li><code>load_typed_buffer_data</code> 复用 <code>buffer_params.csv</code> 一并加载其原始字节。</li>
+<li><code>_byte_address_load(bab, byte_addr, ncomp)</code> 按字节地址读 uint32。</li>
+<li><code>execute_statement</code> 识别被注释的裸指令 <code>ld_raw[_indexable](...) DST, ADDR, tN.xxxx</code>，执行 <code>DST = bufferN.Load(ADDR)</code>；该行无 <code>;</code>， 语句切分会把下一条粘上来，故执行完原始加载后再执行粘连的尾部语句。</li>
+</ul>
+<h3>修复 3 — float4x3 列主序转置（C 类）</h3>
+<p>二进制加载（数组分支与非数组分支）对 <code>float4x3</code> 把 3 个列寄存器转置成行主序逻辑 <code>4 行 × 3 列</code>，<br>与 float4x4 的处理一致。访问器 <code>_mRC</code> 与 <code>mul()</code> 因此对所有矩阵统一按行主序逻辑读取，TombRaider<br>（行主序 float4x4，struct 内存原始寄存器）与 Frame-frame9222（float4x4 数组）不受影响。</p>
+<h3>修复 4 — 二元运算防御性护栏（F 类兜底）</h3>
+<p><code>execute_binary_op</code> 对 <code>+ - * /</code>：当某操作数是嵌套 list（矩阵出现在期望向量处）时，塌缩到首行，<br>退化为有限的错误值而非抛异常中断整条 draw。</p>
+<h2>结果</h2>
+<ul>
+<li><b>F 类</b>：<code>sekiro2_event13516</code>、<code>sekiro4_event20560</code> 不再崩溃（命名成员访问返回正确类型）。</li>
+<li><b>C 类</b>：<code>sekiro2_event2282</code> 的 sv_position 等输出 <b>3/3 通过</b>（ByteAddressBuffer + struct 命名成员 + float4x3 转置三者合力）。</li>
+<li>回归：117/117 保持通过（float4x3 转置只改 float4x3，未触及 float4x4/访问器，TombRaider/ Frame/witcher 不变）。</li>
+</ul>
+<p>（更详细的逐 case sekiro 通过数见提交说明与回归日志。）</p>
+</div></body></html>

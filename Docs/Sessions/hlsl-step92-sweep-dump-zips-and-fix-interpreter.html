@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hlsl-step92: Sweep Dump/ zips — Fix interpreter, expand regression suite</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step92-sweep-dump-zips-and-fix-interpreter</span></div>
+<div class="wrap">
+<h1>hlsl-step92: Sweep Dump/ zips — Fix interpreter, expand regression suite</h1>
+<h2>Goal</h2>
+<p>Sweep all zips in <code>Dump/</code> through the interpreter, fix any issues found, add passing cases to<br><code>Cases/regression_test_zip_files.csv</code>, and commit each fix.</p>
+<hr>
+<h2>Fixes Applied</h2>
+<h3>Fix 1 — <code>const float4 icb[]</code> inline constant buffer in function body</h3>
+<p><b>Symptom</b>: <code>witcher3_countryside_event22420</code> (and many other event22xxx) produced all-zero VS<br>output. The shader used <code>const float4 icb[] = { {…}, {…}, … }</code> as a local array (3Dmigoto's<br>decompiled form of inline constant buffers). <code>execute_statement</code> did not recognise this syntax and<br>fell through to variable-declaration handling, which also didn't match (the <code>const</code> keyword blocked<br>the type-name regex), so the array was never populated.</p>
+<p><b>Root cause</b>: <code>execute_statement</code> had no branch for <code>const &lt;type&gt; &lt;name&gt;[] = { … }</code>.</p>
+<p><b>Fix</b> (added before the <code>variable_declaration</code> check in <code>execute_statement</code>):</p>
+<pre><code>if stmt.startswith('const ') and '[' in stmt and '{' in stmt and '=' in stmt:
+    m_icb = re.match(r'^const\s+\w+\s+(\w+)\s*\[\s*\d*\s*\]\s*=\s*(\{.+\})\s*;?', stmt, re.DOTALL)
+    if m_icb:
+        arr_name, arr_body = m_icb.group(1), m_icb.group(2)
+        # parse nested { v0, v1, v2, v3 } elements
+        elements = []
+        depth = 0; elem_start = None
+        for ki, kc in enumerate(arr_body):
+            if kc == '{':
+                depth += 1
+                if depth == 2: elem_start = ki + 1
+            elif kc == '}':
+                depth -= 1
+                if depth == 1 and elem_start is not None:
+                    raw = arr_body[elem_start:ki]
+                    vals = [float(p.strip()) for p in raw.split(',') if p.strip()]
+                    elements.append(vals if len(vals) &gt; 1 else (vals[0] if vals else 0.0))
+                    elem_start = None
+        if elements:
+            local_vars[arr_name] = elements
+        return None</code></pre>
+<p><b>Result</b>: <code>witcher3_countryside_event22420</code> → PASS (4/4).  Many other event22xxx cases that shared<br>the same shader also started passing.</p>
+<hr>
+<h3>Fix 2 — <code>_mRC</code> accessor on float4x4 matrix element</h3>
+<p><b>Symptom</b>: <code>Frame-frame9222_event1734</code> — cbuffer held a <code>float4x4 g_mWorldViewProj[N]</code> array.<br>After reading the array element correctly (see Fix 3), the shader accessed it with<br><code>_m00_m10_m20_m30</code> notation: <code>obj._m00_m10_m20_m30</code>. <code>apply_swizzle</code> only handled <code>xyzwrgba</code><br>single-char swizzles; <code>_mRC</code> notation was silently skipped, returning <code>0</code>.</p>
+<p><b>Fix</b> (added in <code>apply_swizzle</code>, after the non-list guard):</p>
+<pre><code>if swizzle and swizzle.startswith('_m') and obj and isinstance(obj[0], list):
+    accessor_parts = [p for p in swizzle.split('_') if p and p[0] == 'm' and len(p) == 3]
+    result = []
+    for ap in accessor_parts:
+        r, c = int(ap[1]), int(ap[2])
+        result.append(obj[r][c] if r &lt; len(obj) and c &lt; len(obj[r]) else 0.0)
+    return result[0] if len(result) == 1 else result</code></pre>
+<hr>
+<h3>Fix 3 — float4x4 array elements stored correctly in <code>override_cbuffers_from_binary</code></h3>
+<p><b>Symptom</b>: Same <code>Frame-frame9222_event1734</code>. The cbuffer binary had N consecutive <code>float4x4</code><br>matrices. The binary-override path allocated one float4 register per element instead of four.</p>
+<p><b>Root cause</b>: In <code>override_cbuffers_from_binary</code>, the array branch appended <code>decoded[row_ri]</code><br>(one float4) for every element, regardless of field type. A <code>float4x4</code> needs 4 consecutive<br>registers, transposed to row-major.</p>
+<p><b>Fix</b> (in the <code>array_size &gt; 0</code> branch of <code>override_cbuffers_from_binary</code>):</p>
+<pre><code>if base == 64 and row_ri + 3 &lt; len(decoded):
+    # float4x4: read 4 column registers, transpose to row-major
+    cols = [decoded[row_ri + k] for k in range(4)]
+    arr.append([[cols[c][r] for c in range(4)] for r in range(4)])
+elif base == 48 and row_ri + 2 &lt; len(decoded):
+    arr.append([decoded[row_ri], decoded[row_ri + 1], decoded[row_ri + 2]])
+else:
+    arr.append(decoded[row_ri])</code></pre>
+<p><b>Result</b>: <code>Frame-frame9222_event1734</code> → PASS (8475/8475), <code>Frame-frame9222_event1971</code> → PASS (1404/1404).</p>
+<hr>
+<h3>Fix 4 — <code>packoffset(c3.w)</code> sub-register component ignored in binary loading</h3>
+<p><b>Symptom</b>: <code>Collision-fix-constant-buffer-and-RdotV-zero_event399.zip</code> regressed (Color = 0)<br>after commit <code>35b788a</code> which added binary cbuffer loading.  <code>LightRadius : packoffset(c3.w)</code> was<br>supposed to load from byte offset 60 (= 3×16 + 3×4), but was loaded from offset 48 (= 3×16).<br>This made <code>LightRadius = -60</code> (from LightPos.x) instead of 600, so the light-radius comparison<br><code>LightRadius &gt;= 434.83</code> evaluated false → no lighting → Color = 0.</p>
+<p><b>Root cause</b>: <code>parse_cbuffer</code> captured only the register number from <code>packoffset(cN.comp)</code>,<br>discarding the component. <code>override_cbuffers_from_binary</code> then used <code>byte_off = reg * 16</code>,<br>ignoring the intra-register component offset.</p>
+<p><b>Fix</b> — three-part:</p>
+<ol>
+<li><code>FieldDefinition</code> — new field: ``<code>python comp_off: int = 0  # intra-register component offset (0=x,1=y,2=z,3=w) </code>``</li>
+</ol>
+<ol>
+<li><code>parse_cbuffer</code> — extended regex: ``<code>python po_match = re.search(r'packoffset\s*\(\s*c(\d+)(?:\.([xyzwrgba]))?\s*\)', line) if po_match: reg_offset = int(po_match.group(1)) _comp_char = po_match.group(2) or 'x' comp_off = {'x':0,'r':0,'y':1,'g':1,'z':2,'b':2,'w':3,'a':3}.get(_comp_char, 0) else: reg_offset = -1; comp_off = 0 fields.append(FieldDefinition(..., reg_offset=reg_offset, comp_off=comp_off)) </code>``</li>
+</ol>
+<ol>
+<li><code>override_cbuffers_from_binary</code> — use component offset: ``<code>python byte_off = field.reg_offset * 16 + getattr(field, 'comp_off', 0) * 4 </code>``</li>
+</ol>
+<p><b>Result</b>: <code>event399</code> → PASS. Full 46/46 regression still passes.</p>
+<hr>
+<h2>Regression Sweep — New Passing Cases</h2>
+<p>After the four fixes, a broad triage of <code>Dump/</code> was run across all game families. The following<br><b>71 new cases</b> were confirmed passing and added to <code>Cases/regression_test_zip_files.csv</code>:</p>
+<table>
+<tr><th>Game family</th><th>Count</th><th>Notes</th></tr>
+<tr><td><code>witcher3_countryside</code> (event22xxx)</td><td>14</td><td>event22010, 22161, 22420 (icb), 22484, 22593, 22610, 22626, 22641, 22758, 22805, 22927, 22945 + 22010 22161</td></tr>
+<tr><td><code>Frame-frame9222</code></td><td>2</td><td>event1734, 1971 — float4x4 array fix</td></tr>
+<tr><td><code>sekiro4</code></td><td>5</td><td>event2264, 13742, 13806, 14228, 16660</td></tr>
+<tr><td><code>heaven_frame2596</code></td><td>14</td><td>14 of 16 cases pass (2 timeout)</td></tr>
+<tr><td><code>valley_frame272</code></td><td>10</td><td>10 of 11 cases pass (1 timeout)</td></tr>
+<tr><td><code>EndlessSpace2</code></td><td>5</td><td>event1740, 1953, 1980, 2092, 2876</td></tr>
+<tr><td><code>Octopath-frame746</code> (new)</td><td>18</td><td>event1057, 2214, 2569, 2767, 3240, 3287, 3403, 3433, 3642, 3670, 4014, 4038, 4058, 4114, 4125, 4135, 4174 + 3734 (0/0)</td></tr>
+<tr><td><code>manhattan_frame_274</code></td><td>1</td><td>event1041</td></tr>
+<tr><td><code>OldWorld</code></td><td>1</td><td>event5145</td></tr>
+<tr><td><code>4k1w</code></td><td>1</td><td>event1124</td></tr>
+<tr><td><code>Nobu15-frame3456</code></td><td>1</td><td>event3743</td></tr>
+<tr><td><code>TankMechanicSimulator</code> (Cases/)</td><td>1</td><td>event1090</td></tr>
+<tr><td><code>witcher3_countryside</code> (Cases/)</td><td>1</td><td>event23173</td></tr>
+</table>
+<p>Regression suite grew from <b>46 → 117 cases</b> (71 new cases including 2 from Cases/ only).</p>
+<hr>
+<h2>Still-Failing Cases (root causes noted, not fixed in this session)</h2>
+<table>
+<tr><th>Case</th><th>Error</th><th>Root cause</th></tr>
+<tr><td><code>witcher3_event22229</code>, <code>event22092</code></td><td>TexCoord4 wrong (~2× off)</td><td>Output slot <code>o4 = v1.xyzw</code> but golden seems to be world-space position</td></tr>
+<tr><td><code>witcher3_event16215</code></td><td>TexCoord2/3 wrong</td><td>Tangent-space rotation matrix issue</td></tr>
+<tr><td><code>witcher3_event16834</code></td><td>nan/inf</td><td>Texture returns 0 → divide-by-zero in shader</td></tr>
+<tr><td><code>sekiro4</code> many cases</td><td>sv_position wrong (large diff)</td><td>Likely cbuffer struct-in-cbuffer or matrix layout difference</td></tr>
+<tr><td><code>TankMechanicSimulator</code> (8 of 75)</td><td>timeout</td><td>Large vertex count + complex shader</td></tr>
+<tr><td><code>TombRaider</code></td><td>sv_position = uint bit-patterns</td><td>Golden uses uint bit-cast float comparison; struct-in-cbuffer</td></tr>
+<tr><td><code>sekiro2</code></td><td>sv_position large diff</td><td></td></tr>
+<tr><td>Various</td><td>timeout</td><td></td></tr>
+</table>
+<hr>
+<h2>Final State (first commit)</h2>
+<ul>
+<li>4 interpreter fixes committed</li>
+<li>Regression: 117 cases, <b>117/117 PASS</b></li>
+</ul>
+<hr>
+<h2>Part 2 — Full Dump/ sweep + struct-in-cbuffer + texture-NaN crash fix</h2>
+<p>A complete triage of <b>all 513 Dump/ zips</b> was run: <b>332/513 pass (~65%)</b>.<br>Failure breakdown of the 181:</p>
+<table>
+<tr><th>Reason</th><th>Count</th><th>Nature</th></tr>
+<tr><td>VS-vs-golden value mismatch</td><td>125</td><td>wrong output values (various root causes)</td></tr>
+<tr><td>timeout (&gt;300s)</td><td>37</td><td>correct-but-slow (large vertex/pixel counts)</td></tr>
+<tr><td>no VS-vs-golden comparison</td><td>17</td><td>0 vertices / no golden mesh in capture</td></tr>
+<tr><td>crash</td><td>~3</td><td>texture sampling NaN UV (fixed below)</td></tr>
+</table>
+<h3>Fix 5 — struct-in-cbuffer support (<code>struct {...} NAME[N]</code> inside a cbuffer)</h3>
+<p>TombRaider shaders declare `cbuffer WorldBuffer { struct { row_major float4x4 WorldViewProject;<br>World; ViewProject; } WorldParameters[12] : packoffset(c0); }`. Three problems:</p>
+<ol>
+<li><b>Brace truncation</b> — both <code>cbuffer_finditer</code> and <code>cbuffer_definition</code> regexes use <code>[^}]+</code>, which stops at the struct's nested <code>}</code>, so the cbuffer was never fully captured. Added <code>_extract_cbuffer_blocks()</code> (manual brace-balanced scan) and rewired the three call sites (<code>hlsl_interpreter.py</code> parse loop + <code>render.py</code> VS/PS loops).</li>
+<li><b>Struct member parsing</b> — <code>parse_cbuffer</code> now detects <code>struct {...} NAME[N] : packoffset(cM)</code>, computes the per-element register stride from the members, and registers a <code>__struct__</code> field (<code>FieldDefinition.struct_elem_regs</code>).</li>
+<li><b>Binary loading</b> — <code>override_cbuffers_from_binary</code> loads each struct-array element as a list of its raw float4 register rows (no transpose), so <code>NAME[i]._mRC</code> reads register R, component C (correct for the row_major matrices these structs hold).</li>
+</ol>
+<p><b>Result</b>: <code>WorldParameters[i]._m30_m31_m32_m33</code> and the position output (<code>o1</code>/SV_POSITION) are<br>now computed correctly (597.939, matching golden).</p>
+<h3>Fix 6 — golden uint→float reinterpret for SV_Position</h3>
+<p>When a shader declares a leading <code>uint4</code> output (e.g. <code>out uint4 o0 : PSIZE0</code>) before<br>SV_POSITION, RenderDoc's mesh CSV lays SV_Position data into that first (uint-typed) column and<br>prints its floats as <b>uint32 bit-patterns</b> (integer text like <code>1142258707</code> = 597.94f). The<br>golden loader already reorders SV_Position to that physical column; added <code>_golden_float()</code> to<br>reinterpret integer-formatted tokens (no <code>.</code>/exponent) as float32 bits. SV_Position now matches.</p>
+<h3>Fix 7 — texture NaN/Inf UV crash guard</h3>
+<p><code>_sample_linear</code>/<code>_sample_nearest</code> did <code>int(u*w)</code>, which raised<br><code>ValueError: cannot convert float NaN to integer</code> when a shader produced a NaN UV (divide-by-zero)<br>and then sampled — aborting the entire draw (sekiro2_event13516, sekiro4_event20560). Now NaN/Inf<br>UV is clamped to 0 (well-defined GPU-like out-of-range behaviour) so the draw completes.</p>
+<h3>TombRaider limitation (cannot be fixed from HLSL)</h3>
+<p>TombRaider's <b>normals/tangents still fail</b> — and this is unfixable from the decompiled HLSL.<br>The disassembly shows the normal transform uses <code>cb0[base+4..6]</code> (the <i>second</i> struct matrix,<br><code>World</code>), but 3Dmigoto's decompiled HLSL writes the <i>same</i> <code>._m00/_m10/_m20</code> tokens that the<br>position uses for <code>cb0[base+0..2]</code> (the <i>first</i> matrix, <code>WorldViewProject</code>). The struct-member<br>selector is dropped, so the same <code>_m00</code> token maps to different registers depending on context —<br>information that exists only in the disassembly. Position (<code>o1</code>) and <code>o2</code>/TEXCOORD0 now pass;<br>the normal-derived outputs (TEXCOORD2/3/4) require disasm-level register info, out of scope for an<br>HLSL interpreter. Verified: computing <code>o3</code> with the World matrix (regs +4/+5/+6) gives 0.5929,<br>exactly the golden value — confirming the diagnosis.</p>
+<h3>Net</h3>
+<p>Fixes 5–7 are correct general improvements (struct-in-cbuffer, golden bit-pattern reinterpret,<br>texture crash robustness). They do not make TombRaider fully pass (lossy decompiled source) but<br>fix its position output, fix the texture crashes, and support single-matrix struct-in-cbuffer<br>captures. Regression remains green.</p>
+</div></body></html>

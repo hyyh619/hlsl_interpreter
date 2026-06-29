@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>compare_vs_output_with_golden函数重构改进</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step16-refine-output-golden-compare</span></div>
+<div class="wrap">
+<h1>compare_vs_output_with_golden函数重构改进</h1>
+<p><b>Session ID:</b> ses_1d687cb6effemRYUibJv3IFLlP<br><b>Created:</b> 2026/5/15 10:30:04<br><b>Updated:</b> 2026/5/15 10:33:08</p>
+<hr>
+<h2>User</h2>
+<ol>
+<li>compare_vs_output_with_golden增加一个输入参数，告知compare_vs_output_with_golden使用的OUTPUT struct是那一个，不要直接默认使用"VS_OUTPUT"</li>
+<li>不要通过函数内部自定义的semantic_to_field来获得field name，直接通过获得的vs_output_def来获取field name </li>
+</ol>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 44.2s)</h2>
+<p>_Thinking:_</p>
+<p>The user is asking me to modify the <code>compare_vs_output_with_golden</code> function to:</p>
+<ol>
+<li>Add an input parameter to specify which OUTPUT struct to use instead of defaulting to "VS_OUTPUT"</li>
+<li>Don't use an internal semantic_to_field mapping to get field names - instead get the field names directly from the vs_output_def</li>
+</ol>
+<p>Let me first find this function and understand its current implementation.</p>
+<p><b>Tool: grep</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "pattern": "compare_vs_output_with_golden"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Found 13 matches
+C:\Development\Graphics\irrlicht-1.8.3\Prompt\hlsl-interpreter-prompt.md:
+  Line 553: 1. compare_vs_output_with_golden增加一个输入参数，告知compare_vs_output_with_golden使用的OUTPUT struct是那一个，不要直接默认使用"VS_OUTPUT"
+
+
+C:\Development\Graphics\irrlicht-1.8.3\Sessions\hlsl-interpreter\hlsl-step15-add-output-golden-compare.md:
+  Line 1065: I'll add the comparison function after line 1927 (after the `load_cbuffer_data_from_csv` function ends). Let me create the function `compare_vs_output_with_golden`.
+
+  Line 1092: Let me create a function `compare_vs_output_with_golden` that:
+
+  Line 1110:   "newString": "            else:\n                print(f\"  {f.name} ({ft}): {data}\")\n\n    def compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001) -&gt; bool:\n        \"\"\"\n        比较HLSL执行结果与VS_OUTPUT的golden数据\n        hlsl_output: executeVS返回的输出结构体字典列表\n        float_tolerance: 浮点类型数据的比较误差容忍度\n        返回: True表示所有数据匹配, False表示存在不匹配\n        \"\"\"\n        if \"VS_OUTPUT\" not in self.structs:\n            print(\"Error: VS_OUTPUT struct not found\")\n            return False\n\n        vs_output_def = self.structs[\"VS_OUTPUT\"]\n        golden_data = {}\n\n        for field in vs_output_def.fields:\n            if field.data:\n                golden_data[field.semantic] = field.data\n\n        num_golden_rows = 0\n        for field_data in golden_data.values():\n            if field_data:\n                num_golden_rows = max(num_golden_rows, len(field_data))\n\n        if not hlsl_output:\n            print(\"Error: No HLSL output to compare\")\n            return False\n\n        if len(hlsl_output) != num_golden_rows:\n            print(f\"Error: Row count mismatch - HLSL output has {len(hlsl_output)} rows, golden has {num_golden_rows} rows\")\n            return False\n\n        all_match = True\n        semantic_to_field = {\n            'SV_POSITION': 'Pos',\n            'COLOR': 'Color',\n            'TEXCOORD0': 'TexCoord',\n            'TEXCOORD1': 'TexCoord2',\n            'NORMAL': 'Normal',\n            'WORLDPOS': 'WorldPos'\n        }\n\n        field_type_map = {}\n        for field in vs_output_def.fields:\n            field_type_map[field.semantic] = field.field_type\n\n        for row_idx in range(len(hlsl_output)):\n            output_row = hlsl_output[row_idx]\n            for semantic, golden_values in golden_data.items():\n                if row_idx &gt;= len(golden_values):\n                    continue\n\n                field_name = semantic_to_field.get(semantic, semantic)\n                if...
+  Line 1190: 1928:     def compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001) -&gt; bool:
+
+  Line 1555: Also, I need to add a call to compare_vs_output_with_golden() after executeVS, and add code to load VS_OUTPUT.csv golden data.
+
+  Line 1723:   "newString": "def load_vs_output_golden_from_csv(self, csv_path: str):\n        \"\"\"\n        从CSV文件加载VS_OUTPUT的golden数据\n        csv_path: CSV文件路径\n        \"\"\"\n        if \"VS_OUTPUT\" not in self.structs:\n            print(\"Error: VS_OUTPUT struct not defined\")\n            return False\n\n        vs_output_def = self.structs[\"VS_OUTPUT\"]\n        rows = self.load_csv(csv_path)\n        if not rows or len(rows) &lt; 2:\n            print(f\"Error: CSV file {csv_path} is empty or has no data rows\")\n            return False\n\n        header = rows[0]\n        data_rows = rows[1:]\n\n        field_col_indices = {}\n        for i, col in enumerate(header):\n            col_clean = col.strip()\n            if '.' in col_clean:\n                parts = col_clean.split('.')\n                base_name = parts[0]\n                suffix = parts[1]\n                if base_name not in field_col_indices:\n                    field_col_indices[base_name] = {}\n                field_col_indices[base_name][suffix] = i\n\n        for field in vs_output_def.fields:\n            if field.semantic in field_col_indices:\n                col_dict = field_col_indices[field.semantic]\n                values = []\n                for row in data_rows:\n                    try:\n                        if 'x' in col_dict and 'y' in col_dict and 'z' in col_dict and 'w' in col_dict:\n                            x = float(row[col_dict['x']].strip())\n                            y = float(row[col_dict['y']].strip())\n                            z = float(row[col_dict['z']].strip())\n                            w = float(row[col_dict['w']].strip())\n                            values.append([x, y, z, w])\n                        elif 'x' in col_dict and 'y' in col_dict and 'z' in col_dict:\n                            x = float(row[col_dict['x']].strip())\n                            y = float(row[col_dict['y']].strip())\n                            z = float(row[col_dict['z']].s...
+  Line 1724:   "oldString": "def compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001) -&gt; bool:\n        \"\"\"\n        比较HLSL执行结果与VS_OUTPUT的golden数据\n        hlsl_output: executeVS返回的输出结构体字典列表\n        float_tolerance: 浮点类型数据的比较误差容忍度\n        返回: True表示所有数据匹配, False表示存在不匹配\n        \"\"\""
+
+  Line 1949: I need to add the call to compare_vs_output_with_golden after executeVS results are obtained. Let me update the main function to call this comparison.
+
+  Line 1958:   "newString": "if results and results[-1] and 'Color' in results[-1]:\n        color = results[-1]['Color']\n        if color and isinstance(color, list) and len(color) == 4:\n            print(\"\\nFinal Output Color (RGBA):\")\n            print(f\"  R: {color[0]:.4f}\")\n            print(f\"  G: {color[1]:.4f}\")\n            print(f\"  B: {color[2]:.4f}\")\n            print(f\"  A: {color[3]:.4f}\")\n        else:\n            print(f\"\\nColor result: {color}\")\n\n    print(\"\\n\" + \"=\" * 40)\n    print(\"Comparing with golden data...\")\n    print(\"=\" * 40)\n    interpreter.compare_vs_output_with_golden(results, float_tolerance=0.001)\n\n\nif __name__ == '__main__':\n    main()",
+
+  Line 3266: 2. **`compare_vs_output_with_golden(hlsl_output, float_tolerance=0.0001)`** - 比较HLSL执行结果与golden数据
+
+
+C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py:
+  Line 1989:     def compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001) -&gt; bool:
+
+  Line 2205:     interpreter.compare_vs_output_with_golden(results, float_tolerance=0.001)
+</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 14.1s)</h2>
+<p>_Thinking:_</p>
+<p>Let me read the <code>compare_vs_output_with_golden</code> function to understand its current implementation.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "limit": 100,
+  "offset": 1980
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+1980:                             values.append(self.parse_value_by_type(val_str, field.field_type))
+1981:                     except (ValueError, IndexError) as e:
+1982:                         print(f"Warning: Failed to parse {field.semantic} at row: {e}")
+1983:                         values.append(None)
+1984:                 field.data = values
+1985: 
+1986:         print(f"Loaded {len(data_rows)} golden data rows for VS_OUTPUT")
+1987:         return True
+1988: 
+1989:     def compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001) -&gt; bool:
+1990:         """
+1991:         比较HLSL执行结果与VS_OUTPUT的golden数据
+1992:         hlsl_output: executeVS返回的输出结构体字典列表
+1993:         float_tolerance: 浮点类型数据的比较误差容忍度
+1994:         返回: True表示所有数据匹配, False表示存在不匹配
+1995:         """
+1996:         if "VS_OUTPUT" not in self.structs:
+1997:             print("Error: VS_OUTPUT struct not found")
+1998:             return False
+1999: 
+2000:         vs_output_def = self.structs["VS_OUTPUT"]
+2001:         golden_data = {}
+2002: 
+2003:         for field in vs_output_def.fields:
+2004:             if field.data:
+2005:                 golden_data[field.semantic] = field.data
+2006: 
+2007:         num_golden_rows = 0
+2008:         for field_data in golden_data.values():
+2009:             if field_data:
+2010:                 num_golden_rows = max(num_golden_rows, len(field_data))
+2011: 
+2012:         if not hlsl_output:
+2013:             print("Error: No HLSL output to compare")
+2014:             return False
+2015: 
+2016:         if len(hlsl_output) != num_golden_rows:
+2017:             print(f"Error: Row count mismatch - HLSL output has {len(hlsl_output)} rows, golden has {num_golden_rows} rows")
+2018:             return False
+2019: 
+2020:         all_match = True
+2021:         semantic_to_field = {
+2022:             'SV_POSITION': 'Pos',
+2023:             'COLOR': 'Color',
+2024:             'TEXCOORD0': 'TexCoord',
+2025:             'TEXCOORD1': 'TexCoord2',
+2026:             'NORMAL': 'Normal',
+2027:             'WORLDPOS': 'WorldPos'
+2028:         }
+2029: 
+2030:         field_type_map = {}
+2031:         for field in vs_output_def.fields:
+2032:             field_type_map[field.semantic] = field.field_type
+2033: 
+2034:         for row_idx in range(len(hlsl_output)):
+2035:             output_row = hlsl_output[row_idx]
+2036:             for semantic, golden_values in golden_data.items():
+2037:                 if row_idx &gt;= len(golden_values):
+2038:                     continue
+2039: 
+2040:                 field_name = semantic_to_field.get(semantic, semantic)
+2041:                 if field_name not in output_row:
+2042:                     continue
+2043: 
+2044:                 output_value = output_row[field_name]
+2045:                 golden_value = golden_values[row_idx]
+2046: 
+2047:                 if output_value is None or golden_value is None:
+2048:                     continue
+2049: 
+2050:                 field_type = field_type_map.get(semantic, '')
+2051: 
+2052:                 if isinstance(output_value, list) and isinstance(golden_value, list):
+2053:                     if len(output_value) != len(golden_value):
+2054:                         print(f"Error: Row {row_idx}, {field_name}: length mismatch output={len(output_value)} golden={len(golden_value)}")
+2055:                         all_match = False
+2056:                         continue
+2057: 
+2058:                     is_float = 'float' in field_type
+2059:                     for comp_idx in range(len(output_value)):
+2060:                         out_comp = output_value[comp_idx]
+2061:                         gold_comp = golden_value[comp_idx]
+2062: 
+2063:                         if is_float:
+2064:                             if isinstance(out_comp, float) and isinstance(gold_comp, float):
+2065:                                 if abs(out_comp - gold_comp) &gt; float_tolerance:
+2066:                                     print(f"Error: Row {row_idx}, {field_name}[{comp_idx}]: output={out_comp:.6f} golden={gold_comp:.6f} diff={abs(out_comp - gold_comp):.6f} &gt; tolerance={float_tolerance}")
+2067:                                     all_match = False
+2068:                             elif out_comp != gold_comp:
+2069:                                 print(f"Error: Row {row_idx}, {field_name}[{comp_idx}]: output={out_comp} golden={gold_comp} (float comparison failed)")
+2070:                                 all_match = False
+2071:                         else:
+2072:                             if out_comp != gold_comp:
+2073:                                 print(f"Error: Row {row_idx}, {field_name}[{comp_idx}]: output={out_comp} golden={gold_comp} (strict equality failed)")
+2074:                                 all_match = False
+2075: 
+2076:         if all_match:
+2077:             print("Comparison PASSED: All output data matches golden data within tolerance")
+2078:         else:
+2079:             print("Comparison FAILED: Some output data does not match golden data")
+
+(Showing lines 1980-2079 of 2209. Use offset=2080 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 8.5s)</h2>
+<p>_Thinking:_</p>
+<p>Now I understand the function. I need to:</p>
+<ol>
+<li>Add an input parameter to specify which OUTPUT struct to use (instead of defaulting to "VS_OUTPUT")</li>
+<li>Use the field name directly from <code>vs_output_def.fields</code> instead of the hardcoded <code>semantic_to_field</code> mapping</li>
+</ol>
+<p>Let me see more of the function to understand the complete picture.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "limit": 50,
+  "offset": 2080
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+2080: 
+2081:         return all_match
+2082: 
+2083: 
+2084: def main():
+2085:     interpreter = HLSLInterpreter()
+2086: 
+2087:     code = '''
+2088:     struct VS_INPUT {
+2089:         float3 Pos : POSITION;
+2090:         float3 Normal : NORMAL;
+2091:         float4 Color : COLOR;
+2092:         float2 TexCoord : TEXCOORD0;
+2093:     };
+2094:     struct VS_OUTPUT {
+2095:         float4 Pos : SV_POSITION;
+2096:         float4 Color : COLOR;
+2097:         float2 TexCoord : TEXCOORD0;
+2098:         float2 TexCoord2 : TEXCOORD1;
+2099:         float3 Normal : NORMAL;
+2100:         float3 WorldPos : WORLDPOS;
+2101:     };
+2102:     cbuffer MatrixBuffer : register(b0) {
+2103:         float4x4 WorldViewProj;
+2104:         float4x4 World;
+2105:     };
+2106:     cbuffer LightBuffer : register(b1) {
+2107:         float4 AmbientColor;
+2108:         float4 DiffuseColor;
+2109:         float4 SpecularColor;
+2110:         float3 LightPos;
+2111:         float LightRadius;
+2112:         float3 LightDir;
+2113:         float3 Attenuation;
+2114:         float OuterCone;
+2115:         float InnerCone;
+2116:     };
+2117:     cbuffer MaterialBuffer : register(b2) {
+2118:         float4 MaterialDiffuseColor;
+2119:         float4 MaterialAmbientColor;
+2120:         float4 MaterialSpecularColor;
+2121:         float4 MaterialEmissiveColor;
+2122:         float Shininess;
+2123:         uint ColorMaterialMode;
+2124:         float2 Padding;
+2125:     };
+2126:     cbuffer CameraBuffer : register(b3) {
+2127:         float3 cameraPos;
+2128:     };
+2129:     VS_OUTPUT main(VS_INPUT input) {
+
+(Showing lines 2080-2129 of 2209. Use offset=2130 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 43.2s)</h2>
+<p>_Thinking:_</p>
+<p>Now I understand the code. The function <code>compare_vs_output_with_golden</code> has a hardcoded semantic_to_field mapping and doesn't use the actual field names from the VS_OUTPUT struct.</p>
+<p>I need to:</p>
+<ol>
+<li>Add an input parameter to specify which output struct to use (default to "VS_OUTPUT")</li>
+<li>Get field names directly from the vs_output_def.fields rather than using the hardcoded semantic_to_field mapping</li>
+</ol>
+<p>Let me make the changes.</p>
+<p><b>Tool: edit</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "newString": "def compare_vs_output_with_golden(self, hlsl_output: List[Dict], output_struct_name: str = \"VS_OUTPUT\", float_tolerance: float = 0.0001) -&gt; bool:\n        \"\"\"\n        比较HLSL执行结果与golden数据\n        hlsl_output: executeVS返回的输出结构体字典列表\n        output_struct_name: 输出结构体名称，用于获取field name (默认\"VS_OUTPUT\")\n        float_tolerance: 浮点类型数据的比较误差容忍度\n        返回: True表示所有数据匹配, False表示存在不匹配\n        \"\"\"\n        if output_struct_name not in self.structs:\n            print(f\"Error: {output_struct_name} struct not found\")\n            return False\n\n        vs_output_def = self.structs[output_struct_name]\n        golden_data = {}\n        semantic_to_field = {}\n\n        for field in vs_output_def.fields:\n            if field.data:\n                golden_data[field.semantic] = field.data\n            semantic_to_field[field.semantic] = field.name",
+  "oldString": "def compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001) -&gt; bool:\n        \"\"\"\n        比较HLSL执行结果与VS_OUTPUT的golden数据\n        hlsl_output: executeVS返回的输出结构体字典列表\n        float_tolerance: 浮点类型数据的比较误差容忍度\n        返回: True表示所有数据匹配, False表示存在不匹配\n        \"\"\"\n        if \"VS_OUTPUT\" not in self.structs:\n            print(\"Error: VS_OUTPUT struct not found\")\n            return False\n\n        vs_output_def = self.structs[\"VS_OUTPUT\"]\n        golden_data = {}\n\n        for field in vs_output_def.fields:\n            if field.data:\n                golden_data[field.semantic] = field.data"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Edit applied successfully.</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 8.8s)</h2>
+<p>_Thinking:_</p>
+<p>Now I need to remove the hardcoded semantic_to_field dictionary that was in the middle of the function. Let me read that part again.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "limit": 50,
+  "offset": 2015
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+2015:         if not hlsl_output:
+2016:             print("Error: No HLSL output to compare")
+2017:             return False
+2018: 
+2019:         if len(hlsl_output) != num_golden_rows:
+2020:             print(f"Error: Row count mismatch - HLSL output has {len(hlsl_output)} rows, golden has {num_golden_rows} rows")
+2021:             return False
+2022: 
+2023:         all_match = True
+2024:         semantic_to_field = {
+2025:             'SV_POSITION': 'Pos',
+2026:             'COLOR': 'Color',
+2027:             'TEXCOORD0': 'TexCoord',
+2028:             'TEXCOORD1': 'TexCoord2',
+2029:             'NORMAL': 'Normal',
+2030:             'WORLDPOS': 'WorldPos'
+2031:         }
+2032: 
+2033:         field_type_map = {}
+2034:         for field in vs_output_def.fields:
+2035:             field_type_map[field.semantic] = field.field_type
+2036: 
+2037:         for row_idx in range(len(hlsl_output)):
+2038:             output_row = hlsl_output[row_idx]
+2039:             for semantic, golden_values in golden_data.items():
+2040:                 if row_idx &gt;= len(golden_values):
+2041:                     continue
+2042: 
+2043:                 field_name = semantic_to_field.get(semantic, semantic)
+2044:                 if field_name not in output_row:
+2045:                     continue
+2046: 
+2047:                 output_value = output_row[field_name]
+2048:                 golden_value = golden_values[row_idx]
+2049: 
+2050:                 if output_value is None or golden_value is None:
+2051:                     continue
+2052: 
+2053:                 field_type = field_type_map.get(semantic, '')
+2054: 
+2055:                 if isinstance(output_value, list) and isinstance(golden_value, list):
+2056:                     if len(output_value) != len(golden_value):
+2057:                         print(f"Error: Row {row_idx}, {field_name}: length mismatch output={len(output_value)} golden={len(golden_value)}")
+2058:                         all_match = False
+2059:                         continue
+2060: 
+2061:                     is_float = 'float' in field_type
+2062:                     for comp_idx in range(len(output_value)):
+2063:                         out_comp = output_value[comp_idx]
+2064:                         gold_comp = golden_value[comp_idx]
+
+(Showing lines 2015-2064 of 2212. Use offset=2065 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 11.8s)</h2>
+<p>_Thinking:_</p>
+<p>I see there's a duplicate <code>semantic_to_field</code> dict at line 2024-2031. I need to remove the old hardcoded one since we now build it from vs_output_def.fields.</p>
+<p><b>Tool: edit</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "newString": "all_match = True\n        field_type_map = {}",
+  "oldString": "all_match = True\n        semantic_to_field = {\n            'SV_POSITION': 'Pos',\n            'COLOR': 'Color',\n            'TEXCOORD0': 'TexCoord',\n            'TEXCOORD1': 'TexCoord2',\n            'NORMAL': 'Normal',\n            'WORLDPOS': 'WorldPos'\n        }\n\n        field_type_map = {}"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Edit applied successfully.</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 9.5s)</h2>
+<p>_Thinking:_</p>
+<p>Now let me verify the call site where <code>compare_vs_output_with_golden</code> is called to update it with the new parameter.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "limit": 15,
+  "offset": 2200
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+2200: 
+2201: 
+2202: if __name__ == '__main__':
+2203:     main()
+
+(End of file - total 2203 lines)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 14.7s)</h2>
+<p>_Thinking:_</p>
+<p>I need to find where compare_vs_output_with_golden is called to update the call site. Let me search for it.</p>
+<p><b>Tool: grep</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "path": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter",
+  "pattern": "compare_vs_output_with_golden\\("
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Found 2 matches
+C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py:
+  Line 1989:     def compare_vs_output_with_golden(self, hlsl_output: List[Dict], output_struct_name: str = "VS_OUTPUT", float_tolerance: float = 0.0001) -&gt; bool:
+
+  Line 2199:     interpreter.compare_vs_output_with_golden(results, float_tolerance=0.001)
+</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 6.8s)</h2>
+<p>_Thinking:_</p>
+<p>I need to update the call to use the default parameter value and remove the named argument:</p>
+<p><b>Tool: edit</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "newString": "interpreter.compare_vs_output_with_golden(results)",
+  "oldString": "interpreter.compare_vs_output_with_golden(results, float_tolerance=0.001)"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Edit applied successfully.</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 6.1s)</h2>
+<p>_Thinking:_</p>
+<p>Let me verify the changes by reading the function to make sure everything is correct.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\hlsl_interpreter.py",
+  "limit": 80,
+  "offset": 1989
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\hlsl_interpreter.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+1989:     def compare_vs_output_with_golden(self, hlsl_output: List[Dict], output_struct_name: str = "VS_OUTPUT", float_tolerance: float = 0.0001) -&gt; bool:
+1990:         """
+1991:         比较HLSL执行结果与golden数据
+1992:         hlsl_output: executeVS返回的输出结构体字典列表
+1993:         output_struct_name: 输出结构体名称，用于获取field name (默认"VS_OUTPUT")
+1994:         float_tolerance: 浮点类型数据的比较误差容忍度
+1995:         返回: True表示所有数据匹配, False表示存在不匹配
+1996:         """
+1997:         if output_struct_name not in self.structs:
+1998:             print(f"Error: {output_struct_name} struct not found")
+1999:             return False
+2000: 
+2001:         vs_output_def = self.structs[output_struct_name]
+2002:         golden_data = {}
+2003:         semantic_to_field = {}
+2004: 
+2005:         for field in vs_output_def.fields:
+2006:             if field.data:
+2007:                 golden_data[field.semantic] = field.data
+2008:             semantic_to_field[field.semantic] = field.name
+2009: 
+2010:         num_golden_rows = 0
+2011:         for field_data in golden_data.values():
+2012:             if field_data:
+2013:                 num_golden_rows = max(num_golden_rows, len(field_data))
+2014: 
+2015:         if not hlsl_output:
+2016:             print("Error: No HLSL output to compare")
+2017:             return False
+2018: 
+2019:         if len(hlsl_output) != num_golden_rows:
+2020:             print(f"Error: Row count mismatch - HLSL output has {len(hlsl_output)} rows, golden has {num_golden_rows} rows")
+2021:             return False
+2022: 
+2023:         all_match = True
+2024:         field_type_map = {}
+2025:         for field in vs_output_def.fields:
+2026:             field_type_map[field.semantic] = field.field_type
+2027: 
+2028:         for row_idx in range(len(hlsl_output)):
+2029:             output_row = hlsl_output[row_idx]
+2030:             for semantic, golden_values in golden_data.items():
+2031:                 if row_idx &gt;= len(golden_values):
+2032:                     continue
+2033: 
+2034:                 field_name = semantic_to_field.get(semantic, semantic)
+2035:                 if field_name not in output_row:
+2036:                     continue
+2037: 
+2038:                 output_value = output_row[field_name]
+2039:                 golden_value = golden_values[row_idx]
+2040: 
+2041:                 if output_value is None or golden_value is None:
+2042:                     continue
+2043: 
+2044:                 field_type = field_type_map.get(semantic, '')
+2045: 
+2046:                 if isinstance(output_value, list) and isinstance(golden_value, list):
+2047:                     if len(output_value) != len(golden_value):
+2048:                         print(f"Error: Row {row_idx}, {field_name}: length mismatch output={len(output_value)} golden={len(golden_value)}")
+2049:                         all_match = False
+2050:                         continue
+2051: 
+2052:                     is_float = 'float' in field_type
+2053:                     for comp_idx in range(len(output_value)):
+2054:                         out_comp = output_value[comp_idx]
+2055:                         gold_comp = golden_value[comp_idx]
+2056: 
+2057:                         if is_float:
+2058:                             if isinstance(out_comp, float) and isinstance(gold_comp, float):
+2059:                                 if abs(out_comp - gold_comp) &gt; float_tolerance:
+2060:                                     print(f"Error: Row {row_idx}, {field_name}[{comp_idx}]: output={out_comp:.6f} golden={gold_comp:.6f} diff={abs(out_comp - gold_comp):.6f} &gt; tolerance={float_tolerance}")
+2061:                                     all_match = False
+2062:                             elif out_comp != gold_comp:
+2063:                                 print(f"Error: Row {row_idx}, {field_name}[{comp_idx}]: output={out_comp} golden={gold_comp} (float comparison failed)")
+2064:                                 all_match = False
+2065:                         else:
+2066:                             if out_comp != gold_comp:
+2067:                                 print(f"Error: Row {row_idx}, {field_name}[{comp_idx}]: output={out_comp} golden={gold_comp} (strict equality failed)")
+2068:                                 all_match = False
+
+(Showing lines 1989-2068 of 2203. Use offset=2069 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 15.6s)</h2>
+<p>_Thinking:_</p>
+<p>修改已完成。让我总结一下所做的更改：</p>
+<ol>
+<li>函数签名从 <code>compare_vs_output_with_golden(self, hlsl_output: List[Dict], float_tolerance: float = 0.0001)</code> 改为 <code>compare_vs_output_with_golden(self, hlsl_output: List[Dict], output_struct_name: str = "VS_OUTPUT", float_tolerance: float = 0.0001)</code><ul>
+<li>新增了 <code>output_struct_name</code> 参数，默认值为 "VS_OUTPUT"</li>
+</ul></li>
+</ol>
+<ol>
+<li>不再使用内部硬编码的 <code>semantic_to_field</code> 映射字典，改为从 <code>vs_output_def.fields</code> 中直接获取 <code>field.name</code><ul>
+<li>在循环中构建 <code>semantic_to_field</code> 映射</li>
+</ul></li>
+</ol>
+<p>现在函数可以通过传入的 <code>output_struct_name</code> 参数来使用不同的输出结构体，并且通过 <code>field.name</code> 直接获取字段名而不是使用硬编码的映射。</p>
+<p>已完成修改：</p>
+<ol>
+<li><b>增加 <code>output_struct_name</code> 参数</b>：函数签名改为 <code>compare_vs_output_with_golden(self, hlsl_output: List[Dict], output_struct_name: str = "VS_OUTPUT", float_tolerance: float = 0.0001)</code></li>
+</ol>
+<ol>
+<li><b>通过 <code>vs_output_def.fields</code> 获取 <code>field.name</code></b>：删除了硬编码的 <code>semantic_to_field</code> 字典，改为在循环中从 <code>vs_output_def.fields</code> 直接获取 <code>field.name</code></li>
+</ol>
+<p>修改后的关键代码：</p>
+<ul>
+<li>第2003行：<code>semantic_to_field = {}</code></li>
+<li>第2005-2008行：从 <code>vs_output_def.fields</code> 构建 <code>golden_data</code> 和 <code>semantic_to_field</code> 映射</li>
+<li>第2023-2026行：删除了硬编码的 <code>semantic_to_field</code> 字典，只保留 <code>field_type_map</code></li>
+</ul>
+<hr>
+</div></body></html>

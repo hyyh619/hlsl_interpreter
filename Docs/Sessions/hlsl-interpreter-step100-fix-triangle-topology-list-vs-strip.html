@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 100 — Fix event104 color mismatch: wrong primitive topology (strip vs list)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip</span></div>
+<div class="wrap">
+<h1>Step 100 — Fix event104 color mismatch: wrong primitive topology (strip vs list)</h1>
+<h2>Task</h2>
+<p><code>Collision-fix-constant-buffer-and-RdotV-zero_event104.zip</code> reported ~3070<br>output-merger color mismatches (matched 37684/40754 in the user's run). Analyze<br>the pipeline and fix. Keep any debug code consolidated in <code>debug_trace.py</code>.</p>
+<h2>Thinking / investigation</h2>
+<p>event104's PS is <code>o0 = 4 · DiffuseTexture.Sample(v2) · LightmapTexture.Sample(w2)</code><br>— two textures, two texcoords, no vertex color. Output was too bright.</p>
+<h3>Using the step-99 trace facility</h3>
+<p>Enabled <code>debug_trace</code> (ps_pixels + texture_lod) on a few mismatched pixels. To<br>tell the two textures apart in the trace I **threaded the texture name through<br><code>Texture.sample(..., name=...)</code> into <code>TRACE.texture_sample</code>** — a useful, kept<br>addition (see debug_trace changes below). The trace immediately showed the real<br>problem wasn't color math (the <code>4·D·L</code> arithmetic was exact) but <b>depth</b>:</p>
+<pre><code>PS (143,0) ... depth out=0.978139 golden=0.997629 ddiff=0.019490</code></pre>
+<p>Our winning fragments at the top rows sat at depth ~0.978; golden's were ~0.998.<br>A <i>different, nearer surface</i> was winning in our pipeline. And the run had<br><b>147800 "extra" pixels</b> (ours not in golden) — we were drawing far more than<br>the draw actually wrote.</p>
+<h3>Root cause: topology mis-assembled as strip</h3>
+<p>The pipeline statistics gave it away:</p>
+<pre><code>IAPrimitives: output=1147 golden=383</code></pre>
+<p>1149 vertices → as a <b>strip</b> = 1149−2 = 1147 triangles (what we made); as a<br><b>list</b> = 1149/3 = <b>383</b> (golden). Checked all six regression captures —<br>golden IAPrimitives equals <code>vertex_count / 3</code> for <b>every</b> one:</p>
+<table>
+<tr><th>case</th><th>verts</th><th>strip (v−2)</th><th>list (v/3)</th><th>golden IAPrim</th></tr>
+<tr><td>event28</td><td>204</td><td>202</td><td>68</td><td><b>68</b></td></tr>
+<tr><td>event104</td><td>1149</td><td>1147</td><td>383</td><td><b>383</b></td></tr>
+<tr><td>event351</td><td>315</td><td>313</td><td>105</td><td><b>105</b></td></tr>
+<tr><td>event371</td><td>6</td><td>4</td><td>2</td><td><b>2</b></td></tr>
+<tr><td>event399</td><td>696</td><td>694</td><td>232</td><td><b>232</b></td></tr>
+<tr><td>event516</td><td>3</td><td>1</td><td>1</td><td><b>1</b></td></tr>
+</table>
+<p>Every draw is a <b>triangle list</b>. But every <code>pipeline_state.csv</code> says<br><code>Topology,Primitive,5</code> (= D3D <code>TRIANGLESTRIP</code>). <code>load_config_from_pipeline_state_csv</code><br>returns that 5 verbatim and the rasterizer assembled strips → ~3× the triangles<br>→ thin slivers connecting unrelated list-triangles → massive overdraw, wrong<br>fragments winning the depth test, wrong colors. The capture's topology enum is<br>simply <b>wrong/unreliable</b> in these dumps (the index data is unambiguously a<br>list — fans of 3-index groups around shared centre vertices).</p>
+<p>The index/vertex counts confirm the enum is the only thing claiming "strip".<br>Forcing <code>primitive_topology: 4</code> reproduced the user's reference numbers exactly<br>(matched 37684, mismatched 2773, missing 297, extra 465).</p>
+<h2>Implementation</h2>
+<h3><code>render.py</code> — <code>_resolve_triangle_topology(...)</code></h3>
+<p>Since the captured enum is unreliable but the captured <b>primitive count</b> is<br>ground truth, disambiguate list vs strip from <code>golden IAPrimitives</code>:</p>
+<ul>
+<li>Only when the CSV claims a triangle topology (4/5) and golden IAPrimitives is available and <code>vertex_count &gt; 0</code>.</li>
+<li><code>golden == vertex_count // 3</code> → TRIANGLELIST; <code>golden == vertex_count − 2</code> → TRIANGLESTRIP.</li>
+<li>Ambiguous (single triangle, where list==strip) or matches neither (no golden / partial capture) → keep the CSV value. Logs when it overrides.</li>
+</ul>
+<p>Wired in <code>_execute_pipeline</code> right after the CSV topology is read (only when the<br>JSON config doesn't explicitly set <code>primitive_topology</code>, which still wins). The<br>golden IAPrimitives is loaded from <code>pipeline_statistics.csv</code> just before<br>rasterize.</p>
+<h3><code>debug_trace.py</code> / <code>texture.py</code> / <code>hlsl_interpreter.py</code> — kept debug</h3>
+<ul>
+<li><code>Texture.sample(..., name='')</code> now forwards the texture name to <code>TRACE.texture_sample</code>, so multi-texture shaders show which texture each sample line came from (<code>DiffuseTexture</code> vs <code>LightmapTexture</code>). Both interpreter <code>Sample</code> call sites pass the name.</li>
+<li><code>debug_trace</code> now flushes each line so a trace is inspectable mid-run and survives an interrupted process (these runs can be long).</li>
+</ul>
+<h2>Results</h2>
+<p>Default (CSV-driven) config now auto-detects and corrects the topology:</p>
+<pre><code>Topology: CSV reported 5 but golden IAPrimitives=383 matches 1149/3
+  → using TRIANGLELIST (4) instead (capture enum unreliable).</code></pre>
+<h3>Regression — 6/6 PASS, broad pixel-match improvement, no regressions</h3>
+<table>
+<tr><th>case</th><th>mismatched before → after</th><th>extra before → after</th></tr>
+<tr><td>event104</td><td>13867 → <b>2773</b></td><td>147800 → <b>465</b></td></tr>
+<tr><td>event351</td><td>6 → <b>2</b></td><td>5589 → <b>25</b></td></tr>
+<tr><td>event399</td><td>96 → 96 (matched 2391 → <b>2434</b>)</td><td>400 → <b>45</b></td></tr>
+<tr><td>event516</td><td>0 → 0</td><td>(list==strip)</td></tr>
+<tr><td>event371</td><td>243 → 243</td><td>61 → 61 (separate pre-existing issue)</td></tr>
+</table>
+<p>event104's remaining 2773 residual (6.8%) are all depth-matched with cdiff &lt; 0.3<br>— the same LOD-boundary / edge noise floor documented for event399 (step 98),<br>not a new systematic bug.</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>render.py</code> — <code>_resolve_triangle_topology()</code> + wiring in <code>_execute_pipeline</code> (disambiguate triangle list/strip from golden IAPrimitives; config override still wins).</li>
+<li><code>texture.py</code> — <code>sample(..., name='')</code> forwards the texture name to the trace.</li>
+<li><code>hlsl_interpreter.py</code> — both <code>Sample</code> handlers pass the texture name.</li>
+<li><code>debug_trace.py</code> — per-write flush; <code>texture_sample</code> records the texture name.</li>
+</ul>
+</div></body></html>

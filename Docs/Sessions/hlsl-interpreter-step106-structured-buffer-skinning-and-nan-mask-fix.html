@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 106 — StructuredBuffer skinning, nested-subscript parser fix, NaN-masking fix (witcher3_countryside_event994)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step106-structured-buffer-skinning-and-nan-mask-fix</span></div>
+<div class="wrap">
+<h1>Step 106 — StructuredBuffer skinning, nested-subscript parser fix, NaN-masking fix (witcher3_countryside_event994)</h1>
+<h2>Goal</h2>
+<p>Third case in the witcher3_countryside loop: <code>witcher3_countryside_event994.zip</code>.</p>
+<h2>1. Symptom</h2>
+<pre><code>Total PASSED rows: 2490/2490     # (falsely) reported PASS
+0 "Error:" lines
+Rasterizer pixels: 0             # but pipeline produced NO pixels
+Golden depth pixels: 54 | matched: 0 | missing: 54
+Primitives clipped: 830  (not clipped: 0)</code></pre>
+<p>VS "passed" yet every primitive was clipped and zero pixels were produced —<br>contradictory.</p>
+<h2>2. Root-cause investigation</h2>
+<p>Instrumented the clip stage: every triangle's <code>sv_position</code> was<br><code>[nan, nan, nan, nan]</code>. So:</p>
+<ul>
+<li>The interpreter was producing <b>NaN</b> SV_Position.</li>
+<li>The clip stage correctly rejected NaN vertices (<code>nan &gt;= 0</code> is False) → "830 clipped".</li>
+<li>The VS comparison <b>falsely reported PASS</b> on NaN.</li>
+</ul>
+<p>Three distinct bugs surfaced:</p>
+<h3>Bug A — VS comparison masks NaN</h3>
+<p><code>compare_vs_output_with_golden_params</code> used <code>if abs(ov - gv) &gt; tol:</code> to flag a<br>mismatch. For <code>ov = NaN</code>, <code>abs(NaN-gv) &gt; tol</code> is <code>False</code>, so a NaN output<br>silently counted as a pass. Replaced with <code>if not (abs(ov - gv) &lt;= tol):</code> —<br>identical for finite values, but NaN/inf (where every comparison is False) is<br>now correctly flagged. (Applied to both the vector-component and scalar<br>branches.)</p>
+<h3>Bug B — expression parser splits operators inside <code>[...]</code></h3>
+<p>This shader is a skinned mesh and reads its bone palette as<br><code>t0[r1.y].val[48/4]</code>. The <code>[SYNTAX TREE]</code> trace showed it parsed as<br><code>Value(t0[r1.y].val[48)</code> divided by <code>4</code> — the top-level operator finder tracked<br><code>()</code> depth but <b>not <code>[]</code></b>, so the <code>/</code> inside the second subscript was treated<br>as a top-level division → garbage / <code>inf</code>.</p>
+<p>Fixed <code>hlsl_syntax_tree.py</code>: <code>_find_top_level_operator_cached</code>,<br><code>_find_ternary_colon</code>, and <code>_split_args_cached</code> now increment/decrement depth on<br><code>[</code>/<code>]</code> as well as <code>(</code>/<code>)</code>.</p>
+<h3>Bug C — StructuredBuffer not supported</h3>
+<pre><code>struct t0_t { float val[16]; };
+StructuredBuffer&lt;t0_t&gt; t0 : register(t0);
+...
+r2.x = t0[r1.y].val[48/4];   // bone matrix palette lookup</code></pre>
+<p><code>t0</code> was never loaded, so reads were undefined and the weight normalisation<br><code>v2 / dot(weights)</code> produced NaN/inf. The palette is shipped as the 39 MB<br><code>VS_slot_0_res_1678_buffer.bin</code> (614400 elements × 64 B).</p>
+<h2>3. Fix (StructuredBuffer support)</h2>
+<p><code>hlsl_interpreter.py</code>:</p>
+<ul>
+<li><code>self.structured_buffers</code> registry.</li>
+<li><code>_parse_structured_buffers(code)</code>: parses <code>struct</code> layouts and <code>StructuredBuffer&lt;T&gt; name : register(tN)</code>, recording member layout and byte stride.</li>
+<li><code>load_structured_buffer_data(folder)</code>: binds each buffer to <code>VS_slot_{reg}_res_*_buffer.bin</code>, keeping raw bytes (decoded on demand to avoid materialising the whole palette).</li>
+<li><code>_structured_buffer_member(sb, index, member)</code>: decodes one element's member on demand (float / int / uint).</li>
+<li><code>_eval_subscript(expr, local_vars)</code>: evaluates a subscript to int, handling literals, constant arithmetic (<code>48/4</code>, <code>48/4+1</code>) and variable refs (<code>r1.y</code>).</li>
+<li><code>get_value</code>: array-subscript branch now resolves StructuredBuffer access <code>t0[i].member</code> / <code>t0[i].member[k]</code>, and uses <code>_eval_subscript</code> for all index expressions (also benefits the cb1[i] array-cbuffer path).</li>
+</ul>
+<p><code>render.py</code>: calls <code>_parse_structured_buffers(vs_code)</code> and<br><code>load_structured_buffer_data(data_folder)</code> during VS setup.</p>
+<p>(5 of the remaining 6 witcher3 cases also use StructuredBuffer, so this is<br>shared infrastructure, not a one-off.)</p>
+<h2>4. Result for event994</h2>
+<pre><code>Loaded StructuredBuffer 't0' (t0): 614400 elements, stride 64B
+Total PASSED rows: 2490/2490   (now a genuine pass — NaN masking removed)
+0 "Error:" lines
+Depth: golden 54 | matched 46 | missing 8 | extra 2  (48 pixels rendered, was 0)</code></pre>
+<p>Residual 8 missing + 2 extra edge pixels = the step102 sub-pixel coverage<br>limitation (non-gating).</p>
+<h2>5. Regression</h2>
+<p>Added <code>witcher3_countryside_event994.zip</code>. Result: <b>9/9 passed</b> (6 Collision +<br>895 + 907 + 994). The parser bracket-depth fix and the NaN-masking fix are<br>strict improvements — no finite-valued case changes behaviour.</p>
+<h2>6. Commit</h2>
+<p>Committed interpreter + parser + render changes and this session doc.</p>
+</div></body></html>

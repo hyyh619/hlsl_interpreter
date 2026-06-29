@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 120 — GPU denormal FTZ, ftoi cast semantics, and a long-tail assessment</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment</span></div>
+<div class="wrap">
+<h1>Step 120 — GPU denormal FTZ, ftoi cast semantics, and a long-tail assessment</h1>
+<h2>Goal</h2>
+<p>Work the remaining RunDrawFromDump long tail the user listed:<br>atmosphere-output precision (event20899 + unexamined event23458), packed-uint<br>octahedral normals (event16215/16834), unsupported raw structured buffers<br>(event22201), quaternion SNORM/UNORM ambiguity, and the slow-rasterization<br>timeouts.</p>
+<h2>Results summary</h2>
+<table>
+<tr><th>Case / class</th><th>Outcome</th></tr>
+<tr><td>event23458</td><td><b>Fixed</b> — was already resolved by the step-119 multi-array cbuffer fix (stale triage log). 615/615.</td></tr>
+<tr><td>event20899 (atmosphere)</td><td><b>Fixed</b> — GPU denormal flush-to-zero. 0 → 2160/2160. Added to regression.</td></tr>
+<tr><td><code>(int)</code>/<code>(uint)</code> cast of float vertex input</td><td><b>Fixed</b> — corrected over-aggressive class-11 bitcast (DXBC ftoi/ftou). Regression 46/46.</td></tr>
+<tr><td>event16215 / event16834 (octahedral)</td><td><b>Blocked</b> — need bit-exact VS Texture2DArray sampling (GetDimensions + SampleLevel + multi-slice load).</td></tr>
+<tr><td>event22201 (raw buffer)</td><td><b>Blocked</b> — capture never dumped the <code>t21</code> raw buffer (disasm: "needs manual fix").</td></tr>
+<tr><td>quaternion SNORM/UNORM</td><td><b>Blocked</b> — capture records no VS typed-buffer view format.</td></tr>
+<tr><td>timeouts (~26 + Tank)</td><td><b>Perf, not a bug</b> — pure-Python rasterization over large draws.</td></tr>
+</table>
+<h2>Fix 1 — event20899: GPU denormal flush-to-zero (FTZ)</h2>
+<p>event20899's atmosphere outputs o0/o1 were wrong. Traced the whole chain to one<br>constant: <code>cb12[271].z</code>. Its raw bytes are <code>0x00000001</code> — the integer 1's bit<br>pattern, which as a float32 is the <b>denormal</b> <code>1.4e-45</code>. The shader uses it as<br>a <i>float</i> condition: <code>cb12[271].z ? r2.x : 1</code>.</p>
+<p>GPUs run shader arithmetic in flush-denormals-to-zero (FTZ) mode, so the GPU sees<br><code>0.0</code> (falsy) and takes the false branch → <code>r2.x = 1</code> → `r2.x = r3.x = saturate(<br>r0.w*0.002 − 0.3) = 0<code> → </code>o0 = cb12[46]` (= golden). The interpreter kept the<br>tiny-but-nonzero denormal (truthy), took the wrong branch, and <code>r2.x</code> came out<br><code>0.9967</code>, corrupting o0 and the entire downstream o1 in-scattering chain.</p>
+<p><b>Fix:</b> flush subnormal float32 values (<code>0 &lt; |x| &lt; 1.1754943508e-38</code>) to <code>0.0</code><br>when decoding the binary cbuffer (<code>override_cbuffers_from_binary</code>). <code>asint</code>/<br><code>asuint</code> are unaffected — they read exact int bits from <code>_cb_raw</code>, not the float.<br>Commit <code>c398d86</code>.</p>
+<h2>Fix 2 — <code>(int)</code>/<code>(uint)</code> cast of a float vertex input</h2>
+<p>While chasing event16834's NaN sv_position, found the class-11 cast heuristic was<br>too aggressive. It reinterpreted the raw float32 bits for <i>any</i> <code>(int)</code>/<code>(uint)</code><br>cast of a float vertex-input attribute. That is right only for packed-data<br>extraction, where the cast feeds a bit op:</p>
+<ul>
+<li>event16215: <code>(uint2)v1.zw &gt;&gt; int2(16,16)</code> — bit-shifted → <b>bitcast</b> correct.</li>
+<li>event16834: <code>(int2)v1.zw</code> used directly as a <b>texture coordinate</b> → must be <code>ftoi</code> (round toward zero). Bitcasting turned <code>2.0</code> into <code>1073741824</code>, reading an out-of-bounds texel → <code>t1.Load</code> returned 0 → <code>0/0 = NaN</code> in the position.</li>
+</ul>
+<p><b>Fix:</b> bitcast only in the bitwise-operand path (new <code>_eval_bitwise_operand</code>,<br>triggered by <code>&gt;&gt; &lt;&lt; &amp; | ^</code>); everywhere else <code>(int)</code>/<code>(uint)</code> value-converts,<br>matching DXBC ftoi/ftou. uint-declared index attributes (BLENDINDICES etc.) were<br>never in the float-only vertex-input set, so they are unaffected (event1031,<br>event1399 still pass). Commit <code>122e4f4</code>. Regression 46/46.</p>
+<p>This unblocked event16834's first two NaN sources (the cast, then a now-valid<br><code>t1.Load</code>), exposing the next blockers below.</p>
+<h2>Blocked classes (honest assessment)</h2>
+<h3>Octahedral normals — event16215 / event16834</h3>
+<p>These are instanced foliage shaders that do <b>vertex texture fetch</b>. After the<br>ftoi fix, event16834 still NaNs because:</p>
+<ul>
+<li><code>t0.GetDimensions(0, fDest.x, …)</code> is unimplemented → returns 0 → <code>0.5/0 = inf</code>.</li>
+<li><code>t0.SampleLevel(...)</code> is "Unknown method" — <code>SampleLevel</code> isn't implemented.</li>
+<li>The VS texture loader loads only array slice <code>arr0</code>, but the shader samples slice <code>v1.z = 2</code> of a <code>Texture2DArray</code>.</li>
+</ul>
+<p>So completing event16834 needs GetDimensions + SampleLevel (explicit LOD) +<br>multi-slice Texture2DArray loading and slice selection, all bit-exact (a R16_UNORM<br>height feeds the position). event16215 additionally reconstructs its normal/<br>tangent (TexCoord2/TexCoord3) through a branchy <code>t4.SampleLevel</code> path. This is a<br>substantial texture-array infrastructure effort with uncertain bit-exact payoff —<br>deferred rather than ship half-built, untested texture features.</p>
+<h3>Raw structured buffer — event22201</h3>
+<p>The disasm literally carries `// No code for instruction (needs manual fix):<br>ld_raw_indexable(raw_buffer) ... t21<code> plus </code>dcl_resource_raw t21`. The VS reads a<br>raw buffer the capture never dumped. (FTZ did drop its error count 112 → 54, but<br>the raw-buffer reads remain unsatisfiable.) Capture-data limitation — unfixable<br>here.</p>
+<h3>Quaternion typed-buffer SNORM vs UNORM</h3>
+<p>Unchanged from step 118: a t3 quaternion buffer is <code>R8G8B8A8_SNORM</code> while the<br>same-size t2 is <code>R8G8B8A8_UNORM</code>, and the capture records no VS typed-buffer view<br>format to tell them apart. Capture-data limitation.</p>
+<h3>Timeouts (~26 witcher + Tank)</h3>
+<p>Pure-Python rasterization/depth over large draws (tens of thousands of pixels).<br>The VS-vs-golden grade would pass; only wall-clock is the issue. Perf, not a<br>correctness bug — deferred (matches the Tank classification).</p>
+<h2>Regression</h2>
+<p>46/46 after both fixes (event20899 added as the FTZ representative). event23341<br>(multi-array) and event20899 (FTZ) both in the suite.</p>
+</div></body></html>

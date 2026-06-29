@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 96 — Save the output-merger pixel colors as a bitmap</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step96-save-output-pixels-bitmap</span></div>
+<div class="wrap">
+<h1>Step 96 — Save the output-merger pixel colors as a bitmap</h1>
+<h2>Task</h2>
+<p>After <code>_execute_pipeline</code> finishes the pixel compare, save the final output<br>Pixel colors directly to a bitmap image. The bitmap size is set from the<br>viewport size.</p>
+<h2>Thinking</h2>
+<h3>What's available</h3>
+<ul>
+<li><b>Viewport size</b> lives on the rasterizer: <code>rast.config.viewport</code> has <code>x</code>, <code>y</code>, <code>width</code>, <code>height</code> (loaded from <code>pipeline_state.csv</code>'s <code>Viewport,*</code> rows). For these captures it's 640×480 at origin (0,0).</li>
+<li><b>Pixel color</b>: <code>Pixel.ps_output_color</code> (the PS output, post output-merger clamp) with <code>Pixel.color</code> (interpolated) as a fallback. Colors are floats, clamped to [0,1] for UNORM targets.</li>
+<li><b>No BMP writer existed</b> — <code>texture.py</code> only <i>parses</i> BMPs (<code>_parse_bmp_pixels</code>). So I had to write an encoder.</li>
+</ul>
+<h3>Design decisions</h3>
+<ol>
+<li><b>Size = viewport.</b> Image is <code>int(round(width)) × int(round(height))</code>. Pixels are placed at <code>(x − viewport.x, y − viewport.y)</code>; anything outside the viewport rectangle is dropped. Untouched pixels stay black.</li>
+<li><b>One winner per (x,y): nearest depth wins.</b> The interpreter keeps every surviving fragment, so a screen pixel can have several. I collapse with <code>p.depth &lt; prev.depth</code>, identical to <code>_compare_ps_output</code>'s golden collapse, so the saved image matches what the depth test would keep.</li>
+<li><b>Color source / quantization.</b> <code>ps_output_color or color or black</code>, clamp to [0,1], <code>round(v*255)</code> to 8-bit, written <b>BGR</b> (BMP channel order).</li>
+<li><b>24-bit BI_RGB BMP, bottom-up.</b> Standard 54-byte header (<code>BITMAPFILEHEADER</code> + <code>BITMAPINFOHEADER</code>), each scanline padded to a 4-byte boundary. BMP stores rows bottom-up, so the last screen row (<code>py = height−1</code>) is written first — this is the Y-flip.</li>
+<li><b>Output path.</b> <code>output_bitmap_path</code> from config if set (resolved relative to the config file). Otherwise <code>&lt;zip-stem&gt;_output.bmp</code> written <b>next to the log file</b> (so headless/regression runs keep the image beside the case log rather than cluttering <code>Cases/</code>), falling back to the config dir when no log path is set. The data_folder is a temp dir that gets deleted, so the image must be written somewhere persistent.</li>
+</ol>
+<h2>Implementation</h2>
+<h3><code>render.py</code> — <code>_save_output_pixels_bitmap(pixels, viewport, path, log)</code></h3>
+<p>New helper: collapses pixels (nearest-depth), builds a top-down <code>height × width</code><br>frame of <code>(r,g,b)</code> byte triples, then writes a 24-bit bottom-up BMP. Returns<br>True on success; logs the path, dimensions, and count of pixels written.</p>
+<h3><code>render.py</code> — <code>_execute_pipeline</code></h3>
+<p>After the golden PS-output compare, resolve the output path and call the helper:</p>
+<pre><code>out_bmp = config.get('output_bitmap_path', '')
+if out_bmp:
+    out_bmp = out_bmp if os.path.isabs(out_bmp) else os.path.join(config_dir, out_bmp)
+else:
+    stem = os.path.splitext(os.path.basename(config.get('data_path','')))[0] or 'output'
+    out_dir = os.path.dirname(log_file_path) if log_file_path else config_dir
+    out_bmp = os.path.join(out_dir, f"{stem}_output.bmp")
+_save_output_pixels_bitmap(pixels, rast.config.viewport, out_bmp, vs_interp.log_output)</code></pre>
+<h2>Results</h2>
+<h3>Single-case run (event104)</h3>
+<pre><code>Saved output-merger bitmap: ...event104_output.bmp (640x480, 188506 pixel(s) written)</code></pre>
+<ul>
+<li><b>Size</b> matches the viewport (640×480) — correct.</li>
+<li><b>File size</b> = 921654 bytes = 54 + 640·480·3 — header + padded pixel array, exactly right.</li>
+<li><b>Round-trips</b> through the project's own <code>Texture._parse_bmp_pixels</code> (480 rows × 640 cols × 4 ch), confirming a well-formed BMP.</li>
+</ul>
+<h3>Orientation / placement check</h3>
+<p>Spot-compared BMP pixels against the golden <code>diff_ps_output_rt0.csv</code> colors at<br>matching <code>(x,y)</code>. The hues and locations agree (e.g. <code>(103,286)</code> ours orange<br><code>[0.69,0.231,0.11]</code> vs golden orange <code>[0.953,0.322,0.149]</code>), confirming the<br>Y-flip and placement are correct — a wrong flip would scatter unrelated colors.<br>The magnitude differences are the <b>pre-existing</b> PS-interpretation accuracy<br>gap for this capture (documented in step 94's PixelDiff), not a bitmap defect:<br>the bitmap faithfully renders whatever the <code>pixels</code> already hold.</p>
+<h3>Regression suite — 6/6 PASS</h3>
+<pre><code>PASS  ...event28.zip   passed 204/204
+PASS  ...event104.zip  passed 1149/1149
+PASS  ...event351.zip  passed 315/315
+PASS  ...event371.zip  passed 6/6
+PASS  ...event399.zip  passed 696/696
+PASS  ...event516.zip  passed 3/3</code></pre>
+<p>Each case now also drops a 640×480 BMP (921654 bytes) into<br><code>Cases/regression_logs/</code> alongside its log.</p>
+<h2>Config</h2>
+<p>New optional key in the run JSON:</p>
+<pre><code>"output_bitmap_path": "my_render.bmp"</code></pre>
+<p>When omitted, the image is saved as <code>&lt;zip-stem&gt;_output.bmp</code> next to the log file<br>(or the config file if no log path is configured).</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>render.py</code> — added <code>_save_output_pixels_bitmap()</code> (24-bit BMP encoder + nearest-depth collapse); call it at the end of <code>_execute_pipeline</code> after the pixel compare, with a config-driven / log-relative output path.</li>
+</ul>
+</div></body></html>

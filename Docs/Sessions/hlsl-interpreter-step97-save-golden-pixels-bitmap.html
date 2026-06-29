@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 97 — Save the golden pixel colors as a bitmap</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step97-save-golden-pixels-bitmap</span></div>
+<div class="wrap">
+<h1>Step 97 — Save the golden pixel colors as a bitmap</h1>
+<h2>Task</h2>
+<p>After <code>_execute_pipeline</code> finishes the pixel compare, directly save the <b>golden</b><br>pixel colors to a bitmap image. The bitmap size is set from the viewport size.</p>
+<p>This mirrors step 96 (which saved <i>our</i> output-merger pixels), but for the<br>reference data — so the golden RT0 image can be eyeballed next to our render.</p>
+<h2>Thinking</h2>
+<h3>What's available</h3>
+<ul>
+<li><b>Golden pixel data</b> is already loaded for the compare: <code>_load_golden_ps_output('diff_ps_output_rt0.csv')</code> returns <code>{(x, y): {'color': [r, g, b, a], 'depth': f}}</code>. The loader re-orders the capture's <code>B,G,R,A</code> columns to RGBA, so <code>color</code> is RGBA in [0,1]. <b>One color per screen pixel already</b> — no depth collapse needed (unlike our pixels, where several fragments can land on the same (x,y)).</li>
+<li><b>Viewport size</b> is on the rasterizer: <code>rast.config.viewport</code> (<code>x</code>, <code>y</code>, <code>width</code>, <code>height</code>) — 640×480 at (0,0) for these captures.</li>
+<li><b>BMP encoder</b> already exists from step 96 inside <code>_save_output_pixels_bitmap</code> — but it was inlined, not reusable.</li>
+</ul>
+<h3>Design decisions</h3>
+<ol>
+<li><b>Reuse the encoder.</b> Factored the 24-bit BI_RGB bottom-up BMP writer out of <code>_save_output_pixels_bitmap</code> into a shared <code>_write_bmp24(frame, w, h, path, log)</code>, plus a shared <code>_color_to_byte(v)</code> quantizer ([0,1] float → clamped 8-bit). Both the output and golden savers now build a <code>height × width</code> top-down frame of <code>(r,g,b)</code> triples and hand it to the same writer. No behavior change for step 96.</li>
+<li><b>No collapse for golden.</b> The golden dict is already keyed by (x,y), so the golden saver just iterates it directly — simpler than the output saver's nearest-depth collapse.</li>
+<li><b>Placement / size identical to step 96.</b> Image = viewport <code>w × h</code>; each golden pixel placed at <code>(x − viewport.x, y − viewport.y)</code>; outside-viewport entries dropped; untouched pixels black; BGR channel order; bottom-up rows (Y-flip). This guarantees the golden BMP and the output BMP are pixel-aligned for side-by-side comparison.</li>
+<li><b>Output path.</b> <code>golden_bitmap_path</code> from config (resolved relative to the config file) if set; otherwise <code>&lt;zip-stem&gt;_golden.bmp</code> next to the log file (falling back to the config dir) — exactly the step-96 convention, just a <code>_golden</code> suffix instead of <code>_output</code>.</li>
+<li><b>Where it runs.</b> Only inside the <code>if golden_ps:</code> block, right after <code>_compare_ps_output</code>. No golden data → no golden image (and the compare is skipped anyway).</li>
+</ol>
+<h2>Implementation</h2>
+<h3><code>render.py</code> — encoder refactor</h3>
+<ul>
+<li>New <code>_color_to_byte(v)</code> — <code>[0,1]</code> float → clamped 8-bit int.</li>
+<li>New <code>_write_bmp24(frame, width, height, path, log)</code> — the step-96 BMP byte writer (BITMAPFILEHEADER + BITMAPINFOHEADER, padded bottom-up scanlines), now standalone. Returns True on success.</li>
+<li><code>_save_output_pixels_bitmap</code> slimmed to build its frame and call the two helpers (identical output to step 96).</li>
+</ul>
+<h3><code>render.py</code> — <code>_save_golden_pixels_bitmap(golden, viewport, path, log)</code></h3>
+<p>New helper: builds a viewport-sized top-down frame from the golden dict<br>(<code>golden[(x,y)]['color']</code> → BGR bytes at <code>(x−x0, y−y0)</code>), then calls<br><code>_write_bmp24</code>. Logs path, dimensions, and pixel count.</p>
+<h3><code>render.py</code> — <code>_execute_pipeline</code></h3>
+<p>After the <code>_compare_ps_output</code> call, resolve the golden output path<br>(<code>golden_bitmap_path</code> config / <code>&lt;stem&gt;_golden.bmp</code> beside the log) and call<br><code>_save_golden_pixels_bitmap(golden_ps, rast.config.viewport, golden_bmp, log)</code>.</p>
+<h2>Results</h2>
+<h3>Single-case run (event351, via Default.json)</h3>
+<pre><code>Output-Merger Pixels vs Golden (diff_ps_output_rt0.csv, tolerance=0.15):
+  Golden pixels: 988 | matched: 953 | mismatched: 2 | missing: 33 | extra: 25
+Saved golden bitmap: ...event351_golden.bmp (640x480, 988 pixel(s) written)
+Saved output-merger bitmap: ...event351_output.bmp (640x480, 980 pixel(s) written)</code></pre>
+<ul>
+<li><b>Size</b> matches the viewport (640×480) — correct.</li>
+<li><b>988 pixels written</b> == the 988 golden pixels reported by the compare — every golden entry landed in the image.</li>
+<li><b>File size</b> = 921654 bytes = 54 + 640·480·3 — header + padded pixel array.</li>
+<li><b>Round-trips</b> through the project's own <code>Texture._parse_bmp_pixels</code> (480 rows × 640 cols × 4 ch) — a well-formed BMP.</li>
+</ul>
+<h3>Regression suite — 6/6 PASS</h3>
+<pre><code>PASS  ...event28.zip   passed 204/204
+PASS  ...event104.zip  passed 1149/1149
+PASS  ...event351.zip  passed 315/315
+PASS  ...event371.zip  passed 6/6
+PASS  ...event399.zip  passed 696/696
+PASS  ...event516.zip  passed 3/3</code></pre>
+<p>Each case now also drops a 640×480 <code>_golden.bmp</code> (921654 bytes) into<br><code>Cases/regression_logs/</code> alongside its <code>_output.bmp</code> and log.</p>
+<h2>Config</h2>
+<p>New optional key in the run JSON:</p>
+<pre><code>"golden_bitmap_path": "my_golden.bmp"</code></pre>
+<p>When omitted, the image is saved as <code>&lt;zip-stem&gt;_golden.bmp</code> next to the log file<br>(or the config file if no log path is configured).</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>render.py</code> — extracted <code>_color_to_byte()</code> and <code>_write_bmp24()</code> from <code>_save_output_pixels_bitmap()</code> (shared encoder); added <code>_save_golden_pixels_bitmap()</code>; call it in <code>_execute_pipeline</code> right after the golden PS-output compare, with a config-driven / log-relative output path.</li>
+</ul>
+</div></body></html>
