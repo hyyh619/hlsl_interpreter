@@ -2626,8 +2626,9 @@ docs: re-triage Dump/ 7-class status (step 155, audit only — no interpreter ch
 优先级建议：① E 类 Texture2DArray 切片采样（解释器+DXBC VM 双收益）；② F2 Nobu586 cbuffer 加载；
 ③ D 蒙皮/溢出收尾；④ 给 C(TombRaider) 上 `dxbc_diff` 寄存器级 golden；⑤ F1 统一容差。
 
-# 156
+# 156 仍需写代码修的 4 类 (~31 cases): D(9), E(10), F1(2), F2(10).
 ## Prompts
+继续修复仍需写代码修的 4 类 (~31 cases): D(9), E(10), F1(2), F2(10).
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
