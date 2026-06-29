@@ -2635,9 +2635,38 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+fix: cbuffer matrix major-order qualifier parse + R16G16B16A16 typed-buffer decode (step 156).
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step156-fix-4-classes-decode-parse-bugs.md`。结论分两层：
+**落地 2 个真实 decode/parse bug（零回归，回归 125/125）**，但 4 类的 **PASS 阻塞点几乎都是结构性问题**
+（与 B/C/E 同墙）。并行 subagent 查 D/F2（F2 agent 中途 API 断线，改本人手查）。
+
+**修复 1 — cbuffer 矩阵主序限定符解析**（`parse_cbuffer` ~990）：`row_major float4x4 mW2P` 被
+`split()` 切成 type=`row_major`/name=`float4x4`（限定符未剥），导致**每个 row_major/column_major cbuffer
+矩阵字段被错误命名 → CSV 与二进制都加载不到**（Nobu586 的 mW2P/mW2Pt/mW2S 全 `<not loaded>`，VS 全 0）。
+修复：split 前 `re.sub(r'\b(row_major|column_major)\s+','',line)`。
+
+**修复 2 — R16G16B16A16_FLOAT typed buffer 解码**（`_typed_buffer_load` ~3538）：`Buffer<float4>` 且
+`esize=8`（`esize//comp==2`）旧代码读 2 个 float32 把 4 个 half 读成垃圾。**陷阱**：8B 元素 R16G16B16A16(4half)
+与 R32G32(2float) 仅靠「half 全有限」无法区分（event1828 的 R32G32 `(0.4375,0.2031)` 恰能解成有限 half →
+第一版回归 121/125）。**双信号消歧**（`_infer_halfN_typed_buffer`）：仅当 half 解码全有限/在界 **且**
+float32 解出 **denormal**（证明 float32 视图是垃圾）才判 half；否则默认 float32（保旧行为）。8 样本完美分离，
+event3012 由 0→30/51。
+
+**触到的结构性墙**（PASS 阻塞，非简单 bug）：①**D**：half 修复后 event2135 的 buffer 值已对（解码 |·| 正好
+等于 golden 基向量），但 golden CSV 整体错位（`TEXCOORD10` 列装 SV_POSITION 数据、`SV_POSITION` 列是
+`[1,0,0,0]` 损坏、基向量被挤后且逐分量循环移位 = gotcha#1 的多 float3 版），尾部含下一顶点垃圾，恐不可恢复。
+②**F2-Nobu586**：矩阵加载后真正阻塞是主序——golden 需 `mul(M,world)`（`dot(row0,world)=-19.97 ✓`），反编译
+HLSL 的 `world.x*_m00..+..` 实为 `mul(world,M)`=转置，C/E 同款主序问题。③**E-witcher**：Texture2DArray
+采样缺口（两 loader `if arr!=0: continue` 只装 slice0，`sample()` 忽略 slice → 返回 0），且 o2/o3 叠加主序。
+④**F1**：精度容差，未放宽全局容差。
+
+**结果**：step 155 的「可修」偏乐观——4 类的 **decode/parse 层 bug 确可修且已修**，但 **PASS 被结构性墙挡住**
+（golden 多 float3 错位+尾部损坏、矩阵主序反编译、纹理数组、精度），与 B/C/E 同源。**本步无 Dump 用例转全
+PASS，但有真实正确性推进（Nobu586 全 0→真实值、Octopath event3012 0→30 行、多个 buffer 值由垃圾→正确）+ 完整
+根因地图**。回归 125/125 PASS（零回归）。未碰 golden loader/主序重建/容差（高风险且很可能不可恢复，不宜贸然动）。
 
 # 157
 ## Prompts

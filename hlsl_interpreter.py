@@ -988,7 +988,13 @@ class HLSLInterpreter:
             if not line or line.startswith('}'):
                 continue
             if any(t in line for t in DATA_TYPE_LIST):
-                parts = line.split()
+                # Strip the matrix major-order qualifier so it is not mistaken
+                # for the type: `row_major float4x4 mW2P : packoffset(c0)` must
+                # parse as type=float4x4 / name=mW2P, not type=row_major /
+                # name=float4x4 (which leaves the matrix unnamed → never loaded
+                # from CSV or binary, e.g. Nobu's mW2P/mW2Pt/mW2S).
+                line_nm = re.sub(r'\b(row_major|column_major)\s+', '', line)
+                parts = line_nm.split()
                 if len(parts) >= 2:
                     field_type = parts[0]
                     field_name = parts[1]
@@ -3514,6 +3520,41 @@ class HLSLInterpreter:
                 return 'half'
         return 'unorm' if data.count(0xFF) > data.count(0x7F) else 'snorm'
 
+    @staticmethod
+    def _infer_halfN_typed_buffer(data: bytes, esize: int) -> str:
+        """Decide whether an `esize`-byte typed-buffer element (2 bytes per
+        declared component) is R16..._FLOAT (`esize//2` half-floats) or a
+        float32 vector RenderDoc reported under a wider float view.
+
+        Finiteness alone is not enough: a 'nice' R32G32 value like 0.4375
+        (0x3EE00000) splits into two finite halfs (0.0, 1.719), so it would be
+        misread as half4. The decisive extra signal is the FLOAT32 reading: a
+        genuine R16..._FLOAT buffer's bytes, read as float32, almost always
+        produce a denormal (tiny ~1e-41) because a half's 16 high bits land in
+        a float32's mantissa. So call it 'half' only when (a) every element is
+        finite/in-range as halfs AND (b) the float32 reading yields a denormal
+        somewhere — proving the float32 view is garbage. Otherwise default to
+        'float' (the long-standing behaviour), so plausible float32 buffers
+        (Octopath's R32G32 e.g. event1320/1828) are never disturbed."""
+        nhalf = esize // 2
+        nflt = esize // 4
+        if esize <= 0 or nhalf <= 0:
+            return 'float'
+        n = len(data) // esize
+        if not n:
+            return 'float'
+        for i in range(n):
+            for v in struct.unpack_from('<%de' % nhalf, data, i * esize):
+                if not math.isfinite(v) or abs(v) >= 1024.0:
+                    return 'float'
+        _FLT_MIN_NORMAL = 1.1754943508222875e-38
+        if nflt:
+            for i in range(n):
+                for v in struct.unpack_from('<%df' % nflt, data, i * esize):
+                    if 0.0 < abs(v) < _FLT_MIN_NORMAL:   # denormal → float32 view is garbage
+                        return 'half'
+        return 'float'
+
     def _typed_buffer_load(self, tb: dict, index: int):
         """Fetch element `index` of a typed buffer as a float list padded to 4
         with D3D's (0,0,0,1) defaults. buffer_params.csv gives only the element
@@ -3543,6 +3584,24 @@ class HLSLInterpreter:
             else:
                 raw = data[off:off + min(esize, 4)]
                 vals = [b / 255.0 for b in raw]
+        elif comp and esize // comp == 2:
+            # 2 bytes per declared component is AMBIGUOUS for a Buffer<float4>
+            # (comp 4, 8-byte element): either R16G16B16A16_FLOAT (4 halfs —
+            # Octopath's per-bone matrix rows / packed normals) or R32G32_FLOAT
+            # (2 floats RenderDoc reported under a float4 view). Disambiguate by
+            # the same finiteness signal used for 4-byte: a float32 bit pattern
+            # almost always yields a NaN/inf or huge value in some half lane, so
+            # "every element finite and in range as halfs" reliably means half.
+            fmt = tb.get('half_fmt2')
+            if fmt is None:
+                fmt = self._infer_halfN_typed_buffer(data, esize)
+                tb['half_fmt2'] = fmt
+            if fmt == 'half':
+                vals = list(struct.unpack_from('<%de' % min(comp, esize // 2),
+                                               data, off))
+            else:
+                vals = list(struct.unpack_from('<%df' % min(esize // 4, 4),
+                                               data, off))
         else:
             ncomp = min(esize // 4, 4)
             vals = list(struct.unpack_from('<%df' % ncomp, data, off))
