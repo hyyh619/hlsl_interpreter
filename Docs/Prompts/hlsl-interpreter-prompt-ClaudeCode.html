@@ -40,7 +40,7 @@ ul,ol{padding-left:26px}
 <body>
 <div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Prompts / hlsl-interpreter-prompt-ClaudeCode</span></div>
 <div class="wrap">
-<h1>1</h1>
+<h1 id="step-1">1</h1>
 <h2>Prompts</h2>
 <ol>
 <li>render.py执行时输入的json文件格式变化 a. 去掉了下列项目 "hlsl_file_path": "./color-correct-ninjia-of-collision/VERTEX_SHADER_STANDARD_POINT.hlsl", "csv_folder_path": "./color-correct-ninjia-of-collision/", "rasterizer_param": "./color-correct-ninjia-of-collision/rasterizer_param.json", "sampler_config": "./color-correct-ninjia-of-collision/sampler_config.json", "texture_desc": "./color-correct-ninjia-of-collision/texture_desc.json", "depth_stencil_config": "./color-correct-ninjia-of-collision/depth_stencil_descriptor.json", b. 增加了 "data_path": "./Cases/Collision-fix-constant-buffer-and-RdotV-zero_event475.zip", c. data_path给的是一个zip的压缩包，该压缩包包含：input vertex data, VS output data, texture data, hlsl source，每个shader stage阶段使用到的constant buffer data。这些data都以csv格式给出（除了texture data使用bitmap文件格式）。 d. render.py需要先解压缩该压缩包，获取对应的数据。之前这些数据都是由输入的json文件通过每个独立的config项来指定，例如hlsl就是由hlsl_file_path来指定所有的shader stage阶段的代码。现在分成每个shader stage阶段有独立的hlsl文件。</li>
@@ -54,7 +54,7 @@ ul,ol{padding-left:26px}
 <li>VS的输入数据的input layout定义文件是ia_input_layouts.csv定义，数据文件是ia_vertex_data.csv，请根据vs input signature和ia_input_layouts.csv来完成输入顶点数据到vs hlsl的输入数据的映射。</li>
 </ol>
 <h2>Git commit: hlsl-interpreter: using DxRenderDoc dump zip file as input by Claude Code.</h2>
-<h1>2 修复前序提交引入的bug</h1>
+<h1 id="step-2">2 修复前序提交引入的bug</h1>
 <h2>Prompts</h2>
 <p>请查看render.py运行时的打印log文件output.log，有如下的Error打印<br>Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054<br>Error: Row 0 Color[1]: output=1.640544 golden=0.431490 diff=1.209054<br>Error: Row 0 Color[2]: output=1.640544 golden=0.431490 diff=1.209054<br>Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100<br>Error: Row 0 WorldPos[1]: output=11.282900 golden=-88.120250 diff=99.403150<br>Error: Row 0 WorldPos[2]: output=-88.120300 golden=-58.054070 diff=30.066230<br>VS执行完毕的结果与golden data的数据对比，Color/WorldPos错误。</p>
 <ol>
@@ -77,7 +77,7 @@ ul,ol{padding-left:26px}
 <p>Root cause: 3Dmigoto's MeshOut CSV captures float3 VS outputs with a 1-float alignment shift. The WORLDPOS columns actually contain: WORLDPOS.x = o4.y, WORLDPOS.y = o4.z, WORLDPOS.z = next vertex's SV_POSITION.x (garbage). Comparing our output[i] against golden[i] directly fails for all 3 components.</p>
 <p>Fix (two parts):</p>
 <p>In load_vs_golden_from_mesh_csv: when loading a 3-component WorldPos, remap to [None, WORLDPOS.x, WORLDPOS.y] — None at index 0 signals "skip this component", and the two valid golden values shift to indices 1 and 2 to align with our output[1]=o4.y and output[2]=o4.z.<br>In compare_vs_output_with_golden_params: add if gv is None: continue to skip any golden component marked as unreliable.</p>
-<h1>3</h1>
+<h1 id="step-3">3</h1>
 <h2>Prompts</h2>
 <p>修复语法树执行时遇到的下列问题<br>[STMT] Executing: r2.xy = (int2)r2.yy | (int2)r2.xz<br>[SYNTAX TREE]<br>Cast(int2)<br>  inner:<br>Method_call(yy |)<br>      object:<br>        Value(r2)<br>      arg[0]:<br>        Value(int2)<br>[ERROR] Unknown method: yy |<br>[STMT] r2.xy = (int2)r2.yy | (int2)r2.xz =&gt; r2.xy = None<br>修复代码后执行下列命令来验证修复是否成功。运行render.py后会生成output.log(该文件在Cases文件夹中)，请读取output.log内容来验证还有Error打印吗？如果还有Error，请继续修复，知道VS输出正确<br>   python.exe render.py ./Cases/Default.json</p>
 <h2>Git commit:</h2>
@@ -91,7 +91,7 @@ ul,ol{padding-left:26px}
 <p>Added a pre-cast check at the top of _parse_expression: if the top-level operator is | or &amp;, handle it as a binary op immediately before the cast pattern gets a chance to consume the leading (type):</p>
 <p>op_info_pre = self._find_top_level_operator(expr)<br>if op_info_pre and op_info_pre[1] in ('|', '&amp;'):<br>    pos, op = op_info_pre<br>    left_node = self._parse_expression(expr[:pos].strip())<br>    right_node = self._parse_expression(expr[pos+1:].strip())<br>    return SyntaxTreeNode('binary_op', op, left_node, right_node)<br>Added '|', '&amp;' to the recognized-ops list in the main binary-op handler.</p>
 <p>Also restored the previously-commented-out WorldPos golden remapping in hlsl_interpreter.py (line 3047), which was needed for the comparison to pass.</p>
-<h1>4 修复执行HLSL得到的WorldPos.xyz数据不正确问题</h1>
+<h1 id="step-4">4 修复执行HLSL得到的WorldPos.xyz数据不正确问题</h1>
 <h2>Prompts</h2>
 <p>output.log的打印如下：<br>Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100</p>
 <p>[STMT] Executing: o4.xyz = r1.xyz<br>[SYNTAX TREE]<br>Value(r1.xyz)<br>[STMT] o4.xyz = r1.xyz =&gt; o4.xyz = ['-61.6382', '11.2829', '-88.1203']</p>
@@ -113,7 +113,7 @@ ul,ol{padding-left:26px}
 <p>golden WORLDPOS.x 11.2829 = our o4.y<br>golden WORLDPOS.y -88.1203 = our o4.z<br>golden WORLDPOS.z -58.05407 = MeshOut row 1's SV_POSITION.x (the next vertex)<br>That last value is the smoking gun: -58.05407 is literally the next vertex's data bleeding in. There is no way to compute -58.05407 from vertex 0's inputs — it doesn't belong to this vertex at all.</p>
 <p>This is exactly the 3Dmigoto trailing-float3 misalignment your earlier session (# 2 in the prompt) already documented: WORLDPOS.x = o4.y, WORLDPOS.y = o4.z, WORLDPOS.z = next vertex garbage. Commit 4280a27 removed the remap that compensated for it — which is why the WorldPos errors are back.</p>
 <p>Why I'm stopping to ask<br>The prompt says "the value should be [11.2829, -88.1203, -58.05407], fix the interpreter." But that target is the misaligned golden — and its third component is another vertex's value. I can't make the interpreter produce it without corrupting a computation that two other outputs prove is correct. So before I touch code, I need your call:</p>
-<h1>5 为zip工作流添加显示设置</h1>
+<h1 id="step-5">5 为zip工作流添加显示设置</h1>
 <h2>Prompts</h2>
 <ol>
 <li>render.py提供了_run_legacy_workflow和_run_zip_workflow两种执行方式。</li>
@@ -130,7 +130,7 @@ ul,ol{padding-left:26px}
 <p>show_input_mesh_from_params(...) —— 直接从 VS 输入参数（按 POSITION/NORMAL/COLOR/TEXCOORD 语义）和 vertex_data 构建网格<br>show_result_mesh_from_params(...) —— 直接读 vs_results 的 canonical key（sv_position/Normal/Color/TexCoord/TexCoord2），位置取 SV_POSITION 前 3 分量（沿用 legacy update_output 的约定）<br>render.py _execute_pipeline —— 三处接线，结构对齐 legacy：</p>
 <p>VS 解释器创建后 enable_mesh_view(True)<br>拓扑确定后显示输入/输出网格（输入按 execute_count 对齐到输出顶点数）<br>管线结束后喂入光栅化/PS/输出合并像素并绘制，最后进入 x 退出 / o 重开窗口的交互循环<br>验证：</p>
 <p>headless（mesh_view_enabled: false）：管线完整跑通，无回归<br>开启 mesh view：成功创建窗口、显示输入/输出网格（8/8 对齐）、绘制像素、x 退出，退出码 0；tkinter 不可用时 enable_mesh_view 会告警且 _mesh_view 保持 None，所有 if ... and vs_interp._mesh_view 守卫使其安全降级为 headless<br>一点说明：legacy 的 r（重跑 VS）依赖 set_hlsl_interpreter 绑定 struct，参数式工作流没有 struct，所以 zip 路径的交互循环只保留了 x/o，没有照搬 r。如果你需要 zip 路径也支持重跑，我可以再做一版参数式的 re-execute 绑定。</p>
-<h1>6 修复无法执行选中顶点的问题</h1>
+<h1 id="step-6">6 修复无法执行选中顶点的问题</h1>
 <h2>Prompts</h2>
 <p>点击MeshView的Re-execute Vertex Shader，输出窗口显示<br>Error: No HLSL Interpreter set. Call set_hlsl_interpreter() first.<br>请修复该问题，可以重新执行选中顶点的VS</p>
 <h2>Git commit:</h2>
@@ -143,7 +143,7 @@ ul,ol{padding-left:26px}
 <p>验证：</p>
 <p>三个文件语法 OK<br>直接复刻按钮的完整逻辑路径跑真实 zip 数据：重跑选中顶点 [3] 的 VS，6 个输出（sv_position / Color / TexCoord / TexCoord2 / Normal / WorldPos）与批量 executeVS 的结果逐分量完全一致<br>mesh 开启的完整管线烟雾测试退出码 0<br>现在点击按钮会重新执行选中顶点的 VS，并在输出窗口打印逐语句的语法树执行过程和最终输出结果（printSyntaxTree 会临时打开以便观察）。</p>
 <p>一个说明：参数式 re-execute 显示的输出结果是按参数名（o0、o1…）列出的，而非 canonical 名（Color、WorldPos…），因为 _execute_void_main 返回的就是参数名键。如果你希望输出窗口里显示更友好的语义名，我可以再加一层映射。</p>
-<h1>7 修复zip workflow纹理采样</h1>
+<h1 id="step-7">7 修复zip workflow纹理采样</h1>
 <h2>Prompts</h2>
 <p>zip workflow没有加载相应的纹理图片导致PS执行阶段的纹理采样没有采到正确的texel。</p>
 <ol>
@@ -163,7 +163,7 @@ ul,ol{padding-left:26px}
 </ol>
 <p>BMP scanlines are stored bottom-up (positive height). Added pixels.reverse() in _parse_bmp after reading, so texture row 0 (v=0) maps to the top of the image — matching D3D's top-left UV origin that the sampler assumes.<br>Verified output for slot t0:</p>
 <p>texture slot t0: PS_slot_0_res_126_mip0_arr0.bmp<br>Loaded 1 PS texture(s) from zip<br>[METHOD] DiffuseTexture.Sample(..., (0.3932, 0.1905)) = ['0.0733', '0.0362', '0.0401', '1.0000']<br>Note: only mip0 is loaded (the interpreter regenerates its own mip chain); since Sample(s, v2.xy) uses a 2D coord (LOD 0), only the base level is consulted — so this is sufficient for correct texel results here. The injected 3Dmigoto resources t120/t125 have no BMP dumps and aren't sampled, so they're correctly ignored.</p>
-<h1>8 执行zip csv的所有draw，修复遇到的error</h1>
+<h1 id="step-8">8 执行zip csv的所有draw，修复遇到的error</h1>
 <h2>Prompts</h2>
 <ol>
 <li>挨个执行Cases/zip_files.csv里的所有zip file。</li>
@@ -180,7 +180,7 @@ ul,ol{padding-left:26px}
 <p>Fix: when the canonical name is absent, fall back to any *_vs_mesh.csv in the data folder.</p>
 <p>Verification (with comparison now active)<br>Zip	Golden rows	Result<br>event28	204	PASSED 204/204<br>event351	315	PASSED 315/315<br>event371	6	PASSED 6/6<br>event399	696	PASSED 696/696<br>event516	3	PASSED 3/3<br>All five now load golden data, run the comparison, and pass within tolerance — zero Error: lines. The interpreter math was already correct; the validation just hadn't been running.</p>
 <p>Committed as a60b48f. Note: the commit also swept in the Prompts-file changes you had pre-staged before I started, and one further unstaged edit to that file remains uncommitted — left as-is since it wasn't part of this fix.</p>
-<h1>9 添加texture descriptor和sampler descriptor</h1>
+<h1 id="step-9">9 添加texture descriptor和sampler descriptor</h1>
 <h2>Prompts</h2>
 <ol>
 <li>读取zip文件中的sampler_params.csv和texture_params.csv创建shader stage阶段对应的sampler和texture descriptor</li>
@@ -202,7 +202,7 @@ ul,ol{padding-left:26px}
 <p><b>2. Sampling configured from descriptors.</b> <code>Sampler.from_params_row</code> parses the 3Dmigoto formats: address names (<code>Wrap</code>/<code>Clamp</code>/<code>Mirror</code>/<code>Border</code>/<code>MirrorOnce</code>), the <code>"Min=Linear,Mag=Linear,Mip=Point"</code> filter string into explicit min/mag/mip modes, <code>MinLOD</code>/<code>MaxLOD</code>/<code>MipLODBias</code>, <code>MaxAnisotropy</code>, and <code>CompareFunc</code>. New explicit <code>MinFilter</code>/<code>MagFilter</code>/<code>MipFilter</code> fields on <code>Sampler</code> take precedence in <code>_get_filter_mode()</code> (legacy bit-packed <code>Filter</code> path untouched). The interpreter's <code>Sample</code> handlers (both function-call and method-call paths) now resolve the sampler from the <b>sampler argument variable</b> via new <code>_find_sampler_binding</code> + <code>_resolve_sampler</code> (s-register lookup, with fallback to texture register then slot 0 then a default <code>Sampler</code>).</p>
 <p><b>3 &amp; 4. Real multi-mip data + mipmap sampling.</b> <code>TextureDesc</code> gained <code>MipDataPaths</code> (ordered mip0..mipN). <code>Texture._get_mip_levels</code> now loads each captured mip BMP directly when more than one level is present (refactored <code>_parse_bmp</code> into <code>_parse_bmp_pixels</code>/<code>_load_bmp_pixels</code>/<code>_load_mip_levels</code>), instead of regenerating the chain from mip0; single-image textures keep the regenerate-from-base behaviour. Cache key changed from <code>DataPath</code> to the tuple of mip paths. The existing LOD/mip-filter blend in <code>Texture.sample</code> now consults this real chain. Verified e.g. event28 t0 loads 9 levels (256→1) and t1 loads 8 levels (128→1) from the dumped BMPs, with s0 = (min=linear, mag=linear, mip=point), Wrap.</p>
 <p>Note: the per-stage descriptor-load lines print to stdout but not <code>output.log</code> — a pre-existing quirk of the dual VS/PS log handles, not introduced here. No commit made (none requested).</p>
-<h1>10 纹理采样的LOD是如何计算的</h1>
+<h1 id="step-10">10 纹理采样的LOD是如何计算的</h1>
 <h2>Prompts</h2>
 <p>纹理采样的LOD是如何计算的</p>
 <h2>Git commit:</h2>
@@ -224,7 +224,7 @@ ul,ol{padding-left:26px}
 <p>lod_level = min(lod, float(level_count - 1))<br>level0 = int(lod_level)              # 下层 mip<br>level1 = min(level0 + 1, ...)        # 上层 mip<br>s = lod_level - level0               # 小数部分 → 两层之间的插值权重<br>最后按 color0*(1-s) + color1*s 在相邻两个 mip 之间线性插值（texture.py:670-675）。</p>
 <p>关键点 / 与真实 GPU 的差异<br>真实 D3D11	这个解释器<br>LOD = log₂(max(|∂UV/∂x|, |∂UV/∂y|) × 纹理尺寸)，由光栅化 2×2 quad 的屏幕空间导数算出	不计算导数，LOD 直接取坐标第三分量，缺省 0.0<br>Sample() 自动算 mip	行为更接近 SampleLevel(samp, uv, lod)——LOD 必须显式给<br>也就是说，目前 Sample(samp, uv) 永远采样 mip 0（因为 w=0），除非：</p>
 <p>你传入 3 分量坐标显式指定 LOD，或<br>MipLODBias / MinLOD 把它推到更高层。<br>如果你想要"真实"的 LOD，需要在像素着色器执行时维护 2×2 像素 quad、对插值后的 UV 做 ddx/ddy，再 log2 ——目前 pixel.py / 光栅化路径里没有这一步。要我帮你确认光栅器是否按 quad 输出像素、或评估加上导数式 LOD 的改动量吗？</p>
-<h1>11 光栅化按照quad输出，计算纹理LOD</h1>
+<h1 id="step-11">11 光栅化按照quad输出，计算纹理LOD</h1>
 <h2>Prompts</h2>
 <ol>
 <li>光栅化按照quad输出像素</li>
@@ -276,7 +276,7 @@ ul,ol{padding-left:26px}
 <p>sample() gains ddx_uv/ddy_uv. When present: ρ² = max(|ddx·texsize|², |ddy·texsize|²), LOD = ½·log2(ρ²), then + MipLODBias, clamp [MinLOD, MaxLOD], and the mip index is floored at 0 (magnification → mip0). Falls back to the old explicit-w LOD when no derivatives (points/lines/SampleLevel-style).</p>
 <p>Verification<br>VS golden untouched: Default (event28) 204/204 PASS, color-correct-ninjia 2712/2712 PASS, zero Error: lines.<br>LOD now varies: distribution spanned −3.07 … 6.65 across mip levels 0–7 (event28 t0 has 9 mips); previously every sample was LOD 0.<br>Pixel count parity: 62200 = 62200 vs. stashed baseline — coverage set is identical, quads are derivative context only.<br>Cost: PS ~16s → 39s (neighbor re-execution); the per-quad cache cut it from an initial 65s. Rasterizer ~1.9s → 6.6s (4 lanes/quad). Acceptable for an emulator; noted as the main perf trade-off.<br>The two configs that errored (specular_too_shining, wrong_constant_attenuation) are pre-existing broken legacy configs (data_path: null, missing log dirs) — not affected by this work.</p>
 <p>One follow-up worth flagging for §11 of your prompt doc: the lockstep model now makes HLSL ddx()/ddy() intrinsics straightforward to add (the machinery is in place) — currently out of scope.</p>
-<h1>12 实现wireframe绘制</h1>
+<h1 id="step-12">12 实现wireframe绘制</h1>
 <h2>Prompts</h2>
 <p>rasterizer只支持solid绘制，请根据FillMode实现wireframe</p>
 <h2>Git commit:</h2>
@@ -286,7 +286,7 @@ ul,ol{padding-left:26px}
 <p>I added a branch right after the cull test in rasterizer.py:408-423:</p>
 <p>FillMode.LINE (wireframe) → draws the 3 triangle edges (v0→v1, v1→v2, v2→v0) by reusing the existing _rasterize_line, which already does DDA traversal with perspective-correct attribute interpolation and viewport/scissor clipping.<br>FillMode.POINT → rasterizes the 3 corner vertices via _rasterize_point.<br>FillMode.SOLID → unchanged (falls through to the existing quad-aligned barycentric fill).<br>Placing the branch after _should_cull_triangle means wireframe/point fills still honour back/front-face culling, matching D3D11 — it only rasterizes wireframe edges for triangles that survive the cull.</p>
 <p>One trade-off worth noting: wireframe pixels come from the line path, so they don't carry quad_lane/quad_inputs. That means ddx/ddy derivatives in the pixel shader won't be valid for wireframe fragments (same limitation the line/point topologies already have). For wireframe rendering that's normally acceptable, but flag it if a wireframe case relies on derivative-based texture LOD.</p>
-<h1>13 cull mode反了</h1>
+<h1 id="step-13">13 cull mode反了</h1>
 <h2>Prompts</h2>
 <p>通过运行下面的case我发现背面剔除做反了。把正面需要显示的triangle剔除掉了，而背面的triangle被保留了。请调试该问题<br>Collision-fix-constant-buffer-and-RdotV-zero_event516.zip<br>Collision-fix-constant-buffer-and-RdotV-zero_event104.zip</p>
 <h2>Git commit:</h2>
@@ -297,7 +297,7 @@ ul,ol{padding-left:26px}
 <p>Fixes (rasterizer.py:492-515)<br>Swapped the four comparisons so winding is interpreted in screen space, with a comment documenting the Y-flip.</p>
 <p>I also found a latent parser bug at rasterizer.py:781: if 'CCW' in val.lower() compared uppercase 'CCW' against a lowercased string, so it could never match — any FrontFace,CCW capture would have been silently mis-parsed as CLOCKWISE. Fixed to 'ccw'. (Your two cases are CW, so they hit the else correctly before — but a CCW capture would have been wrong.)</p>
 <p>Verification<br>Unit check of _should_cull_triangle: all four combinations (BACK×{CW,CCW} × {front,back}) now match D3D semantics.<br>event516 (1 triangle): now renders 1108 pixels — previously culled to 0.<br>event104 (1149-vertex mesh): renders 142,984 pixels — front faces survive.<br>Worth a visual confirmation in the mesh viewer on your end, but the front/back faces are now culled the correct way around.</p>
-<h1>14 fill mode map错误</h1>
+<h1 id="step-14">14 fill mode map错误</h1>
 <h2>Prompts</h2>
 <p>fill_mode_map不应该是这些选项，而应该是Wireframe和Solid。相应的rasterizer也要根据这两种fill mode来完成光珊化<br>        fill_mode_map = {<br>            'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,<br>            '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,<br>        }</p>
 <h2>Git commit:</h2>
@@ -307,7 +307,7 @@ ul,ol{padding-left:26px}
 <p>FillMode enum (rasterizer.py:25-29) — replaced POINT=0 / LINE=1 / SOLID=2 with the correct D3D11 values WIREFRAME=2 / SOLID=3.<br>Both fill_mode_maps (rasterizer.py:161, rasterizer.py:745) — now map only 'wireframe'/'solid' (plus CSV ints 2/3).<br>Triangle dispatch (rasterizer.py:411-418) — collapsed the LINE/POINT branches into a single WIREFRAME branch that draws the 3 edges; SOLID falls through to the barycentric fill.<br>While verifying, I discovered this wasn't cosmetic. The Default case (event516) is actually a Wireframe case, but the old map lacked 'wireframe', so it silently fell back to SOLID — masking a real crash in the wireframe code:</p>
 <p>Pre-existing crash fix — _rasterize_line and _rasterize_point passed a nonexistent position= kwarg to Pixel (the field is worldPos) and read lowercase attribute keys ('color', 'texcoord') that never matched the VS output's canonical capitalized keys. Aligned both to the solid path's worldPos= + Color/TexCoord/TexCoord2/Normal/WorldPos. Also fixed position→worldPos in pixel.py to_dict/from_dict.<br>Result: the wireframe case now runs end-to-end — 247 edge pixels rasterized, PS executed on all of them, 0 Error: lines. (The trailing EOFError is just the interactive MeshView prompt with no TTY — unrelated.)</p>
 <p>_rasterize_point/_rasterize_line are kept since they're still used by point-list/line-list topologies — the correct home for point/line rendering.</p>
-<h1>15 统计渲染的counter</h1>
+<h1 id="step-15">15 统计渲染的counter</h1>
 <h2>Prompts</h2>
 <ol>
 <li>统计执行了多少vertex count</li>
@@ -326,7 +326,7 @@ ul,ol{padding-left:26px}
 <p>Verified against the default case: 3 vertices → 1 triangle (not clipped, not culled) → 247 rasterized pixels → 247 pass depth → 247 PS pixels.</p>
 <p>Two notes on the model, since the interpreter doesn't do true frustum clipping:</p>
 <p>"Clipped" here means primitive rejected before culling (degenerate/off-screen), not real near/far plane clipping — there's no geometry sub-division.<br>Depth-fail count is 0 whenever depth/stencil is disabled, since Depth.execute passes all pixels through in that case.<br>I added the stats to the active zip workflow only; the legacy struct-based workflow (_run_legacy_workflow) was left unchanged. Let me know if you'd like it mirrored there too.</p>
-<h1>16 优化MeshView的显示性能</h1>
+<h1 id="step-16">16 优化MeshView的显示性能</h1>
 <h2>Prompts</h2>
 <p>当前因为我们需要显示顶点和像素点的数量很大，<br>例如运行Collision-fix-constant-buffer-and-RdotV-zero_event104.zip这个case时，<br>有14万个像素点需要显示，导致MeshView界面及其卡顿。请优化顶点和像素点的绘制，提升执行速度<br>把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
@@ -337,13 +337,13 @@ ul,ol{padding-left:26px}
 <p>修复<br>单张 tk.PhotoImage 取代成千上万个矩形 —— 把像素渲染进一张原始分辨率的 PhotoImage，用一次 put() 整张写入,作为一个 create_image item 显示。<br>缓存复用 —— base image 按 (id(pixels), len) 指纹缓存；平移只移动 image 位置,缩放用整数 zoom()/subsample() 并按因子缓存。<br>解耦重绘 —— 从 _draw_mesh_animated 移除像素绘制；改为只重绘当前可见标签（_redraw_active_pixel_tab + Notebook 标签切换绑定）；像素画布的平移/缩放统一走共享逻辑,并接上原本为空的 PS/OutputMerger 回调。<br>接口与着色行为不变，render.py 无需改动。</p>
 <p>验证结果（14 万像素 smoke test）<br>操作	优化前	优化后<br>canvas item 数	~140,000	1<br>首次绘制	数秒卡顿	0.23s<br>平移	重建 14 万 item	0.000s<br>缩放	重建 14 万 item	0.005s<br>旋转 VS mesh	连带重建像素画布	不再触碰<br>思考、执行与结果总结已写入 <a href="../Sessions/hlsl-step88-optimize-meshview-pixel-rendering.html">Sessions/hlsl-step88-optimize-meshview-pixel-rendering.html</a>（沿用仓库现有 hlsl-stepN-*.md 命名，上一步是 step87）。</p>
 <p>我做的验证是用合成的 14 万稠密像素跑新绘制路径，未跑实际的 zip case 全流程(那需要交互输入和 GUI 显示)——热路径逻辑和时序已经覆盖,但你最好用真实 case 实际操作一下确认手感。</p>
-<h1>17 增加regression test描述</h1>
+<h1 id="step-17">17 增加regression test描述</h1>
 <h2>Prompts</h2>
 <p>给claude.md增加一个regression test项目，要求每次claude code改动代码后需要执行一组regression test，regression test的列表用文件Cases/regression_test_zip_files.csv描述<br>把你思考，执行以及结果总结写成一个md文件保存在Session目录中，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
 <p>Add regression test to verify each code modification by claude code.</p>
 <h2>Claude Code Session</h2>
-<h1>18 Case增加pipeline statistics，请比较pipeline statistics</h1>
+<h1 id="step-18">18 Case增加pipeline statistics，请比较pipeline statistics</h1>
 <h2>Prompts</h2>
 <ol>
 <li>Case的zip文件增加了pipeline_statistics.csv，请读取golden的pipeline statistic数据</li>
@@ -361,7 +361,7 @@ ul,ol{padding-left:26px}
 <p>Pipeline-statistics comparison — _load_golden_pipeline_statistics reads pipeline_statistics.csv; _compare_pipeline_statistics maps each golden RawCounter to our pipeline_stats and reports per counter. VSInvocations/SamplesPassed mismatches → error, all other mapped counters → warning. Unmodeled stages (HS/DS/GS/CS) are skipped to avoid noise.<br>Output-merger pixel comparison — _load_golden_ps_output reads diff_ps_output_rt0.csv (re-ordering its B,G,R,A channels to RGBA); _compare_ps_output collapses overlapping pixels to the nearest-depth winner, compares color + depth within tolerance, caps detail to 50 lines, and prints a matched/mismatched/missing/extra summary.<br>pixel_tolerance config key, default 0.01, used for both color and depth.<br>Key design decision (you confirmed): the spec says print "Error", but run_regression.py gates failures on lines starting with the bare token Error:. Since the interpreter currently over-produces pixels (no real depth occlusion), SamplesPassed won't match golden yet. I used distinct Error [PipelineStats]: / Error [PixelDiff]: prefixes — error-level and greppable, but they don't trip the regression gate.</p>
 <p>Verification:</p>
 <p>event371: stats comparison correctly flags SamplesPassed (1404 vs golden 576) as an error and IAPrimitives/PSInvocations as warnings; pixel diff shows depth matching to ~3e-4 but PS color far darker than golden.<br>event28 (occluded draw): empty pixel CSV handled gracefully (comparison skipped).<br>Regression suite: 6/6 PASS — the new lines don't break the existing VS-vs-golden gate.<br>The comparison feature works correctly. It surfaces two pre-existing pipeline gaps (no culling/depth occlusion → SamplesPassed; PS color darkness vs golden) that are real follow-up items, noted in the doc but out of scope for this change.</p>
-<h1>19 检查是否实现了depth clip</h1>
+<h1 id="step-19">19 检查是否实现了depth clip</h1>
 <h2>Prompts</h2>
 <p>检查是否实现了depth clip</p>
 <h2>Git commit:</h2>
@@ -392,7 +392,7 @@ ul,ol{padding-left:26px}
 <p>render.py 里 clipped 仅是统计计数（退化 w / 屏幕外），与深度裁剪无关。</p>
 <p>总结：当前只有三角形带一个绑在 viewport min/max depth 上的逐像素深度范围剔除，可以粗略模拟 depth clip 开启时的可见结果；但严格意义的 depth clip（受 depth_clip_enable 控制、近平面几何裁剪、负 w 处理、点/线支持、viewport 深度重映射）均未实现。</p>
 <p>需要我把它补成真正的 depth clip 吗？（建议至少：让 depth_clip_enable 生效、把深度范围测试扩展到点/线、并分离"裁剪 z∈[0,1]"与"viewport 深度重映射"两个步骤。）</p>
-<h1>20 实现depth clip</h1>
+<h1 id="step-20">20 实现depth clip</h1>
 <h2>Prompts</h2>
 <p>实现完整的D3D的depth clip功能 <br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
@@ -402,7 +402,7 @@ ul,ol{padding-left:26px}
 <p>平面	判据	何时启用<br>w&gt;0	w - eps	始终（保证除法有限、剔除相机背后几何）<br>近	z	仅 depth_clip_enable 为真<br>远	w - z	仅 depth_clip_enable 为真<br>新增辅助方法：_map_depth（viewport 深度重映射 + 关闭时钳制）、_lerp_vertex（裁剪空间线性插值整个顶点 dict）、_clip_planes、_clip_segment（Liang–Barsky 线裁剪）、_clip_polygon_against_plane（Sutherland–Hodgman）、_clip_triangle（裁成子三角形扇）。<br>_rasterize_triangle 改为薄包装：裁剪 → 对每个子三角形调用核心 _raster_triangle_core，聚合返回状态。<br>核心里删除了原来混淆概念的逐像素 min_depth ≤ depth ≤ max_depth 剔除；深度统一走 _map_depth。<br>点 / 线也加上了近/远裁剪与深度重映射。<br>load_config_from_pipeline_state_csv 现在能解析 Rasterizer,DepthClip（之前 capture 里的这一行被忽略，标志是死配置）。<br>关键设计：完全在裁剪内部的几何裁剪让透视校正不变（属性与 w 同样线性插值）；完全在视口内的三角形会原样返回原顶点对象（零浮点扰动），所以对回归无影响。</p>
 <p>验证<br>回归 6/6 PASS，所有行全匹配（204/204、1149/1149、315/315、6/6、696/696、3/3）。<br>针对性测试（回归用例都在屏幕内，不触发裁剪，故另写脚本验证后删除）：全内三角形=恒等；跨近平面→裁成 2 个子三角形、深度 ∈[0,1]；w&lt;0 顶点→正确剔除无垃圾；点列 ON 保留 1/3、OFF 保留 3/3 且深度钳制；CSV DepthClip,False 正确解析。<br>文档<br>思考/执行/结果已写入 <a href="../Sessions/hlsl-interpreter-step91-implement-depth-clip.html">Sessions/hlsl-interpreter-step91-implement-depth-clip.html</a>。</p>
 <p>改动已就绪，未提交。需要的话我可以按你的惯例提交（commit message：Implement full D3D depth clip by claude code.）。</p>
-<h1>21 PS执行完毕后的Pixel color value是否需要做clamp</h1>
+<h1 id="step-21">21 PS执行完毕后的Pixel color value是否需要做clamp</h1>
 <h2>Prompts</h2>
 <p>PS执行完毕后的Pixel color value是否需要做clamp<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
@@ -412,7 +412,7 @@ ul,ol{padding-left:26px}
 <p>实测证明它是真实需要的，不是摆设<br>用例	PS 本质	被 clamp 的像素数<br>event371	o0 = v1 * r0（顶点色×纹理，都∈[0,1]）	0<br>event104	o0 = float4(4,4,4,4) * (lightmap × diffuse)	399,126<br>event104 的 ×4 lightmap 缩放把原始输出推到远超 1.0，真实 GPU 写入 UNORM 时会全部钳到 1.0。不 clamp，我们存的颜色就是错的（1.8、2.4…）。</p>
 <p>实现（render.py）<br>新增 _clamp_output_colors()，作为输出合并写入阶段（PS 之后、深度测试之后、golden 比较之前）执行，并打印被钳像素数。<br>新增配置项 output_color_clamp（默认 True=UNORM[0,1]；可设 "snorm" 或 false/"float" 给浮点 RT）。<br>故意放在 OM-write 阶段而非 executePS 内，保留原始输出供未来 blend 阶段使用（符合 D3D 的 shader→clamp/blend→write 顺序）。<br>验证<br>回归 6/6 PASS（VS-golden 门控不受影响，event371 在范围内不变）。<br>日志确认：event371 clamp [0.0,1.0]: 0，event104 clamp [0.0,1.0]: 399126。<br>重要补充<br>clamp 是必要但不充分：step90 里 PS-vs-golden 的颜色差异主因是alpha 混合（pipeline_state 里 blend 是开的：src·1 + dst·(1−srcA)），解释器还没建模混合——那是另一个更大的待办项。clamp 只让 UNORM 目标的 source 颜色正确。</p>
 <p>思考/执行/结果已写入 <a href="../Sessions/hlsl-interpreter-step92-clamp-ps-output-color.html">Sessions/hlsl-interpreter-step92-clamp-ps-output-color.html</a>。改动未提交。</p>
-<h1>22 根据rt format来决定clamp</h1>
+<h1 id="step-22">22 根据rt format来决定clamp</h1>
 <h2>Prompts</h2>
 <p>pipeline_states.csv增加了render target/depth_stencil buffer format<br>RenderTarget,Target[0]_Format,R8G8B8A8_UNORM<br>DepthStencil,Format,D24_UNORM_S8_UINT<br>请根据RT的格式来决定是否要做_clamp_output_colors，以及clamp的边界<br>PS 输出在写入 RT 时做格式转换并 clamp：</p>
 <p>UNORM（如 R8G8B8A8_UNORM）→ clamp 到 [0,1]<br>SNORM → clamp 到 [−1,1]<br>FLOAT → 不 clamp（可存 &gt;1、负数甚至 inf）</p>
@@ -425,7 +425,7 @@ ul,ol{padding-left:26px}
 <p>新增纯函数 _rt_format_to_clamp_mode(fmt)：格式字符串 → unorm/snorm/float/none 或 None（子串匹配，兼容各种通道布局；SRGB 按 UNORM 处理，TYPELESS 返回 None）。<br>_execute_pipeline 在解析完 state 后决策：</p>
 <p>effective_clamp = 格式推导模式  if 有RT格式  else  output_color_clamp 配置<br>即 RT 格式优先决定，配置仅作旧 capture（无格式行）的回退——保持向后兼容。决策写入日志。<br>_clamp_output_colors 改用 effective_clamp。<br>边界对应<br>RT 格式	clamp<br>UNORM / UNORM_SRGB	[0,1]<br>SNORM	[−1,1]<br>FLOAT	不 clamp<br>UINT / SINT	不 clamp（整数 RT，浮点钳制不适用）<br>TYPELESS / 缺失	回退到 config（默认 [0,1]）<br>验证<br>映射函数逐项核对正确（见上表，已实测）。<br>端到端日志：Render target format: R8G8B8A8_UNORM → output-merger clamp mode: unorm；event104 仍正确钳制 399126 个越界像素，event371 钳制 0 个。<br>回归 6/6 PASS，全行匹配。<br>说明<br>仅读取 Target[0]（解释器单 RT）；MRT、整数 RT 的精确范围掩码、以及 alpha 混合阶段仍是后续项。</p>
 <p>思考/执行/结果已写入 <a href="../Sessions/hlsl-interpreter-step93-rt-format-driven-clamp.html">Sessions/hlsl-interpreter-step93-rt-format-driven-clamp.html</a>。改动未提交。</p>
-<h1>23 增加depth buffer的加载</h1>
+<h1 id="step-23">23 增加depth buffer的加载</h1>
 <h2>Prompts</h2>
 <ol>
 <li>zip文件增加了draw执行前的depth buffer数据文件pre_draw_depth_stencil.csv</li>
@@ -448,7 +448,7 @@ ul,ol{padding-left:26px}
 <p>Key finding<br>The depth test was previously a no-op (Depth() defaulted to depth_enable=False, so every pixel passed). Now it genuinely tests current pixel depth against the pre-draw depth value, as requested.</p>
 <p>Verification<br>Regression: 6/6 PASS (VS-vs-golden unaffected).<br>depth_passed now moves toward golden SamplesPassed in every case (event28 matches exactly, 0/0); PS-output spurious "extra" pixels dropped.<br>Confirmed event371's matched: 0 is pre-existing (verified against a stashed pre-change baseline) — not a regression from this change.<br>The residual SamplesPassed gap is rasterizer overdraw/fragment-ordering — a separate accuracy problem outside this task's scope (loading + comparing against the pre-draw buffer, which is fully delivered).</p>
 <p>Full write-up of thinking, execution, and results is in <a href="../Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.html">Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.html</a>.</p>
-<h1>24 Pipeline statistic compare增加</h1>
+<h1 id="step-24">24 Pipeline statistic compare增加</h1>
 <h2>Prompts</h2>
 <p>对于SamplesPassed的对比，需要增加一个容错值，该值可以通过输入的json配置，如果没有配置，默认值使用500<br>Error [PipelineStats]: SamplesPassed mismatch: output=42906 golden=42726 (mapped from pipeline_stats['depth_passed'])</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
@@ -466,7 +466,7 @@ ul,ol{padding-left:26px}
 <p>Reads config.get('samples_passed_tolerance', 500) (default 500 when the JSON omits it) and forwards it to the comparison.</p>
 <p>Verification<br>Unit check: the exact example from the task (output=42906, golden=42726, diff=180) now reports OK ... within tolerance 500; tightening the config to tol=100 makes it fail again; exact matches unaffected.<br>Regression: 6/6 PASS (these [PipelineStats] lines are non-gating diagnostics, so the suite result is unchanged — this step only affects OK-vs-error reporting in the log).<br>Config<br>New optional key — omit for the default of 500:</p>
 <p>"samples_passed_tolerance": 500<br>Full write-up in <a href="../Sessions/hlsl-interpreter-step95-samples-passed-tolerance.html">Sessions/hlsl-interpreter-step95-samples-passed-tolerance.html</a>.</p>
-<h1>25 增加Output_merger执行完毕后color buffer输出</h1>
+<h1 id="step-25">25 增加Output_merger执行完毕后color buffer输出</h1>
 <h2>Prompts</h2>
 <p>_execute_pipeline执行完pixel compare后，直接把输出的Pixel color存成一个bitmap图片，bitmap的大小根据viewport大小设置</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
@@ -485,7 +485,7 @@ ul,ol{padding-left:26px}
 <p>Resolves the output path: output_bitmap_path from config if set, otherwise &lt;zip-stem&gt;_output.bmp next to the log file (so headless/regression runs don't clutter Cases/), falling back to the config dir.</p>
 <p>Verification<br>event104: emitted 640×480 BMP, 921654 bytes = 54 + 640·480·3 (exact), round-trips through the project's own Texture._parse_bmp_pixels.<br>Orientation/placement: spot-checked against golden RT colors — hues and locations agree (a wrong Y-flip would scatter unrelated colors). Magnitude gaps are the pre-existing PS-accuracy issue from step 94, not a bitmap defect.<br>Regression: 6/6 PASS, each producing a valid 640×480 BMP in regression_logs/.<br>Config<br>New optional key — omit to default to &lt;zip-stem&gt;_output.bmp beside the log:</p>
 <p>"output_bitmap_path": "my_render.bmp"<br>Full write-up in <a href="../Sessions/hlsl-interpreter-step96-save-output-pixels-bitmap.html">Sessions/hlsl-interpreter-step96-save-output-pixels-bitmap.html</a>.</p>
-<h1>26 Dump golden output pixels to bitmap</h1>
+<h1 id="step-26">26 Dump golden output pixels to bitmap</h1>
 <h2>Prompts</h2>
 <p>_execute_pipeline执行完pixel compare后，直接把golden pixel color存成一个bitmap图片，bitmap的大小根据viewport大小设置</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
@@ -500,7 +500,7 @@ ul,ol{padding-left:26px}
 <p>Verification:</p>
 <p>event351: 988 pixels written = the 988 golden pixels from the compare; 640×480; 921654 bytes (= 54 + 640·480·3); round-trips through the project's own Texture._parse_bmp_pixels.<br>Regression suite: 6/6 PASS, each case now dropping a _golden.bmp next to its log.<br>Session log written to hlsl-interpreter-step97-save-golden-pixels-bitmap.md.</p>
 <p>One note: I haven't committed anything — let me know if you'd like me to.</p>
-<h1>27 修复collision event399 pixel color错误问题</h1>
+<h1 id="step-27">27 修复collision event399 pixel color错误问题</h1>
 <h2>Prompts</h2>
 <p>运行Collision-fix-constant-buffer-and-RdotV-zero_event399.zip有如下pixels颜色不匹配，请分析整个渲染流程，修复颜色不匹配问题<br>Error [PixelDiff]: (355,348) color out=[0.0408, 0.0352, 0.0351, 1.0000] golden=[0.2353, 0.1961, 0.1922, 1.0000] cdiff=[0.1945, 0.1609, 0.1570, 0.0000] | depth out=0.993241 golden=0.993231 ddiff=0.000010<br>Error [PixelDiff]: (368,351) color out=[0.3769, 0.3702, 0.3626, 1.0000] golden=[0.6000, 0.6039, 0.5882, 1.0000] cdiff=[0.2231, 0.2338, 0.2256, 0.0000] | depth out=0.992288 golden=0.992291 ddiff=0.000003<br>Error [PixelDiff]: (367,352) color out=[0.2385, 0.1909, 0.1908, 1.0000] golden=[0.6667, 0.6667, 0.6549, 1.0000] cdiff=[0.4282, 0.4758, 0.4641, 0.0000] | depth out=0.992287 golden=0.992286 ddiff=0.000001<br>Error [PixelDiff]: (368,352) color out=[0.2034, 0.1763, 0.1761, 1.0000] golden=[0.4667, 0.4510, 0.4471, 1.0000] cdiff=[0.2633, 0.2747, 0.2709, 0.0000] | depth out=0.992274 golden=0.992277 ddiff=0.000003<br>Error [PixelDiff]: (369,352) color out=[0.1279, 0.1154, 0.1116, 1.0000] golden=[0.2980, 0.2471, 0.2431, 1.0000] cdiff=[0.1701, 0.1316, 0.1315, 0.0000] | depth out=0.992272 golden=0.992261 ddiff=0.000011<br>Error [PixelDiff]: (367,353) color out=[0.2517, 0.2170, 0.2154, 1.0000] golden=[0.7059, 0.7059, 0.6941, 1.0000] cdiff=[0.4542, 0.4889, 0.4788, 0.0000] | depth out=0.992267 golden=0.992272 ddiff=0.000005<br>Error [PixelDiff]: (379,353) missing in output (golden color=[0.1333, 0.1098, 0.1098, 1.0000] depth=0.991806)<br>Error [PixelDiff]: (366,354) color out=[0.2811, 0.2315, 0.2315, 1.0000] golden=[0.8118, 0.8118, 0.8000, 1.0000] cdiff=[0.5306, 0.5803, 0.5685, 0.0000] | depth out=0.992271 golden=0.992268 ddiff=0.000003<br>Error [PixelDiff]: (367,354) color out=[0.2916, 0.2417, 0.2416, 1.0000] golden=[0.6471, 0.6314, 0.6196, 1.0000] cdiff=[0.3554, 0.3897, 0.3780, 0.0000] | depth out=0.992248 golden=0.992258 ddiff=0.000010<br>Error [PixelDiff]: (376,354) color out=[0.1523, 0.1326, 0.1312, 1.0000] golden=[0.3098, 0.2627, 0.2588, 1.0000] cdiff=[0.1575, 0.1302, 0.1276, 0.0000] | depth out=0.991768 golden=0.991776 ddiff=0.000008<br>Error [PixelDiff]: (383,354) missing in output (golden color=[0.1216, 0.1020, 0.1020, 1.0000] depth=0.991552)<br>Error [PixelDiff]: (366,355) color out=[0.2982, 0.2489, 0.2489, 1.0000] golden=[0.7843, 0.7843, 0.7804, 1.0000] cdiff=[0.4862, 0.5354, 0.5315, 0.0000] | depth out=0.992266 golden=0.992264 ddiff=0.000002<br>Error [PixelDiff]: (367,355) color out=[0.1699, 0.1241, 0.1240, 1.0000] golden=[0.5804, 0.5608, 0.5529, 1.0000] cdiff=[0.4105, 0.4367, 0.4289, 0.0000] | depth out=0.992250 golden=0.992251 ddiff=0.000001<br>Error [PixelDiff]: (380,355) color out=[0.1240, 0.1053, 0.1048, 1.0000] golden=[0.2980, 0.2510, 0.2510, 1.0000] cdiff=[0.1741, 0.1456, 0.1462, 0.0000] | depth out=0.991490 golden=0.991505 ddiff=0.000015<br>Error [PixelDiff]: (386,355) missing in output (golden color=[0.1490, 0.1216, 0.1216, 1.0000] depth=0.991324)<br>Error [PixelDiff]: (366,356) color out=[0.2702, 0.2209, 0.2209, 1.0000] golden=[0.7216, 0.7294, 0.7294, 1.0000] cdiff=[0.4513, 0.5085, 0.5085, 0.0000] | depth out=0.992262 golden=0.992262 ddiff=0.000000<br>Error [PixelDiff]: (367,356) color out=[0.2357, 0.1994, 0.1986, 1.0000] golden=[0.6078, 0.6000, 0.5961, 1.0000] cdiff=[0.3721, 0.4006, 0.3975, 0.0000] | depth out=0.992251 golden=0.992249 ddiff=0.000002<br>Error [PixelDiff]: (390,356) missing in output (golden color=[0.1333, 0.1098, 0.1098, 1.0000] depth=0.991070)<br>Error [PixelDiff]: (367,357) color out=[0.3783, 0.3574, 0.3544, 1.0000] golden=[0.6392, 0.6353, 0.6275, 1.0000] cdiff=[0.2609, 0.2779, 0.2730, 0.0000] | depth out=0.992247 golden=0.992247 ddiff=0.000000<br>Error [PixelDiff]: (367,358) color out=[0.4403, 0.4308, 0.4256, 1.0000] golden=[0.6510, 0.6549, 0.6510, 1.0000] cdiff=[0.2107, 0.2241, 0.2254, 0.0000] | depth out=0.992243 golden=0.992244 ddiff=0.000001<br>Error [PixelDiff]: (368,358) color out=[0.2644, 0.2157, 0.2155, 1.0000] golden=[0.4275, 0.4039, 0.3961, 1.0000] cdiff=[0.1631, 0.1882, 0.1806, 0.0000] | depth out=0.992232 golden=0.992233 ddiff=0.000001<br>Error [PixelDiff]: (369,359) color out=[0.1442, 0.1016, 0.1010, 1.0000] golden=[0.2824, 0.2627, 0.2588, 1.0000] cdiff=[0.1381, 0.1612, 0.1578, 0.0000] | depth out=0.992235 golden=0.992236 ddiff=0.000001<br>Error [PixelDiff]: (370,361) color out=[0.0828, 0.0653, 0.0653, 1.0000] golden=[0.2275, 0.2353, 0.2314, 1.0000] cdiff=[0.1447, 0.1700, 0.1660, 0.0000] | depth out=0.992251 golden=0.992249 ddiff=0.000002<br>Error [PixelDiff]: (371,361) missing in output (golden color=[0.1608, 0.1686, 0.1647, 1.0000] depth=0.992257)<br>Error [PixelDiff]: (411,361) color out=[0.4983, 0.4989, 0.4943, 1.0000] golden=[0.3020, 0.3059, 0.2941, 1.0000] cdiff=[0.1963, 0.1930, 0.2001, 0.0000] | depth out=0.989372 golden=0.989395 ddiff=0.000023<br>Error [PixelDiff]: (409,364) color out=[0.4433, 0.4390, 0.4321, 1.0000] golden=[0.5922, 0.5922, 0.5804, 1.0000] cdiff=[0.1488, 0.1531, 0.1483, 0.0000] | depth out=0.989338 golden=0.989341 ddiff=0.000003<br>Error [PixelDiff]: (410,364) color out=[0.2492, 0.2298, 0.2284, 1.0000] golden=[0.4078, 0.4000, 0.3922, 1.0000] cdiff=[0.1586, 0.1702, 0.1638, 0.0000] | depth out=0.989346 golden=0.989347 ddiff=0.000001<br>Error [PixelDiff]: (411,364) color out=[0.2253, 0.2252, 0.2253, 1.0000] golden=[0.3804, 0.3608, 0.3608, 1.0000] cdiff=[0.1551, 0.1356, 0.1355, 0.0000] | depth out=0.989356 golden=0.989350 ddiff=0.000006<br>Error [PixelDiff]: (385,365) missing in output (golden color=[0.1333, 0.1098, 0.1098, 1.0000] depth=0.991239)<br>Error [PixelDiff]: (409,365) color out=[0.3874, 0.3766, 0.3715, 1.0000] golden=[0.5490, 0.5451, 0.5373, 1.0000] cdiff=[0.1616, 0.1685, 0.1657, 0.0000] | depth out=0.989332 golden=0.989333 ddiff=0.000001<br>Error [PixelDiff]: (388,366) missing in output (golden color=[0.1255, 0.1059, 0.1059, 1.0000] depth=0.991020)<br>Error [PixelDiff]: (408,366) color out=[0.4906, 0.4853, 0.4783, 1.0000] golden=[0.6627, 0.6627, 0.6510, 1.0000] cdiff=[0.1721, 0.1775, 0.1726, 0.0000] | depth out=0.989319 golden=0.989319 ddiff=0.000000<br>Error [PixelDiff]: (409,366) color out=[0.2770, 0.2528, 0.2513, 1.0000] golden=[0.5020, 0.4863, 0.4824, 1.0000] cdiff=[0.2250, 0.2335, 0.2311, 0.0000] | depth out=0.989325 golden=0.989325 ddiff=0.000000<br>Error [PixelDiff]: (408,367) color out=[0.4366, 0.4216, 0.4149, 1.0000] golden=[0.7098, 0.7059, 0.6941, 1.0000] cdiff=[0.2732, 0.2843, 0.2792, 0.0000] | depth out=0.989312 golden=0.989311 ddiff=0.000001<br>Error [PixelDiff]: (409,367) color out=[0.1670, 0.1264, 0.1264, 1.0000] golden=[0.3412, 0.3020, 0.2980, 1.0000] cdiff=[0.1742, 0.1756, 0.1716, 0.0000] | depth out=0.989318 golden=0.989318 ddiff=0.000000<br>Error [PixelDiff]: (411,367) color out=[0.1156, 0.0718, 0.0736, 1.0000] golden=[0.4000, 0.3569, 0.3569, 1.0000] cdiff=[0.2844, 0.2851, 0.2833, 0.0000] | depth out=0.989213 golden=0.989220 ddiff=0.000007<br>Error [PixelDiff]: (408,368) color out=[0.3979, 0.3796, 0.3737, 1.0000] golden=[0.7137, 0.7098, 0.6980, 1.0000] cdiff=[0.3158, 0.3302, 0.3244, 0.0000] | depth out=0.989305 golden=0.989304 ddiff=0.000001<br>Error [PixelDiff]: (410,368) color out=[0.1354, 0.0933, 0.0912, 1.0000] golden=[0.4706, 0.4353, 0.4353, 1.0000] cdiff=[0.3352, 0.3420, 0.3441, 0.0000] | depth out=0.989200 golden=0.989234 ddiff=0.000034<br>Error [PixelDiff]: (408,369) color out=[0.3653, 0.3487, 0.3470, 1.0000] golden=[0.6902, 0.6941, 0.6863, 1.0000] cdiff=[0.3249, 0.3454, 0.3392, 0.0000] | depth out=0.989295 golden=0.989296 ddiff=0.000001<br>Error [PixelDiff]: (408,370) color out=[0.4714, 0.4627, 0.4595, 1.0000] golden=[0.7020, 0.7098, 0.7059, 1.0000] cdiff=[0.2306, 0.2471, 0.2464, 0.0000] | depth out=0.989287 golden=0.989288 ddiff=0.000001<br>Error [PixelDiff]: (409,370) color out=[0.1473, 0.1021, 0.1019, 1.0000] golden=[0.3882, 0.3608, 0.3569, 1.0000] cdiff=[0.2409, 0.2587, 0.2549, 0.0000] | depth out=0.989293 golden=0.989295 ddiff=0.000002<br>Error [PixelDiff]: (408,371) color out=[0.5267, 0.5238, 0.5198, 1.0000] golden=[0.6667, 0.6745, 0.6706, 1.0000] cdiff=[0.1400, 0.1507, 0.1507, 0.0000] | depth out=0.989279 golden=0.989281 ddiff=0.000002<br>Error [PixelDiff]: (409,371) color out=[0.2985, 0.2670, 0.2648, 1.0000] golden=[0.5098, 0.4941, 0.4902, 1.0000] cdiff=[0.2113, 0.2271, 0.2254, 0.0000] | depth out=0.989284 golden=0.989287 ddiff=0.000003<br>Error [PixelDiff]: (411,371) color out=[0.1591, 0.1056, 0.1056, 1.0000] golden=[0.3569, 0.3255, 0.3216, 1.0000] cdiff=[0.1977, 0.2199, 0.2160, 0.0000] | depth out=0.989184 golden=0.989183 ddiff=0.000001<br>Error [PixelDiff]: (411,372) color out=[0.1482, 0.0965, 0.0965, 1.0000] golden=[0.3490, 0.3216, 0.3137, 1.0000] cdiff=[0.2008, 0.2250, 0.2172, 0.0000] | depth out=0.989176 golden=0.989192 ddiff=0.000016<br>Error [PixelDiff]: (411,373) color out=[0.1765, 0.1337, 0.1316, 1.0000] golden=[0.3686, 0.3490, 0.3373, 1.0000] cdiff=[0.1921, 0.2153, 0.2057, 0.0000] | depth out=0.989169 golden=0.989226 ddiff=0.000057<br>Error [PixelDiff]: (408,374) color out=[0.3238, 0.3281, 0.3200, 1.0000] golden=[0.4902, 0.5020, 0.4980, 1.0000] cdiff=[0.1664, 0.1739, 0.1781, 0.0000] | depth out=0.989257 golden=0.989258 ddiff=0.000001<br>Error [PixelDiff]: (419,382) missing in output (golden color=[0.1020, 0.1020, 0.1059, 1.0000] depth=0.989289)<br>Error [PixelDiff]: (396,383) color out=[0.1334, 0.1360, 0.1297, 1.0000] golden=[0.3098, 0.3176, 0.3059, 1.0000] cdiff=[0.1764, 0.1816, 0.1762, 0.0000] | depth out=0.990551 golden=0.990548 ddiff=0.000003<br>Error [PixelDiff]: (410,383) color out=[0.2993, 0.3030, 0.2949, 1.0000] golden=[0.4392, 0.4549, 0.4392, 1.0000] cdiff=[0.1399, 0.1519, 0.1443, 0.0000] | depth out=0.989526 golden=0.989523 ddiff=0.000003<br>  ... (317 more mismatch/missing line(s) suppressed)<br>  Golden pixels: 2548 | matched: 2181 | mismatched: 349 | missing: 18 | extra (ours not in golden): 45<br>==================================================</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
@@ -514,7 +514,7 @@ ul,ol{padding-left:26px}
 <p>event399: mismatched 349 → 96 (matched 2181 → 2434) under your config; 383 → 146 under the regression config.<br>No regressions: a stash-based before/after showed my change touched only event399 — event104, 351, 371, 516 were byte-identical (their samplers have Min==Mag and colors stay in [0,1]).<br>Regression suite: 6/6 PASS.<br>I also investigated the residual ~96 mismatches: they're a slight LOD over-estimate on tiny (~15px) minified triangles where this texture has a sharp mip2→mip3 step. Texcoords match golden and quad spacing is correct, so the gradient is right — it's at the software-vs-GPU rasterization noise floor. I tested honoring the captured Mip=Point filter and it made things worse (snapping onto the dark mip3), so I kept trilinear blending and documented the trade-off rather than overfit.</p>
 <p>Session log: hlsl-interpreter-step98-fix-vertex-color-clamp-and-perspective.md. Changes are uncommitted — let me know if you'd like me to commit.</p>
 <p>One note worth flagging: run_regression.py only counts lines starting with literal Error:, so Error [PixelDiff]: mismatches never gate the suite. If you want pixel accuracy enforced, I can extend the runner to count those too.</p>
-<h1>28 增加调试代码</h1>
+<h1 id="step-28">28 增加调试代码</h1>
 <h2>Prompts</h2>
 <p>把修复这次问题添加的debug的代码（输出中间数据到文件的代码）保留在源代码中，并用控制变量来控制开启，方便以后的调试。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
@@ -527,7 +527,7 @@ ul,ol{padding-left:26px}
 <p>render.py — TRACE.configure(...) after the log path resolves; TRACE.close() at the end (logs the trace path)<br>hlsl_interpreter.py — sets pixel/phase context per PS pixel; emits PS-pixel and derivative traces<br>texture.py — emits per-Sample LOD traces<br>How to use it<br>Add to the run JSON (debug file lands next to the log file):</p>
 <p>"debug_trace": {<br>    "enabled": true,<br>    "file": "pipeline_debug.log",<br>    "ps_pixels": true,<br>    "texture_lod": true,<br>    "derivatives": true,<br>    "target_pixels": ["366,354", "408,367"]<br>}<br>Omit the block (or "enabled": false) — the default — and it's a complete no-op.</p>
 <p>Verification<br>Ran event399 with tracing on: channels, phase tags, and pixel filtering all work; reproduces exactly the data that cracked step 98.<br>Regression 6/6 PASS with tracing off, and no *_debug.log files produced — confirming the facility costs nothing when disabled.<br>Session log: hlsl-interpreter-step99-debug-trace-facility.md. Changes are uncommitted — let me know if you'd like me to commit.</p>
-<h1>29 修复collision event104 pixel color错误问题</h1>
+<h1 id="step-29">29 修复collision event104 pixel color错误问题</h1>
 <h2>Prompts</h2>
 <p>运行Collision-fix-constant-buffer-and-RdotV-zero_event104.zip有如下pixels颜色不匹配，请分析整个渲染流程，修复颜色不匹配问题。如果添加了调试代码，请统一加在debug_trace.py中，问题修复后保留有用的调试代码，方便后续调试。</p>
 <p>==================================================<br>Output-Merger Pixels vs Golden (diff_ps_output_rt0.csv, tolerance=0.15):<br>==================================================<br>Error [PixelDiff]: (221,0) color out=[0.2454, 0.1372, 0.1140, 1.0000] golden=[0.0902, 0.0745, 0.0745, 1.0000] cdiff=[0.1552, 0.0627, 0.0395, 0.0000] | depth out=0.997865 golden=0.997866 ddiff=0.000001<br>Error [PixelDiff]: (222,0) color out=[0.2777, 0.1523, 0.1262, 1.0000] golden=[0.1137, 0.0980, 0.0980, 1.0000] cdiff=[0.1640, 0.0543, 0.0282, 0.0000] | depth out=0.997867 golden=0.997868 ddiff=0.000001<br>Error [PixelDiff]: (223,0) color out=[0.2786, 0.1509, 0.1238, 1.0000] golden=[0.1216, 0.1020, 0.1020, 1.0000] cdiff=[0.1571, 0.0489, 0.0218, 0.0000] | depth out=0.997868 golden=0.997869 ddiff=0.000001<br>Error [PixelDiff]: (224,0) color out=[0.2735, 0.1465, 0.1189, 1.0000] golden=[0.1216, 0.1059, 0.1059, 1.0000] cdiff=[0.1519, 0.0407, 0.0130, 0.0000] | depth out=0.997870 golden=0.997871 ddiff=0.000001<br>Error [PixelDiff]: (234,0) color out=[0.2918, 0.1414, 0.1056, 1.0000] golden=[0.1216, 0.1020, 0.1059, 1.0000] cdiff=[0.1702, 0.0395, 0.0003, 0.0000] | depth out=0.997888 golden=0.997889 ddiff=0.000001<br>Error [PixelDiff]: (235,0) color out=[0.3162, 0.1527, 0.1148, 1.0000] golden=[0.1294, 0.1098, 0.1098, 1.0000] cdiff=[0.1868, 0.0429, 0.0050, 0.0000] | depth out=0.997890 golden=0.997891 ddiff=0.000001<br>Error [PixelDiff]: (236,0) color out=[0.3349, 0.1597, 0.1181, 1.0000] golden=[0.1294, 0.1098, 0.1137, 1.0000] cdiff=[0.2055, 0.0499, 0.0044, 0.0000] | depth out=0.997891 golden=0.997892 ddiff=0.000001<br>Error [PixelDiff]: (237,0) color out=[0.3738, 0.1747, 0.1270, 1.0000] golden=[0.1451, 0.1255, 0.1255, 1.0000] cdiff=[0.2287, 0.0492, 0.0015, 0.0000] | depth out=0.997893 golden=0.997894 ddiff=0.000001<br>Error [PixelDiff]: (238,0) color out=[0.4076, 0.1888, 0.1340, 1.0000] golden=[0.1725, 0.1451, 0.1451, 1.0000] cdiff=[0.2351, 0.0437, 0.0111, 0.0000] | depth out=0.997895 golden=0.997896 ddiff=0.000001<br>Error [PixelDiff]: (239,0) missing in output (golden color=[0.1922, 0.1647, 0.1608, 1.0000] depth=0.997898)<br>Error [PixelDiff]: (240,0) missing in output (golden color=[0.2039, 0.1725, 0.1686, 1.0000] depth=0.997899)<br>Error [PixelDiff]: (241,0) missing in output (golden color=[0.2039, 0.1725, 0.1725, 1.0000] depth=0.997901)<br>Error [PixelDiff]: (242,0) missing in output (golden color=[0.2078, 0.1725, 0.1765, 1.0000] depth=0.997903)<br>Error [PixelDiff]: (243,0) missing in output (golden color=[0.2000, 0.1686, 0.1686, 1.0000] depth=0.997905)<br>Error [PixelDiff]: (318,0) missing in output (golden color=[0.4353, 0.3294, 0.2667, 1.0000] depth=0.997903)<br>Error [PixelDiff]: (319,0) missing in output (golden color=[0.4902, 0.3725, 0.3059, 1.0000] depth=0.997899)<br>Error [PixelDiff]: (320,0) color out=[0.2487, 0.1923, 0.1608, 1.0000] golden=[0.4314, 0.3294, 0.2667, 1.0000] cdiff=[0.1827, 0.1372, 0.1059, 0.0000] | depth out=0.997895 golden=0.997895 ddiff=0.000000<br>Error [PixelDiff]: (322,0) color out=[0.1948, 0.1524, 0.1286, 1.0000] golden=[0.3608, 0.2745, 0.2196, 1.0000] cdiff=[0.1660, 0.1221, 0.0910, 0.0000] | depth out=0.997887 golden=0.997886 ddiff=0.000001<br>Error [PixelDiff]: (323,0) color out=[0.1836, 0.1444, 0.1249, 1.0000] golden=[0.3608, 0.2745, 0.2235, 1.0000] cdiff=[0.1772, 0.1301, 0.0986, 0.0000] | depth out=0.997883 golden=0.997882 ddiff=0.000001<br>Error [PixelDiff]: (339,0) missing in output (golden color=[0.2353, 0.1882, 0.1569, 1.0000] depth=0.997896)<br>Error [PixelDiff]: (340,0) missing in output (golden color=[0.2353, 0.1922, 0.1569, 1.0000] depth=0.997898)<br>Error [PixelDiff]: (341,0) missing in output (golden color=[0.2353, 0.1843, 0.1490, 1.0000] depth=0.997900)<br>Error [PixelDiff]: (342,0) missing in output (golden color=[0.1882, 0.1529, 0.1255, 1.0000] depth=0.997902)<br>Error [PixelDiff]: (343,0) missing in output (golden color=[0.1412, 0.1137, 0.0980, 1.0000] depth=0.997904)<br>Error [PixelDiff]: (494,0) missing in output (golden color=[0.0353, 0.0392, 0.0353, 1.0000] depth=0.997668)<br>Error [PixelDiff]: (241,1) color out=[0.2758, 0.1324, 0.0968, 1.0000] golden=[0.1137, 0.0941, 0.0902, 1.0000] cdiff=[0.1621, 0.0383, 0.0067, 0.0000] | depth out=0.997901 golden=0.997902 ddiff=0.000001<br>Error [PixelDiff]: (242,1) color out=[0.3191, 0.1525, 0.1127, 1.0000] golden=[0.1255, 0.1059, 0.1059, 1.0000] cdiff=[0.1936, 0.0467, 0.0069, 0.0000] | depth out=0.997902 golden=0.997903 ddiff=0.000001<br>Error [PixelDiff]: (243,1) color out=[0.3640, 0.1714, 0.1245, 1.0000] golden=[0.1569, 0.1333, 0.1333, 1.0000] cdiff=[0.2071, 0.0381, 0.0089, 0.0000] | depth out=0.997904 golden=0.997905 ddiff=0.000001<br>Error [PixelDiff]: (244,1) color out=[0.3881, 0.1811, 0.1294, 1.0000] golden=[0.1765, 0.1490, 0.1451, 1.0000] cdiff=[0.2116, 0.0321, 0.0157, 0.0000] | depth out=0.997906 golden=0.997907 ddiff=0.000001<br>Error [PixelDiff]: (245,1) color out=[0.4156, 0.1926, 0.1373, 1.0000] golden=[0.1922, 0.1608, 0.1608, 1.0000] cdiff=[0.2235, 0.0318, 0.0235, 0.0000] | depth out=0.997908 golden=0.997909 ddiff=0.000001<br>Error [PixelDiff]: (246,1) missing in output (golden color=[0.2118, 0.1804, 0.1765, 1.0000] depth=0.997910)<br>Error [PixelDiff]: (247,1) missing in output (golden color=[0.2196, 0.1843, 0.1804, 1.0000] depth=0.997912)<br>Error [PixelDiff]: (248,1) missing in output (golden color=[0.2118, 0.1765, 0.1765, 1.0000] depth=0.997914)<br>Error [PixelDiff]: (249,1) missing in output (golden color=[0.2000, 0.1686, 0.1686, 1.0000] depth=0.997916)<br>Error [PixelDiff]: (315,1) missing in output (golden color=[0.3961, 0.2980, 0.2353, 1.0000] depth=0.997916)<br>Error [PixelDiff]: (316,1) missing in output (golden color=[0.4902, 0.3765, 0.2980, 1.0000] depth=0.997911)<br>Error [PixelDiff]: (317,1) color out=[0.2430, 0.1859, 0.1476, 1.0000] golden=[0.4471, 0.3412, 0.2706, 1.0000] cdiff=[0.2040, 0.1553, 0.1230, 0.0000] | depth out=0.997907 golden=0.997907 ddiff=0.000000<br>Error [PixelDiff]: (318,1) color out=[0.2359, 0.1782, 0.1439, 1.0000] golden=[0.4000, 0.3020, 0.2392, 1.0000] cdiff=[0.1641, 0.1238, 0.0953, 0.0000] | depth out=0.997903 golden=0.997903 ddiff=0.000000<br>Error [PixelDiff]: (319,1) color out=[0.2232, 0.1713, 0.1409, 1.0000] golden=[0.3765, 0.2863, 0.2314, 1.0000] cdiff=[0.1532, 0.1150, 0.0905, 0.0000] | depth out=0.997899 golden=0.997899 ddiff=0.000000<br>Error [PixelDiff]: (320,1) color out=[0.2183, 0.1685, 0.1393, 1.0000] golden=[0.3804, 0.2902, 0.2314, 1.0000] cdiff=[0.1620, 0.1217, 0.0921, 0.0000] | depth out=0.997895 golden=0.997895 ddiff=0.000000<br>Error [PixelDiff]: (346,1) missing in output (golden color=[0.1059, 0.0863, 0.0706, 1.0000] depth=0.997910)<br>Error [PixelDiff]: (347,1) missing in output (golden color=[0.0784, 0.0627, 0.0549, 1.0000] depth=0.997912)<br>Error [PixelDiff]: (348,1) missing in output (golden color=[0.0471, 0.0353, 0.0314, 1.0000] depth=0.997914)<br>Error [PixelDiff]: (349,1) missing in output (golden color=[0.0196, 0.0157, 0.0157, 1.0000] depth=0.997916)<br>Error [PixelDiff]: (494,1) missing in output (golden color=[0.0353, 0.0392, 0.0353, 1.0000] depth=0.997668)<br>Error [PixelDiff]: (247,2) color out=[0.2934, 0.1426, 0.1038, 1.0000] golden=[0.1294, 0.1098, 0.1059, 1.0000] cdiff=[0.1640, 0.0328, 0.0021, 0.0000] | depth out=0.997912 golden=0.997913 ddiff=0.000001<br>Error [PixelDiff]: (248,2) color out=[0.3336, 0.1602, 0.1176, 1.0000] golden=[0.1412, 0.1216, 0.1176, 1.0000] cdiff=[0.1924, 0.0386, 0.0001, 0.0000] | depth out=0.997913 golden=0.997914 ddiff=0.000001<br>Error [PixelDiff]: (249,2) color out=[0.3638, 0.1728, 0.1261, 1.0000] golden=[0.1608, 0.1373, 0.1373, 1.0000] cdiff=[0.2030, 0.0356, 0.0112, 0.0000] | depth out=0.997915 golden=0.997916 ddiff=0.000001<br>Error [PixelDiff]: (250,2) color out=[0.3885, 0.1827, 0.1321, 1.0000] golden=[0.1804, 0.1529, 0.1529, 1.0000] cdiff=[0.2081, 0.0297, 0.0208, 0.0000] | depth out=0.997917 golden=0.997918 ddiff=0.000001<br>Error [PixelDiff]: (251,2) color out=[0.4073, 0.1895, 0.1357, 1.0000] golden=[0.1843, 0.1608, 0.1608, 1.0000] cdiff=[0.2230, 0.0287, 0.0251, 0.0000] | depth out=0.997919 golden=0.997920 ddiff=0.000001<br>  ... (3020 more mismatch/missing line(s) suppressed)<br>  Golden pixels: 40754 | matched: 37684 | mismatched: 2773 | missing: 297 | extra (ours not in golden): 465<br>==================================================</p>
@@ -539,7 +539,7 @@ ul,ol{padding-left:26px}
 <p>Fix<br>The capture's topology enum is unreliable, but its captured primitive count is ground truth. Added _resolve_triangle_topology which disambiguates list-vs-strip from golden IAPrimitives (golden == verts/3 → list; == verts−2 → strip; ambiguous/absent → keep CSV). A JSON primitive_topology override still wins.</p>
 <p>Results — 6/6 PASS, no regressions, broad improvement<br>event104: mismatched 13867→2773, extra 147800→465 (matched 26839→37684 — exactly the user's reference numbers)<br>event351: extra 5589→25<br>event399: matched 2391→2434, extra 400→45<br>event516 identical (list==strip for 1 triangle); event371 unchanged (separate issue)<br>event104's remaining 2773 residual are all depth-matched, cdiff &lt; 0.3 — the same LOD/edge noise floor documented for event399, not a new bug.</p>
 <p>Debug code (per request, all in debug_trace.py)<br>Texture.sample(..., name=...) forwards the texture name into TRACE.texture_sample so multi-texture shaders show which texture each sample came from.<br>The trace now flushes per line so it's inspectable mid-run.<br>Session log: hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md. Changes are uncommitted — let me know if you'd like me to commit.</p>
-<h1>30</h1>
+<h1 id="step-30">30</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
@@ -550,7 +550,7 @@ ul,ol{padding-left:26px}
 <p>Fix<br>The capture's topology enum is unreliable, but its captured primitive count is ground truth. Added _resolve_triangle_topology which disambiguates list-vs-strip from golden IAPrimitives (golden == verts/3 → list; == verts−2 → strip; ambiguous/absent → keep CSV). A JSON primitive_topology override still wins.</p>
 <p>Results — 6/6 PASS, no regressions, broad improvement<br>event104: mismatched 13867→2773, extra 147800→465 (matched 26839→37684 — exactly the user's reference numbers)<br>event351: extra 5589→25<br>event399: matched 2391→2434, extra 400→45<br>event516 identical (list==strip for 1 triangle); event371 unchanged (separate issue)<br>event104's remaining 2773 residual are all depth-matched, cdiff &lt; 0.3 — the same LOD/edge noise floor documented for event399, not a new bug.</p>
 <p>Debug code (per request, all in debug_trace.py)<br>Texture.sample(..., name=...) forwards the texture name into TRACE.texture_sample so multi-texture shaders show which texture each sample came from.<br>The trace now flushes per line so it's inspectable mid-run.<br>Session log: hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md. Changes are uncommitted — let me know if you'd like me to commit.</p>
-<h1>31 Rasterizer算法检查</h1>
+<h1 id="step-31">31 Rasterizer算法检查</h1>
 <h2>Prompts</h2>
 <p>请检查光栅化算法对于三角形的遍历是否符合下面D3D11 Spec描述的rasterizer rule，如果不符合，请修复代码<br>3.4.1 Coordinate Snapping</p>
 <p>Consider a set of vertices going through the Rasterizer, after having gone through clipping, perspective divide and viewport scale. Suppose that any further primitive expansion has been done (e.g. rectangular lines can be drawn by implementations as 2 triangles, described later). After the final primitives to be rasterized have been obtained, the x and y positions of the vertices are snapped to exactly n.8 fixed point integers. Any front/back culling is applied (if applicable) after vertices have been snapped. Interpolation of pixel attributes is set up based on the snapped vertex positions of primitives being rasterized.</p>
@@ -567,18 +567,18 @@ ul,ol{padding-left:26px}
 <p>What I found<br>The triangle traversal in rasterizer.py violated both cited rules:</p>
 <p>§3.4.1 Coordinate Snapping — transform_to_screen truncated vertices to whole pixels with int(...) (no n.8/256 sub-pixel grid), and _shade_lane tested coverage at the integer corner (x, y) instead of the pixel center (x+0.5, y+0.5).<br>§3.4.2.1 Top-Left Rule — the coverage test was w0 &gt;= 0 and w1 &gt;= 0 and w2 &gt;= 0 (every edge inclusive). Samples exactly on a shared edge were drawn by both adjacent triangles → overdraw, the exact thing the rule prevents.<br>What I changed<br>Added Viewport.transform_to_screen_subpixel — float projection snapped to the 1/256 grid (round(v*256)/256). Kept the integer transform_to_screen for the point/line paths.<br>_raster_triangle_core: projects via the sub-pixel transform (snapped geometry drives area/cull/edge-functions/interpolation per spec), floor/ceil bounding box, and precomputes per-edge top-left flags using a winding-normalized edge_sign so one rule handles both windings in y-down screen space.<br>_shade_lane: samples the pixel center and applies the Top-Left coverage test (interior on every edge; on-edge samples included only for top/left edges). The on-edge == 0.0 test is exact because snapped coords + the 0.5 center are exact dyadic rationals.<br>Verification<br>Regression suite: 6/6 pass (VS comparison is pre-rasterization, so unaffected; no crashes).<br>Direct coverage test: an 8×8 quad split along its diagonal into two triangles produced union = 64, 0 double-covered pixels — watertight tiling with no overdraw, proving the Top-Left rule works.<br>Thinking, execution, and results are written to <a href="../Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.html">Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.html</a>.</p>
 <p>One note: the regression suite only validates VS output, so pixel-level changes here aren't covered by it — that's why I added the standalone coverage test as the real evidence.</p>
-<h1>32</h1>
+<h1 id="step-32">32</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>33</h1>
+<h1 id="step-33">33</h1>
 <h2>Prompts</h2>
 <p>运行Collision-fix-constant-buffer-and-RdotV-zero_event399.zip有如下pixels颜色不匹配，请分析整个渲染流程，修复颜色不匹配问题。<br>==================================================<br>Output-Merger Pixels vs Golden (diff_ps_output_rt0.csv, tolerance=0.1):<br>==================================================<br>Error [PixelDiff]: (355,348) color out=[0.1198, 0.1006, 0.0996, 1.0000] golden=[0.2353, 0.1961, 0.1922, 1.0000] cdiff=[0.1155, 0.0955, 0.0925, 0.0000] | depth out=0.993231 golden=0.993231 ddiff=0.000000<br>Error [PixelDiff]: (363,349) color out=[0.1156, 0.0909, 0.0909, 1.0000] golden=[0.2314, 0.1804, 0.1804, 1.0000] cdiff=[0.1158, 0.0895, 0.0895, 0.0000] | depth out=0.992642 golden=0.992642 ddiff=0.000000<br>Error [PixelDiff]: (354,350) color out=[0.2883, 0.2437, 0.2436, 1.0000] golden=[0.4039, 0.3412, 0.3412, 1.0000] cdiff=[0.1156, 0.0975, 0.0976, 0.0000] | depth out=0.993201 golden=0.993202 ddiff=0.000001<br>Error [PixelDiff]: (366,350) color out=[0.1598, 0.1262, 0.1269, 1.0000] golden=[0.2627, 0.2118, 0.2118, 1.0000] cdiff=[0.1029, 0.0856, 0.0849, 0.0000] | depth out=0.992425 golden=0.992425 ddiff=0.000000<br>Error [PixelDiff]: (367,350) color out=[0.1043, 0.0835, 0.0835, 1.0000] golden=[0.2353, 0.1882, 0.1882, 1.0000] cdiff=[0.1309, 0.1047, 0.1047, 0.0000] | depth out=0.992368 golden=0.992368 ddiff=0.000000<br>Error [PixelDiff]: (368,351) color out=[0.5070, 0.5016, 0.4907, 1.0000] golden=[0.6000, 0.6039, 0.5882, 1.0000] cdiff=[0.0930, 0.1023, 0.0975, 0.0000] | depth out=0.992291 golden=0.992291 ddiff=0.000000<br>Error [PixelDiff]: (369,351) color out=[0.2885, 0.2707, 0.2653, 1.0000] golden=[0.3922, 0.3843, 0.3765, 1.0000] cdiff=[0.1037, 0.1136, 0.1112, 0.0000] | depth out=0.992285 golden=0.992285 ddiff=0.000000<br>Error [PixelDiff]: (367,352) color out=[0.5180, 0.5039, 0.4972, 1.0000] golden=[0.6667, 0.6667, 0.6549, 1.0000] cdiff=[0.1486, 0.1628, 0.1577, 0.0000] | depth out=0.992286 golden=0.992286 ddiff=0.000000<br>Error [PixelDiff]: (368,352) color out=[0.2832, 0.2543, 0.2537, 1.0000] golden=[0.4667, 0.4510, 0.4471, 1.0000] cdiff=[0.1835, 0.1967, 0.1933, 0.0000] | depth out=0.992277 golden=0.992277 ddiff=0.000000<br>Error [PixelDiff]: (370,352) color out=[0.1331, 0.1109, 0.1098, 1.0000] golden=[0.2902, 0.2392, 0.2392, 1.0000] cdiff=[0.1571, 0.1283, 0.1294, 0.0000] | depth out=0.992204 golden=0.992204 ddiff=0.000000<br>Error [PixelDiff]: (367,353) color out=[0.4431, 0.4154, 0.4111, 1.0000] golden=[0.7059, 0.7059, 0.6941, 1.0000] cdiff=[0.2628, 0.2905, 0.2831, 0.0000] | depth out=0.992272 golden=0.992272 ddiff=0.000000<br>Error [PixelDiff]: (368,353) color out=[0.1420, 0.0900, 0.0931, 1.0000] golden=[0.3059, 0.2745, 0.2745, 1.0000] cdiff=[0.1639, 0.1845, 0.1814, 0.0000] | depth out=0.992263 golden=0.992263 ddiff=0.000000<br>Error [PixelDiff]: (373,353) color out=[0.1683, 0.1415, 0.1396, 1.0000] golden=[0.3059, 0.2549, 0.2510, 1.0000] cdiff=[0.1375, 0.1134, 0.1113, 0.0000] | depth out=0.991990 golden=0.991990 ddiff=0.000000<br>Error [PixelDiff]: (374,353) color out=[0.0879, 0.0733, 0.0731, 1.0000] golden=[0.2353, 0.1961, 0.1961, 1.0000] cdiff=[0.1474, 0.1228, 0.1229, 0.0000] | depth out=0.991933 golden=0.991933 ddiff=0.000000<br>Error [PixelDiff]: (367,354) color out=[0.3180, 0.2666, 0.2646, 1.0000] golden=[0.6471, 0.6314, 0.6196, 1.0000] cdiff=[0.3291, 0.3648, 0.3550, 0.0000] | depth out=0.992258 golden=0.992258 ddiff=0.000000<br>Error [PixelDiff]: (377,354) color out=[0.1268, 0.1069, 0.1054, 1.0000] golden=[0.2745, 0.2314, 0.2275, 1.0000] cdiff=[0.1477, 0.1245, 0.1221, 0.0000] | depth out=0.991719 golden=0.991719 ddiff=0.000000<br>Error [PixelDiff]: (366,355) color out=[0.6692, 0.6604, 0.6545, 1.0000] golden=[0.7843, 0.7843, 0.7804, 1.0000] cdiff=[0.1151, 0.1239, 0.1259, 0.0000] | depth out=0.992264 golden=0.992264 ddiff=0.000000<br>Error [PixelDiff]: (367,355) color out=[0.2484, 0.1955, 0.1955, 1.0000] golden=[0.5804, 0.5608, 0.5529, 1.0000] cdiff=[0.3320, 0.3652, 0.3575, 0.0000] | depth out=0.992251 golden=0.992251 ddiff=0.000000<br>Error [PixelDiff]: (380,355) color out=[0.1652, 0.1386, 0.1386, 1.0000] golden=[0.2980, 0.2510, 0.2510, 1.0000] cdiff=[0.1328, 0.1123, 0.1124, 0.0000] | depth out=0.991505 golden=0.991505 ddiff=0.000000<br>Error [PixelDiff]: (367,356) color out=[0.2948, 0.2475, 0.2465, 1.0000] golden=[0.6078, 0.6000, 0.5961, 1.0000] cdiff=[0.3130, 0.3525, 0.3496, 0.0000] | depth out=0.992249 golden=0.992249 ddiff=0.000000<br>Error [PixelDiff]: (384,356) color out=[0.1188, 0.0998, 0.1001, 1.0000] golden=[0.2471, 0.2039, 0.2039, 1.0000] cdiff=[0.1283, 0.1041, 0.1038, 0.0000] | depth out=0.991233 golden=0.991234 ddiff=0.000001<br>Error [PixelDiff]: (367,357) color out=[0.4429, 0.4150, 0.4116, 1.0000] golden=[0.6392, 0.6353, 0.6275, 1.0000] cdiff=[0.1964, 0.2203, 0.2158, 0.0000] | depth out=0.992246 golden=0.992247 ddiff=0.000001<br>Error [PixelDiff]: (387,357) color out=[0.1483, 0.1238, 0.1241, 1.0000] golden=[0.2588, 0.2157, 0.2157, 1.0000] cdiff=[0.1105, 0.0919, 0.0916, 0.0000] | depth out=0.991019 golden=0.991019 ddiff=0.000000<br>Error [PixelDiff]: (367,358) color out=[0.5324, 0.5258, 0.5204, 1.0000] golden=[0.6510, 0.6549, 0.6510, 1.0000] cdiff=[0.1186, 0.1291, 0.1305, 0.0000] | depth out=0.992244 golden=0.992244 ddiff=0.000000<br>Error [PixelDiff]: (368,358) color out=[0.2729, 0.2273, 0.2245, 1.0000] golden=[0.4275, 0.4039, 0.3961, 1.0000] cdiff=[0.1545, 0.1766, 0.1716, 0.0000] | depth out=0.992233 golden=0.992233 ddiff=0.000000<br>Error [PixelDiff]: (397,358) color out=[0.3023, 0.2922, 0.3018, 1.0000] golden=[0.4078, 0.3922, 0.4039, 1.0000] cdiff=[0.1055, 0.1000, 0.1021, 0.0000] | depth out=0.990248 golden=0.990248 ddiff=0.000000<br>Error [PixelDiff]: (369,359) color out=[0.1844, 0.1489, 0.1470, 1.0000] golden=[0.2824, 0.2627, 0.2588, 1.0000] cdiff=[0.0980, 0.1138, 0.1118, 0.0000] | depth out=0.992236 golden=0.992236 ddiff=0.000000<br>Error [PixelDiff]: (401,359) color out=[0.3024, 0.2929, 0.2978, 1.0000] golden=[0.4157, 0.4039, 0.4078, 1.0000] cdiff=[0.1133, 0.1110, 0.1101, 0.0000] | depth out=0.989973 golden=0.989973 ddiff=0.000000<br>Error [PixelDiff]: (391,360) color out=[0.4019, 0.3992, 0.4086, 1.0000] golden=[0.5216, 0.5216, 0.5294, 1.0000] cdiff=[0.1196, 0.1224, 0.1208, 0.0000] | depth out=0.990507 golden=0.990507 ddiff=0.000000<br>Error [PixelDiff]: (390,361) color out=[0.4010, 0.4031, 0.4084, 1.0000] golden=[0.5451, 0.5529, 0.5529, 1.0000] cdiff=[0.1441, 0.1498, 0.1445, 0.0000] | depth out=0.990521 golden=0.990521 ddiff=0.000000<br>Error [PixelDiff]: (408,361) color out=[0.3648, 0.3665, 0.3713, 1.0000] golden=[0.4667, 0.4667, 0.4745, 1.0000] cdiff=[0.1019, 0.1001, 0.1032, 0.0000] | depth out=0.989480 golden=0.989480 ddiff=0.000000<br>Error [PixelDiff]: (390,362) color out=[0.5041, 0.5055, 0.5071, 1.0000] golden=[0.6118, 0.6196, 0.6157, 1.0000] cdiff=[0.1076, 0.1141, 0.1086, 0.0000] | depth out=0.990485 golden=0.990485 ddiff=0.000000<br>Error [PixelDiff]: (409,364) color out=[0.4843, 0.4771, 0.4693, 1.0000] golden=[0.5922, 0.5922, 0.5804, 1.0000] cdiff=[0.1079, 0.1151, 0.1111, 0.0000] | depth out=0.989340 golden=0.989341 ddiff=0.000001<br>Error [PixelDiff]: (410,364) color out=[0.2638, 0.2439, 0.2427, 1.0000] golden=[0.4078, 0.4000, 0.3922, 1.0000] cdiff=[0.1440, 0.1561, 0.1494, 0.0000] | depth out=0.989347 golden=0.989347 ddiff=0.000000<br>Error [PixelDiff]: (413,364) color out=[0.4167, 0.4196, 0.4020, 1.0000] golden=[0.2314, 0.2275, 0.2196, 1.0000] cdiff=[0.1853, 0.1921, 0.1824, 0.0000] | depth out=0.989265 golden=0.989265 ddiff=0.000000<br>Error [PixelDiff]: (409,365) color out=[0.3791, 0.3576, 0.3539, 1.0000] golden=[0.5490, 0.5451, 0.5373, 1.0000] cdiff=[0.1699, 0.1875, 0.1833, 0.0000] | depth out=0.989333 golden=0.989333 ddiff=0.000000<br>Error [PixelDiff]: (410,365) color out=[0.1694, 0.1304, 0.1310, 1.0000] golden=[0.2941, 0.2706, 0.2667, 1.0000] cdiff=[0.1248, 0.1402, 0.1357, 0.0000] | depth out=0.989339 golden=0.989339 ddiff=0.000000<br>Error [PixelDiff]: (407,366) color out=[0.6335, 0.6477, 0.6616, 1.0000] golden=[0.5255, 0.5098, 0.5137, 1.0000] cdiff=[0.1080, 0.1379, 0.1479, 0.0000] | depth out=0.989318 golden=0.989318 ddiff=0.000000<br>Error [PixelDiff]: (409,366) color out=[0.2386, 0.1994, 0.2001, 1.0000] golden=[0.5020, 0.4863, 0.4824, 1.0000] cdiff=[0.2634, 0.2869, 0.2823, 0.0000] | depth out=0.989325 golden=0.989325 ddiff=0.000000<br>Error [PixelDiff]: (397,367) color out=[0.4377, 0.4399, 0.4305, 1.0000] golden=[0.3216, 0.3255, 0.3137, 1.0000] cdiff=[0.1162, 0.1144, 0.1168, 0.0000] | depth out=0.990006 golden=0.990006 ddiff=0.000000<br>Error [PixelDiff]: (408,367) color out=[0.5044, 0.4814, 0.4737, 1.0000] golden=[0.7098, 0.7059, 0.6941, 1.0000] cdiff=[0.2054, 0.2245, 0.2204, 0.0000] | depth out=0.989311 golden=0.989311 ddiff=0.000000<br>Error [PixelDiff]: (409,367) color out=[0.1826, 0.1293, 0.1300, 1.0000] golden=[0.3412, 0.3020, 0.2980, 1.0000] cdiff=[0.1585, 0.1726, 0.1680, 0.0000] | depth out=0.989318 golden=0.989318 ddiff=0.000000<br>Error [PixelDiff]: (408,368) color out=[0.4684, 0.4440, 0.4367, 1.0000] golden=[0.7137, 0.7098, 0.6980, 1.0000] cdiff=[0.2453, 0.2658, 0.2613, 0.0000] | depth out=0.989303 golden=0.989304 ddiff=0.000001<br>Error [PixelDiff]: (408,369) color out=[0.4285, 0.4061, 0.4037, 1.0000] golden=[0.6902, 0.6941, 0.6863, 1.0000] cdiff=[0.2617, 0.2880, 0.2826, 0.0000] | depth out=0.989296 golden=0.989296 ddiff=0.000000<br>Error [PixelDiff]: (407,370) color out=[0.5652, 0.5827, 0.5849, 1.0000] golden=[0.4706, 0.4588, 0.4588, 1.0000] cdiff=[0.0946, 0.1239, 0.1261, 0.0000] | depth out=0.989285 golden=0.989285 ddiff=0.000000<br>Error [PixelDiff]: (408,370) color out=[0.5509, 0.5410, 0.5374, 1.0000] golden=[0.7020, 0.7098, 0.7059, 1.0000] cdiff=[0.1511, 0.1688, 0.1685, 0.0000] | depth out=0.989288 golden=0.989288 ddiff=0.000000<br>Error [PixelDiff]: (409,370) color out=[0.1691, 0.1116, 0.1116, 1.0000] golden=[0.3882, 0.3608, 0.3569, 1.0000] cdiff=[0.2191, 0.2492, 0.2452, 0.0000] | depth out=0.989295 golden=0.989295 ddiff=0.000000<br>Error [PixelDiff]: (409,371) color out=[0.2903, 0.2459, 0.2444, 1.0000] golden=[0.5098, 0.4941, 0.4902, 1.0000] cdiff=[0.2195, 0.2482, 0.2458, 0.0000] | depth out=0.989287 golden=0.989287 ddiff=0.000000<br>Error [PixelDiff]: (409,372) color out=[0.4031, 0.3782, 0.3742, 1.0000] golden=[0.5529, 0.5451, 0.5412, 1.0000] cdiff=[0.1498, 0.1669, 0.1670, 0.0000] | depth out=0.989279 golden=0.989279 ddiff=0.000000<br>Error [PixelDiff]: (409,373) color out=[0.5097, 0.5051, 0.4988, 1.0000] golden=[0.6157, 0.6196, 0.6157, 1.0000] cdiff=[0.1060, 0.1145, 0.1169, 0.0000] | depth out=0.989272 golden=0.989272 ddiff=0.000000<br>  ... (100 more mismatch/missing line(s) suppressed)<br>  Golden pixels: 2548 | matched: 2398 | mismatched: 150 | missing: 0 | extra (ours not in golden): 0<br>==================================================<br>Saved golden bitmap: C:\Development\Graphics\hlsl_interpreter\Cases\Collision-fix-constant-buffer-and-RdotV-zero_event399_golden.bmp (640x480, 2548 pixel(s) written)<br>Saved output-merger bitmap: C:\Development\Graphics\hlsl_interpreter\Cases\Collision-fix-constant-buffer-and-RdotV-zero_event399_output.bmp (640x480, 2548 pixel(s) written)</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>34 Add depth compare with golden value.</h1>
+<h1 id="step-34">34 Add depth compare with golden value.</h1>
 <h2>Prompts</h2>
 <ol>
 <li>case如果开启了depth增加了depth value的输出，保存在这个文件里diff_depth_output.csv。</li>
@@ -594,7 +594,7 @@ ul,ol{padding-left:26px}
 <p>Verification<br>case	golden depth px	matched	mismatched	missing	extra<br>event104	40754	40754	0	0	0<br>event351	988	988	0	0	0<br>event399	2548	2548	0	0	0<br>event516	98	88	0	10	43<br>event28 / event371	header-only	skipped cleanly			<br>Every present depth value matches golden (mismatched = 0 everywhere; event516's missing/extra are coverage-edge differences, not depth errors). Forcing depth_tolerance=1e-7 surfaces sub-1e-6 diffs, confirming the config flows through. Regression: 6/6 PASS.</p>
 <p>Investigation, execution, and results are documented in <a href="../Sessions/hlsl-interpreter-step103-golden-depth-output-comparison.html">Sessions/hlsl-interpreter-step103-golden-depth-output-comparison.html</a>.</p>
 <p>One note: the MSAA / event399 color-mismatch question is still open — you interrupted before deciding. My step-102 investigation concluded MSAA won't fix the bulk of those (they're GPU-specific sub-pixel-sliver LOD differences); whenever you want to revisit, that analysis is in <a href="../Sessions/hlsl-interpreter-step102-investigate-event399-pixel-mismatch-msaa-sliver-lod.html">Sessions/hlsl-interpreter-step102-investigate-event399-pixel-mismatch-msaa-sliver-lod.html</a>.</p>
-<h1>35 执行witcher3_countryside_zip_files.csv进行开发</h1>
+<h1 id="step-35">35 执行witcher3_countryside_zip_files.csv进行开发</h1>
 <h2>Prompts</h2>
 <ol>
 <li>witcher3_countryside_zip_files.csv提供了新的可以运行的case，请挨个运行这些case</li>
@@ -623,7 +623,7 @@ ul,ol{padding-left:26px}
 <p>Case	Outcome	Root cause / fix<br>event895	✅ fixed	Array cbuffers (float4 cb1[4]) + instanced vertex inputs loaded from binary VBs at the bound ByteOffset (step104)<br>event907	✅ fixed	Golden *_vs_mesh.csv dumps SV_Position columns first regardless of header order; map positionally (step105)<br>event994	✅ fixed	StructuredBuffer skinning (t0[i].val[k]); also fixed a NaN-masking comparison bug and []-depth in the expression parser (step106)<br>event1269	✅ clean	No fix needed — fully-occluded draw (golden also 0 pixels) (step107)<br>event1294	✅ clean	No fix needed (step108)<br>event1341	✅ clean	No fix needed (step109)<br>event1399	⛔ blocked	Needs t1.Load, but t1 (RGBA32F) was dumped only as a lossy 8-bit BMP — can't reproduce bit-exact. Skinning itself is correct: the 1737 failing rows are exactly the COLOR.w==0 vertices. Documented; not added to regression (step110)<br>event1433	✅ fixed	Golden component counts derived from header (TEXCOORD0 dumped as 3, not declared 4) + TEXCOORD2/3 key collision fixed (step111)<br>event1450	✅ clean	No fix needed (step112)<br>Regression: 14/14 passing (6 original Collision cases + 8 witcher3 cases added).</p>
 <p>The one outstanding item — event1399 — is not an interpreter bug; it requires a re-capture with the t1 SRV dumped as raw R32G32B32A32_FLOAT instead of a BMP. Everything the available data supports is correct (its 3921 pure-skinning vertices match golden exactly).</p>
 <p>Note: Cases/ is gitignored, so my regression_test_zip_files.csv additions and Default.json edits are local-only by design; the committed changes are the interpreter/parser fixes and the session docs.</p>
-<h1>36 pipeline depth buffer value存成bitmap</h1>
+<h1 id="step-36">36 pipeline depth buffer value存成bitmap</h1>
 <h2>Prompts</h2>
 <ol>
 <li>如果Pipeline输出了depth buffer，请dump depth buffer为一个gray bitmap图。</li>
@@ -646,7 +646,7 @@ ul,ol{padding-left:26px}
 </ol>
 <p>Verification<br>Ran the only case in this checkout (witcher3_countryside_event895, no regression_test_zip_files.csv is present here):</p>
 <p>Saved output-merger bitmap: …_output.bmp (1024x1024, 403 pixel(s))<br>Saved depth bitmap: …_depth.bmp (… depth range [0.496351, 0.496943] auto-scaled to [0,255])<br>BMP byte-inspection confirmed valid 24-bit grayscale with real contrast.<br>One note for honesty: the run shows pre-existing Error [DepthDiff] lines (13 golden depth pixels missing in output). Those come from the earlier depth-compare commit, not from this change — my edits only touch bitmap dumping, and the output pixel count (403) is unchanged.</p>
-<h1>37 纹理数据变成raw data，加载raw data。</h1>
+<h1 id="step-37">37 纹理数据变成raw data，加载raw data。</h1>
 <h2>Prompts</h2>
 <ol>
 <li>case的zip包里的纹理数据从bitmap格式改变为raw data格式，文件后缀名变为.img。请改变纹理数据的加载方式，使用raw data数据。</li>
@@ -677,7 +677,7 @@ ul,ol{padding-left:26px}
 <li>event1399's t1 SRV (R32G32B32A32_FLOAT) — the step110 lossy-BMP blocker — now loads exact floats from .img (e.g. (0.5549, 0.0959, 1.3417, 1.0), values &gt; 1.0 that the 8-bit BMP could never hold). The data limitation is lifted; fully passing event1399 now only needs interpreter support for VS Texture2D.Load.</li>
 </ul>
 <p>Verification: regression suite 14/14 passing. PS-color differences are reported<br>as non-gating Error [PixelDiff], and the raw decode was confirmed correct for<br>R8G8B8A8 (matches the format byte order) and R32G32B32A32_FLOAT (exact floats),<br>with BC7 correctly falling back to the BMP. See <a href="../Sessions/hlsl-interpreter-step113-raw-img-texture-loading.html">Sessions/hlsl-interpreter-step113-raw-img-texture-loading.html</a>.</p>
-<h1>38 根据pipeline_state.csv来决定rt/ds</h1>
+<h1 id="step-38">38 根据pipeline_state.csv来决定rt/ds</h1>
 <h2>Prompts</h2>
 <p>根据pipeline_state.csv的RenderTarget, DepthStencil来决定渲染管线是否需要dump pixel color和depth buffer为bitmap</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -706,7 +706,7 @@ ul,ol{padding-left:26px}
 <li>Regression suite 15/15 passing (the change only affects bitmap dumping, not the VS/pixel/depth comparisons).</li>
 </ul>
 <p>See <a href="../Sessions/hlsl-interpreter-step115-dump-bitmaps-by-rendertarget-depthstencil-binding.html">Sessions/hlsl-interpreter-step115-dump-bitmaps-by-rendertarget-depthstencil-binding.html</a>.</p>
-<h1>39 修复witcher event1571~event3191</h1>
+<h1 id="step-39">39 修复witcher event1571~event3191</h1>
 <h2>Prompts</h2>
 <ol>
 <li>witcher3_countryside_zip_files.csv提供了新的可以运行的case，请挨个运行这些case</li>
@@ -744,7 +744,7 @@ ul,ol{padding-left:26px}
 <li><b>float32(golden) vs float64 精度被屏幕缩放放大</b>（event1643）。残余 error 仅出现在 <code>o2.xy = clip_xy * cb12[72].y + cb12[72].y</code>（screen_scale≈1024，o2≈2000），clip 坐标 远小于 0.005 绝对容差的 float32 舍入被放大上千倍，绝对差超阈值但相对差仅 ~5e-6。 golden 比较改为 <code>max(绝对容差, 2e-5*|golden|)</code> 组合容差——只放宽不收紧，绝不会让原本 通过的分量失败，而真实逻辑错误（相对差量级 &gt;1）仍被捕获。→ event1643 1110/1110。</li>
 </ol>
 <p>结果：9 个 case 全部通过（event2774 达 10731/10731）。已将 9 个 case 加入本地<br>回归列表，完整回归 <b>24/24 通过</b>。详见<br><a href="../Sessions/hlsl-interpreter-step116-witcher-countryside-nested-if-else-intrinsics-and-relative-tolerance.html">Sessions/hlsl-interpreter-step116-witcher-countryside-nested-if-else-intrinsics-and-relative-tolerance.html</a>。</p>
-<h1>40 修复witcher event6977~event8775</h1>
+<h1 id="step-40">40 修复witcher event6977~event8775</h1>
 <h2>Prompts</h2>
 <ol>
 <li>witcher3_countryside_zip_files.csv提供了新的可以运行的case，请挨个运行这些case</li>
@@ -776,7 +776,7 @@ ul,ol{padding-left:26px}
 <li><b>非有限颜色崩溃 + 回归超时</b>（event7358）。VS 修好后全屏 pass 着色器把整屏 ~129024 像素跑过纯 Python PS（~458s）；某 sliver 像素输出 inf 通道， <code>int(round(inf))</code> 让位图导出抛 OverflowError。<code>_color_to_byte</code> 改为 clamp inf/-inf/NaN。该 case VS 本身 3/3 通过，只是慢——把 run_regression.py 单 case 超时 600s→1800s。</li>
 </ol>
 <p>结果：12 个 countryside case 全部无 <code>Error:</code>（event8573 达 10572/10572，event7358<br>   全屏 pass 3/3 且不再崩溃）。12 个全部加入本地回归列表，完整回归 <b>36/36 通过</b>。<br>   详见 <a href="../Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.html">Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.html</a>。</p>
-<h1>41 修复C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump里的所有zip file</h1>
+<h1 id="step-41">41 修复C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump里的所有zip file</h1>
 <h2>Prompts</h2>
 <ol>
 <li>挨个执行C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump里的所有zip file。</li>
@@ -834,7 +834,7 @@ ul,ol{padding-left:26px}
 <li>witcher3_countryside 本批 160 个未单独 triage(回归中的 36 个通过)。</li>
 </ul>
 <p>详见 <a href="../Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.html">Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.html</a>。</p>
-<h1>42 继续修复</h1>
+<h1 id="step-42">42 继续修复</h1>
 <h2>Prompts</h2>
 <p><b>尚未修复（剩余长尾，后续迭代）</b>：</p>
 <ul>
@@ -868,7 +868,7 @@ ul,ol{padding-left:26px}
 <p><b>验证</b>：event23341 0→30/30，event23141 162/162，event23251 54/54，event23183<br>30/30，event23195 36/36，均无新增 error。event22201 仍 FAIL（确认 raw-buffer 不支持类）。<br>回归 44/44 全过（修复不影响既有用例）。把 event23341 加入回归 CSV（并拷贝 zip 到 Cases/）<br>作为该类代表用例。</p>
 <p>另外深入排查了 event20899（已确认非结构性 bug，暂缓）：POSITION(R16G16B16A16_UNORM)<br>与 TEXCOORD0(R16G16_FLOAT)顶点解码都正确（手验二进制：顶点 372→texcoord<br>(0.39990,0.94092)=golden），ia_vertex_data.csv 按 draw order 排（VTX=k 行取 VB 顶点<br>IDX），golden 走 SV_Position-first 映射也对——输出 o2/o3/o4/o5/o6 全与 golden 精确吻合，<br>连 o0.w/o1.w 也对。唯独 o0.xyz(小差 ~0.01–0.03) 与 o1.xyz(大差，如 2.4669 vs 0.67958)<br>错——都是经 exp2/log2/除法长链、跨大量 cb12 的大气散射颜色输出，属精度/intrinsic 长尾。</p>
 <p>详见 <a href="../Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html">Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html</a>。</p>
-<h1>43 Fix the remaining issues</h1>
+<h1 id="step-43">43 Fix the remaining issues</h1>
 <h2>Prompts</h2>
 <p>Fix the remaining issues,<br>Atmosphere-output precision (event20899, and event23458 still unexamined).<br>packed-uint octahedral normals (event16215/16834).<br>Unsupported raw structured buffers (event22201 — disasm itself says "needs manual fix").<br>Quaternion typed-buffer SNORM/UNORM ambiguity, slow rasterization timeouts (~26 + Tank).</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -889,7 +889,7 @@ ul,ol{padding-left:26px}
 <li><b>超时(~26 + Tank)</b>：纯 Python 光栅化慢，VS-vs-golden 本可过，仅墙钟问题；perf 非 bug。</li>
 </ul>
 <p>详见 <a href="../Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html</a>。</p>
-<h1>44 开启MeshView在MacOS中崩溃</h1>
+<h1 id="step-44">44 开启MeshView在MacOS中崩溃</h1>
 <h2>Prompts</h2>
 <p>开启MeshView在MacOS中崩溃，请修复该问题。崩溃信息如下<br>cd /Users/yinghuang/development/hy_code/hlsl_interpreter ; /usr/bin/env /usr/bin/python3 /Users/yinghuang/.vscode/extensions/ms-python.debugpy-2026.6.0-darwin-arm64/bundled/libs/debugpy/adapter/../../debugpy/launcher 64260 -- render.py ./Cases/Default.json <br>Extracting /Users/yinghuang/development/hy_code/hlsl_interpreter/Cases/Collision-fix-constant-buffer-and-RdotV-zero_event516.zip ...<br>MeshView enabledmacOS 26 (2603) or later required, have instead 16 (1603) !</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -905,7 +905,7 @@ ul,ol{padding-left:26px}
 <p>All 46/46 regression cases pass.</p>
 <p>Co-Authored-By: Claude Sonnet 4.6 &lt;noreply@anthropic.com&gt;</p>
 <h2>Claude Code Session</h2>
-<h1>45 修复macOS tk.Tk()调用崩溃问题</h1>
+<h1 id="step-45">45 修复macOS tk.Tk()调用崩溃问题</h1>
 <h2>Prompts</h2>
 <p>经过上一次修复后，发现enable meshview执行时，会崩溃，崩溃信息如下，<br>请修复。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -933,7 +933,7 @@ ul,ol{padding-left:26px}
 <p>Regression: 46/46 PASS.</p>
 <p>Co-Authored-By: Claude Sonnet 4.6 &lt;noreply@anthropic.com&gt;</p>
 <h2>Claude Code Session</h2>
-<h1>46 从bin/raw data中加载数据</h1>
+<h1 id="step-46">46 从bin/raw data中加载数据</h1>
 <h2>Prompts</h2>
 <ol>
 <li>为了保证输入数据的精确，我们不能从下列已经解析的csv文件中加载数据 a. **_constant_buffer.csv b. ia_vertex_data.csv</li>
@@ -962,7 +962,7 @@ ul,ol{padding-left:26px}
 </ul>
 <p><b>Result: 45/46 regression cases pass.</b> Only <code>Collision-event399</code> fails (pre-existing: <code>r1.w</code> uninitialized + integer vector <code>==</code> semantics in <code>-(ColorMaterialMode == int4(...))</code>).</p>
 <p>Session file: <a href="../Sessions/hlsl-interpreter-step121-binary-input-data-precision.html"><code>Sessions/hlsl-interpreter-step121-binary-input-data-precision.md</code></a></p>
-<h1>122</h1>
+<h1 id="step-122">122</h1>
 <h2>Prompts</h2>
 <ol>
 <li>执行 draw 前，需要加载 pre-draw 的 depth/stencil buffer 的内容，以前是使用 pre_draw_depth_stencil.csv</li>
@@ -989,7 +989,7 @@ ul,ol{padding-left:26px}
 </ul>
 <p><b>Result: 123/123 regression cases pass</b>（含 MSAA D32 的 <code>4k1w_event1124</code> 444/444、所有 D24 <code>Collision-*</code>）。</p>
 <p>Session file: <a href="../Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.html"><code>Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.md</code></a></p>
-<h1>47 遍历整个Dump目录下的zip draw，修复问题</h1>
+<h1 id="step-47">47 遍历整个Dump目录下的zip draw，修复问题</h1>
 <h2>Prompts</h2>
 <ol>
 <li>遍历整个Dump目录下的zip draw，修复问题</li>
@@ -1000,7 +1000,7 @@ ul,ol{padding-left:26px}
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>89</h1>
+<h1 id="step-89">89</h1>
 <h2>Prompts</h2>
 <p>开启MeshView在MacOS中崩溃，请修复该问题。崩溃信息：MeshView enabledmacOS 26 (2603) or later required, have instead 16 (1603) !</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1014,7 +1014,7 @@ ul,ol{padding-left:26px}
 <li><code>render.py</code>：<code>main()</code> 检测 <code>mesh_view_enabled and sys.platform == 'darwin'</code>，若满足：在主线程创建并注册 <code>tk.Tk()</code>，pipeline 放入 daemon 线程，主线程调用 <code>root.mainloop()</code> 阻塞。</li>
 </ol>
 <p>Session 文件：<a href="../Sessions/hlsl-step89-fix-meshview-macos-threading.html"><code>Sessions/hlsl-step89-fix-meshview-macos-threading.md</code></a></p>
-<h1>90</h1>
+<h1 id="step-90">90</h1>
 <h2>Prompts</h2>
 <p>经过上一次修复后，发现enable meshview执行时，会崩溃。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1036,7 +1036,7 @@ ul,ol{padding-left:26px}
 </ul>
 <p><code>after()</code> 可安全地从后台线程调用（Tcl 内部互斥锁保护事件队列）。Windows/Linux 路径无变化。</p>
 <p>Session 文件：<a href="../Sessions/hlsl-step90-fix-meshview-macos-threading-v2.html"><code>Sessions/hlsl-step90-fix-meshview-macos-threading-v2.md</code></a>  <br>回归测试：46/46 PASS</p>
-<h1>91</h1>
+<h1 id="step-91">91</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
@@ -1045,7 +1045,7 @@ ul,ol{padding-left:26px}
 <p><b>根本原因</b>：<code>render.py</code>中有两处<code>input()</code>调用（<code>_execute_pipeline</code>第1357行、<code>_run_legacy_workflow</code>第1484行），在macOS后台线程模式下均从后台pipeline线程执行。tkinter创建<code>Tk()</code>并调用<code>mainloop()</code>时，会全局设置<code>PyOS_InputHook = EventHook</code>。CPython的<code>input()</code>通过<code>my_fgets</code>调用此hook，而<code>EventHook</code>会调用<code>Tcl_DoOneEvent</code>→<code>Tcl_WaitForEvent</code>，后者在非主线程调用时触发<code>Tcl_Panic</code>。</p>
 <p><b>修复</b>：将两处<code>input(prompt)</code>替换为<code>sys.stdout.write(prompt) + sys.stdout.flush() + sys.stdin.readline()</code>。<code>sys.stdin.readline()</code>通过Python的<code>io</code>栈（<code>TextIOWrapper</code>→<code>BufferedReader</code>→<code>FileIO</code>→<code>read(fd=0)</code> syscall）读取，<b>完全绕过<code>PyOS_InputHook</code></b>，从后台线程调用是安全的。</p>
 <p><b>结果</b>：崩溃消除，回归测试46/46 PASS。Session文件：<a href="../Sessions/hlsl-step91-fix-meshview-input-hook-crash.html"><code>Sessions/hlsl-step91-fix-meshview-input-hook-crash.md</code></a></p>
-<h1>92</h1>
+<h1 id="step-92">92</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit: fix: packoffset sub-register, float4x4 array loading, icb local array, _mRC accessor; expand regression to 119 cases</h2>
@@ -1060,7 +1060,7 @@ ul,ol{padding-left:26px}
 </ol>
 <p><b>回归扩展</b>：从 <code>Dump/</code> 对多个游戏系列进行批量 triage，新增 71 个通过 case（heaven x14, valley x10, Octopath x18, sekiro4 x5, witcher3 event22xx x14, Frame-frame9222 x2, EndlessSpace2 x5, 其他 x3），回归套件从 46 扩展至 <b>117 cases，117/117 PASS</b>。</p>
 <p>Session文件：<a href="../Sessions/hlsl-step92-sweep-dump-zips-and-fix-interpreter.html"><code>Sessions/hlsl-step92-sweep-dump-zips-and-fix-interpreter.md</code></a></p>
-<h1>93 给剩余fail的case分类写成md文档</h1>
+<h1 id="step-93">93 给剩余fail的case分类写成md文档</h1>
 <h2>Prompts</h2>
 <ol>
 <li>给剩余fail的case分类写成md文档，提交你的文档</li>
@@ -1082,7 +1082,7 @@ ul,ol{padding-left:26px}
 </ul>
 <p><b>理论可达</b>：修复 C+E+F 约 84 个有望转通过；A 类 37 个可 <code>vs_only</code>/加时通过；B(17)+D(43) 超出 HLSL 解释器能力边界。</p>
 <p>Session文件：<a href="../Sessions/hlsl-step93-classify-remaining-dump-failures.html"><code>Sessions/hlsl-step93-classify-remaining-dump-failures.md</code></a></p>
-<h1>94 修复#93提到的C类和F类问题</h1>
+<h1 id="step-94">94 修复#93提到的C类和F类问题</h1>
 <h2>Prompts</h2>
 <p>修复前面提到的C类和F类问题</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1104,7 +1104,7 @@ ul,ol{padding-left:26px}
 <li>回归：117/117 保持通过（已用全新进程跑过确认）。</li>
 </ul>
 <p>Session文件：<a href="../Sessions/hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash.html"><code>Sessions/hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash.md</code></a></p>
-<h1>95 使用原始的depth/stencil pre-draw buffer内容</h1>
+<h1 id="step-95">95 使用原始的depth/stencil pre-draw buffer内容</h1>
 <h2>Prompts</h2>
 <ol>
 <li>执行draw前，需要加载pre-draw的depth/stencil buffer的内容，以前是使用pre_draw_depth_stencil.csv</li>
@@ -1115,7 +1115,7 @@ ul,ol{padding-left:26px}
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>150 AI 辅助开发手册（HTML + Markdown 两版）</h1>
+<h1 id="step-150">150 AI 辅助开发手册（HTML + Markdown 两版）</h1>
 <h2>Prompts</h2>
 <ol>
 <li>如何给AI提供提示词</li>
@@ -1138,7 +1138,7 @@ ul,ol{padding-left:26px}
 <p>把"如何与 AI 协作开发"沉淀成手册，全部用本仓库可核对的真实材料佐证，选定三个贯穿案例：<br>C1 多数组 cbuffer(提交 1716ee5)、C2 反规格化数 FTZ(c398d86)、C3 (int) 强转语义(122e4f4)。<br>逐题取材：①提示词=CLAUDE.md 四层上下文+编号任务清单；②计划=triage 129 zip→聚类根因→<br>TodoWrite 按 ROI 排序；③执行=七步闭环，以 C1 沿数据流回溯到那行 break；④数据流=AI 累积<br>上下文输入/工具调用输出/项目 zip→管线→golden；⑤调试=[STMT]/[BINARY OP]/[METHOD] 轨迹+<br>分量级 Error+Total PASSED，以 C3 的 [1073741824] smoking gun 与 C2 分支回溯为例；⑥回归=<br>数据驱动 CSV+三判据+每类加代表 case；⑦TDD="golden 即测试"红→绿→防回退；⑧纠错=自我纠错<br>(C2 翻案)/回归当裁判(C3 先证伪)/CLAUDE.md 护栏/用户预标约束；⑨记忆=memory 一事一文件+<br>MEMORY.md 索引；⑩两周期=前期 opencode+minimax-m2.7 奠基小步 vs 后期 claude code+opus 攻坚<br>闭环。</p>
 <p>产出：Docs/AI-Development-Handbook.md(302 行)、Docs/AI-Development-Handbook.html(自包含、<br>深色技术文档风、内嵌 5 个 SVG 图：提示词四层/开发闭环/输入输出数据流/TDD 红绿/两周期，<br>无外部依赖、本地可直接打开看图)。第 10 题基于 Sessions/ 日志与 git 时间线的可见证据归纳。</p>
 <p>详见 <a href="../Sessions/hlsl-interpreter-step123-ai-development-handbook.html">Sessions/hlsl-interpreter-step123-ai-development-handbook.html</a>。</p>
-<h1>124 继续测试Dump文件夹中的case</h1>
+<h1 id="step-124">124 继续测试Dump文件夹中的case</h1>
 <h2>Prompts</h2>
 <ol>
 <li>继续测试Dump文件夹中的case</li>
@@ -1164,7 +1164,7 @@ ul,ol{padding-left:26px}
 <p>理论可达：修 D+E+F ≈ 36 个可转通过；A(45) 可经 <code>vs_only</code>/加时通过；B(16)+C(37)=53 属数据缺失/反编译有损不可修。<b>未改动解释器代码</b>，回归不受影响。</p>
 <p>产物：<code>Cases/triage_results.csv</code>（140 明细）、<code>Cases/dump_failure_categories.csv</code>（134 归类）、<code>Cases/triage_logs/</code>（逐 case 日志）。</p>
 <p>Session file: <a href="../Sessions/hlsl-interpreter-step124-dump-retriage-and-failure-classification.html"><code>Sessions/hlsl-interpreter-step124-dump-retriage-and-failure-classification.md</code></a></p>
-<h1>151 先实现 vs_only 模式再单独长时间跑</h1>
+<h1 id="step-151">151 先实现 vs_only 模式再单独长时间跑</h1>
 <h2>Prompts</h2>
 <ol>
 <li>提交前面的文档</li>
@@ -1185,7 +1185,7 @@ ul,ol{padding-left:26px}
 <p><b>结果</b>：A 类清空（38 删 + 7 重归类）。<code>Dump/</code> 失败集 <b>134 → 96</b>。新分布：B16 / C37 / D19 / E10 / F1=3 / F2=9 / G2。回归 <code>run_regression.py</code> 全 PASS（<code>vs_only</code> 默认关闭，仅新增早退分支）。</p>
 <p>产物：<code>render.py</code>(vs_only)、<code>triage_dump.py</code>(3 开关)、<code>Cases/dump_failure_categories.csv</code>(刷新 96)、<code>Cases/aclass_vsonly_results.csv</code>、<code>Cases/triage_results_full140.csv</code>。</p>
 <p>Session file: <a href="../Sessions/hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun.html"><code>Sessions/hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun.md</code></a></p>
-<h1>152 修复D类问题</h1>
+<h1 id="step-152">152 修复D类问题</h1>
 <h2>Prompts</h2>
 <p>修复D类问题：<br>D（19，Octopath）/E（10，witcher）：可修的解释器问题——packed 法线/切线 UNORM/SNORM 未按 ia_input_layouts.csv 解码、golden 列被当 uint 解析、切线矩阵主序</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1197,7 +1197,7 @@ ul,ol{padding-left:26px}
 <p><b>Bug 2 — golden 列被当 uint 解析</b>：float 输出 <code>o2:TEXCOORD0</code> 物理落在 uint 列 <code>PRIMITIVE_ID.x</code> 下，float 0.4375 被打成位模式 1054867456。<code>_golden_float</code> 位重解释原本只对 <code>sv_position</code> 生效；改为对<b>所有 float 类型输出</b>生效（RenderDoc 真实 float 必带小数点，float 列里的裸整数必是位模式）。</p>
 <p><b>结果</b>：19 个 D 类 → <b>10 PASS</b>（删除）+ 9 FAIL（更深子类：四元数解码残留 event2135、sv_position 数值溢出 event2651/2682/576、蒙皮索引 event2912/3012/3601/664、高编号 TEXCOORD12/13 列映射 event3502）。<code>Dump/</code> 失败 96→86（D 19→9）。<b>回归 123/123（vs_only）</b>，event1320 UNORM 仍 6/6；新增代表 event1828(SNORM)/event1357(R16G16_FLOAT) 入回归（→125）。</p>
 <p>Session file: <a href="../Sessions/hlsl-interpreter-step152-fix-dclass-octopath-typed-buffer-and-golden-parse.html"><code>Sessions/hlsl-interpreter-step152-fix-dclass-octopath-typed-buffer-and-golden-parse.md</code></a></p>
-<h1>153 请处理 E 类（witcher）"切线矩阵主序" 问题。E 类（10 个 witcher）是独立的一组。</h1>
+<h1 id="step-153">153 请处理 E 类（witcher）"切线矩阵主序" 问题。E 类（10 个 witcher）是独立的一组。</h1>
 <h2>Prompts</h2>
 <p>请处理 E 类（witcher）"切线矩阵主序" 问题。E 类（10 个 witcher）是独立的一组。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1211,7 +1211,7 @@ ul,ol{padding-left:26px}
 <p><b>其余</b>：16834 除零→nan/inf；21979 是 <code>sv_position</code> ~1.6e-4 相对精度边界（开 float32 模拟不消失，当前相对<br>容差 2e-5 太紧），属 F1 性质，未放宽容差。</p>
 <p><b>结果</b>：SampleLevel 修复正确且必要，但 <b>10 个 E 类 case 无一转 PASS</b>——主导误差是深层 SH/雾/切线帧<br>divergence，超出"仅有 VS 输出 golden + 直接解释 HLSL 源"的可验证边界。诚实结论：E 类不是单点 bug。<br><b>回归 125/125 PASS（零回归）</b>。未新增回归用例（E 类无通过 case 可作代表）。</p>
 <p>后续可推进：①给比较框架加 VS 寄存器级 golden 才能定位 o3/切线帧；②修 <code>_parse_method_call</code> 丢弃尾随<br>swizzle 的独立小 bug（<code>tex.Sample(...).y</code> 会取错分量，本批因 <code>.x</code>/<code>.xyz→.xyz</code> 碰巧无害）；③统一精度策略收敛 21979。</p>
-<h1>154 先提交你的fix，然后继续推进</h1>
+<h1 id="step-154">154 先提交你的fix，然后继续推进</h1>
 <h2>Prompts</h2>
 <p>先提交你的fix，然后继续推进给比较框架加 VS 寄存器级 golden（导出 DXBC 逐指令中间值），那才能定位 o3/切线帧的具体偏离点。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1228,7 +1228,7 @@ ul,ol{padding-left:26px}
 <p><b>定位 o2/o3</b>：trace 跟到 disasm 489–517 的细节法线扰动，<code>504: sample_l(texture2darray) t4 → r0.xz=[0,0]</code><br>——采样返回 0，于是 <code>r5.xy = r2.xz*0.15 + [0,0]</code> 全来自回退项，切线欠扰动（小分量比 golden 小 ~4×）。<br><b>采样值就是杠杆。</b></p>
 <p><b>关键交叉验证</b>：真实 <code>render.py</code>(vs_only) 在 event16215 上<b>修复前后都只错 o2/o3（TexCoord2/3）</b>——per-instance<br>修复不改变 HLSL 解释器结果，因为反编译 HLSL 用 <code>POSITION+cbuffer</code> 算 o0、DXBC 指令流用 per-instance v1 算 o0，<br>两条不同公式输入正确时都对 golden。<b>寄存器级 golden 由此证明</b>：o2/o3 偏离<b>不是</b> HLSL 反编译有损（step 153<br>的怀疑），而是 HLSL 解释器与 DXBC VM <b>共有的 Texture2DArray 细节法线采样缺口</b>——忠实执行的 GPU 指令流在 o2/o3<br>上同样失败，trace 指向唯一根因 line 504 array 采样返回 0。</p>
 <p><b>结果</b>：新增 VS 寄存器级 golden 工具；修复 per-instance VB 加载（真实输入 bug，DXBC 侧验证 o0/o1/o4/o5/o6 对齐）；<br>把 step 153「o3/切线帧」悬案分解为两个具体环节（①per-instance 输入已修；②Texture2DArray 采样已定位，二者共有、非<br>反编译问题）。另含科学计数法字面量解析修复（<code>4.65e-10</code> 的指数 <code>-</code> 不再被当减法切开）+ 回归 <code>vs_only</code> 开关。<br><b>回归 125/125 PASS（exit 0），零回归。</b> 后续：实现 VS 端 Texture2DArray 切片采样即可推动 o2/o3 收敛（同时惠及两个解释器）。</p>
-<h1>155 检查下列7类失败，还有几类没有修复的</h1>
+<h1 id="step-155">155 检查下列7类失败，还有几类没有修复的</h1>
 <h2>Prompts</h2>
 <p>检查下列7类失败，还有几类没有修复的<br>A. 超时(45)：纯 Python 逐顶点/逐像素太慢，被 300s 杀掉前无 Error: 行——正确但慢（witcher17/sekiro8/Tank8…）。修：加 vs_only 跳过光栅化+PS / 热路径 AST 预编译。<br>B. 无 golden(16)：capture 无可对比 VS 网格（0 顶点/indirect/缺导出）——不可验证，标 N/A。<br>C. TombRaider struct 矩阵选择子丢失(37)：3Dmigoto 反编译丢弃了 WorldParameters[] 的矩阵成员选择子，位置(~22)与法线(~15)取到错误矩阵——反编译有损，只能靠反汇编 cb0[base+N] 寄存器号修复，超出 HLSL 解释器边界。<br>D. Octopath 输入解码 + golden 列解析(18)：packed 法线/切线 UNORM/SNORM 未按 ia_input_layouts.csv 解码（0.498=127/255）；golden 某列以 uint 存 float-bit（golden=1054867456=0x3EE00000=0.4375，我方实为正确）。可修。<br>E. witcher3 切线/拷贝属性解码(7)：纯拷贝输出 o4=v1 都对不上→输入格式解码错；另有切线矩阵主序、除零 nan。可修。<br>F1. 精度边界(2)：sekiro2 两个 case passed 43329/45576，失败行 diff 恰好 0.005 略超容差。<br>F2. 其它(9)：sekiro 实例索引残留、Nobu586 VS 全 0（cbuffer 未加载）、ES2 golden 全 0 等。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
@@ -1249,228 +1249,228 @@ ul,ol{padding-left:26px}
 </table>
 <p>计 2+16+37+9+10+2+10 = <b>86</b> ✓。核验：OldWorld 超时日志 <code>Loaded 203328 vertices</code> + 0 <code>Error:</code>（正确但慢）；<br>无 golden 案例确为「无 golden mesh / 0 顶点执行」。</p>
 <p><b>答「还有几类没修」</b>：7 类无一在 Dump 内清零，按可修性分三档——<br>①<b>结构性不可修（B 16 + C 37 = 53 例）</b>：靠解释 HLSL 源 + 仅 VS 输出 golden 无解；<br>②<b>已基本关闭（A）</b>：vs_only 解 43/45，残 2 仅缺性能优化；<br>③<b>仍需写代码修的 4 类（~31 例）</b>：D(9)、E(10)、F1(2)、F2(10)。<br><b>真正待修 = D/E/F1/F2 四类</b>；A 仅差性能；B/C 当前架构不可修。<br>优先级建议：① E 类 Texture2DArray 切片采样（解释器+DXBC VM 双收益）；② F2 Nobu586 cbuffer 加载；<br>③ D 蒙皮/溢出收尾；④ 给 C(TombRaider) 上 <code>dxbc_diff</code> 寄存器级 golden；⑤ F1 统一容差。</p>
-<h1>156 仍需写代码修的 4 类 (~31 cases): D(9), E(10), F1(2), F2(10).</h1>
+<h1 id="step-156">156 仍需写代码修的 4 类 (~31 cases): D(9), E(10), F1(2), F2(10).</h1>
 <h2>Prompts</h2>
 <p>继续修复仍需写代码修的 4 类 (~31 cases): D(9), E(10), F1(2), F2(10).</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>157</h1>
+<h1 id="step-157">157</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>158</h1>
+<h1 id="step-158">158</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>159</h1>
+<h1 id="step-159">159</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>160</h1>
+<h1 id="step-160">160</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>161</h1>
+<h1 id="step-161">161</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>162</h1>
+<h1 id="step-162">162</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>163</h1>
+<h1 id="step-163">163</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>164</h1>
+<h1 id="step-164">164</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>165</h1>
+<h1 id="step-165">165</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>166</h1>
+<h1 id="step-166">166</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>167</h1>
+<h1 id="step-167">167</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>168</h1>
+<h1 id="step-168">168</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>169</h1>
+<h1 id="step-169">169</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>170</h1>
+<h1 id="step-170">170</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>171</h1>
+<h1 id="step-171">171</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>172</h1>
+<h1 id="step-172">172</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>173</h1>
+<h1 id="step-173">173</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>174</h1>
+<h1 id="step-174">174</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>175</h1>
+<h1 id="step-175">175</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>176</h1>
+<h1 id="step-176">176</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>177</h1>
+<h1 id="step-177">177</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>178</h1>
+<h1 id="step-178">178</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>179</h1>
+<h1 id="step-179">179</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>180</h1>
+<h1 id="step-180">180</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>181</h1>
+<h1 id="step-181">181</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>182</h1>
+<h1 id="step-182">182</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>183</h1>
+<h1 id="step-183">183</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>184</h1>
+<h1 id="step-184">184</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>185</h1>
+<h1 id="step-185">185</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>186</h1>
+<h1 id="step-186">186</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>187</h1>
+<h1 id="step-187">187</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>188</h1>
+<h1 id="step-188">188</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>189</h1>
+<h1 id="step-189">189</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>190</h1>
+<h1 id="step-190">190</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>191</h1>
+<h1 id="step-191">191</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>192</h1>
+<h1 id="step-192">192</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>193</h1>
+<h1 id="step-193">193</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>194</h1>
+<h1 id="step-194">194</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>195</h1>
+<h1 id="step-195">195</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>196</h1>
+<h1 id="step-196">196</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>197</h1>
+<h1 id="step-197">197</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>198</h1>
+<h1 id="step-198">198</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>199</h1>
+<h1 id="step-199">199</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1>200</h1>
+<h1 id="step-200">200</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>

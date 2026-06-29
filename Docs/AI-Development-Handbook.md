@@ -106,10 +106,10 @@ python render.py ./Cases/Default.json
 7. 通过后直接提交 fix，并把同类出错的 zip 选一个加入回归
 8. 把思考/执行/结果写入 Sessions/hlsl-interpreter-stepN-*.md
 ```
-这段提示词的优点：**可验证的完成标准**（无 error、回归通过）、**明确的循环边界**（一个 case 一轮）、**产出要求**（提交 + 文档 + 回归用例）。
+这段提示词的优点：**可验证的完成标准**（无 error、回归通过）、**明确的循环边界**（一个 case 一轮）、**产出要求**（提交 + 文档 + 回归用例）。〔提示词原文：[ClaudeCode #42 继续修复](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)〕
 
 ### 1.3 现状/约束清单
-用户把"已知未修复的长尾"列在前面（八面体法线、raw buffer、SNORM/UNORM、超时），并标注哪些是"capture 限制、无解"。这让 AI **不浪费时间去碰已判定不可解的问题**，把精力放在可解项（C1/C2/C3）。
+用户把"已知未修复的长尾"列在前面（八面体法线、raw buffer、SNORM/UNORM、超时），并标注哪些是"capture 限制、无解"。这让 AI **不浪费时间去碰已判定不可解的问题**，把精力放在可解项（C1/C2/C3）。〔提示词原文同上：[ClaudeCode #42 的"尚未修复（剩余长尾）"清单](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)〕
 
 ### 1.4 给提示词的实操建议
 - **给可验证的成功标准**，而不是"修好它"。本项目的标准是机器可判的：日志无 `Error:` 且 `Total PASSED rows: X/X`。
@@ -119,9 +119,10 @@ python render.py ./Cases/Default.json
 
 ### 1.5 好提示词 vs 差提示词：本项目的真实对照
 
-下面三组例子全部摘自本仓库 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md` 的真实提示词，可逐条核对。
+下面三组例子全部摘自本仓库 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md` 的真实提示词，可逐条核对（每例均附"提示词原文"超链接，指向对应步骤）。
 
 #### ✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径
+〔提示词原文：[ClaudeCode #4 修复执行 HLSL 得到的 WorldPos.xyz 数据不正确问题](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4)〕
 > output.log 的打印如下：
 > `Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100`
 > `[STMT] o4.xyz = r1.xyz => o4.xyz = ['-61.6382', '11.2829', '-88.1203']`
@@ -133,7 +134,7 @@ python render.py ./Cases/Default.json
 **为什么好**：① 贴出实际值**和**期望值，精确到分量（AI 一眼知道差在哪）；② 把问题域圈定在"解释执行"；③ 预先排除一条诱人但错误的修法（"别去改 golden 加载"——否则 AI 很可能为了让数字对上而去改基准，制造假绿）；④ 给出可机判的验证回路。这条提示词直接命中了 `CLAUDE.md` 里记载的"3Dmigoto 尾部 float3 错位"陷阱。
 
 #### ❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工
-第一条提示词（信息不足）：
+第一条提示词（信息不足）〔原文：[ClaudeCode #12 实现 wireframe 绘制](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-12)〕：
 > rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe
 
 AI 没有被告知"本项目 `pipeline_state.csv` 里的 FillMode 到底有哪些取值"，只能猜，于是写出：
@@ -143,7 +144,7 @@ fill_mode_map = {
     '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
 }
 ```
-用户不得不再发**一条纠正提示词**返工：
+用户不得不再发**一条纠正提示词**返工〔原文：[ClaudeCode #14 fill mode map 错误](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-14)〕：
 > fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid，相应的 rasterizer 也要按这两种 fill mode 光栅化。
 
 **代价**：多一轮往返 + 一次返工。**改进版（一次说清）**：
@@ -155,7 +156,7 @@ fill_mode_map = {
 | | 提示词 | 结果 |
 |---|---|---|
 | ❌ B2（设想的差版） | "颜色不对，请修一下 VS。" | AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。 |
-| ✅ G2（真实采用版） | 贴出 6 行精确报错（`Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054` …），并写明"跑 `python render.py ./Cases/Default.json` 后读 `Cases/output.log`，确认还有没有 Error，有就继续修直到 VS 输出正确"。 | AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。 |
+| ✅ G2（真实采用版，[原文 ClaudeCode #2](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2)） | 贴出 6 行精确报错（`Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054` …），并写明"跑 `python render.py ./Cases/Default.json` 后读 `Cases/output.log`，确认还有没有 Error，有就继续修直到 VS 输出正确"。 | AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。 |
 
 > G2 的精髓是把"对不对"变成**机器可判的布尔**（无 `Error:` 行）——既是给 AI 的目标，也是 AI 自查的依据，无需人来回判读。
 

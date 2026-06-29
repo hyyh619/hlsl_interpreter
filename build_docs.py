@@ -148,7 +148,7 @@ def inline(text, sess_prefix):
 # header_link(level, raw_heading_text) may return an html anchor string to
 # append to the heading (used to wire prompt steps to sessions).
 # ---------------------------------------------------------------------------
-def convert_body(md, sess_prefix, header_link=None):
+def convert_body(md, sess_prefix, header_link=None, anchor_steps=False):
     lines = md.replace('\r\n', '\n').split('\n')
     out = []
     i = 0
@@ -186,7 +186,12 @@ def convert_body(md, sess_prefix, header_link=None):
             extra = ''
             if header_link:
                 extra = header_link(lvl, txt) or ''
-            out.append(f'<h{lvl}>{inline(txt, sess_prefix)}{extra}</h{lvl}>')
+            attr = ''
+            if anchor_steps and lvl == 1:
+                sm = re.match(r'^(\d+)', txt)
+                if sm:
+                    attr = f' id="step-{sm.group(1)}"'
+            out.append(f'<h{lvl}{attr}>{inline(txt, sess_prefix)}{extra}</h{lvl}>')
             i += 1
             continue
 
@@ -457,7 +462,7 @@ for fname, hl in prompt_specs:
         _OPENCODE_MAP = build_opencode_block_map(md)
         globals()['_OPENCODE_MAP'] = _OPENCODE_MAP
         print(f'  OpenCode step→session matches: {len(_OPENCODE_MAP)}')
-    body = convert_body(md, sess_prefix='../', header_link=hl)
+    body = convert_body(md, sess_prefix='../', header_link=hl, anchor_steps=True)
     title = title_of(md, stem)
     write_page(os.path.join(OUT_PROMPT, stem + '.html'), title, body,
                home='../index.html', crumb=f'Prompts / {stem}')
