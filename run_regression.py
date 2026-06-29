@@ -43,6 +43,7 @@ BASE_CONFIG = {
     "mesh_view_enabled": False,
     "log_file_mode": "w",
     "float32_emulation": True,
+    "vs_only": True,
 }
 
 _PASSED_RE = re.compile(r"Total PASSED rows:\s*(\d+)\s*/\s*(\d+)")

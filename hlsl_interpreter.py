@@ -4949,8 +4949,6 @@ class HLSLInterpreter:
                 continue
             stride = binding['byte_stride']
             for i, elem in enumerate(elist):
-                if elem['per_instance']:
-                    continue
                 param = _param_for(elem)
                 if param is None:
                     continue
@@ -4990,7 +4988,8 @@ class HLSLInterpreter:
                 if not os.path.exists(bin_path):
                     continue
                 jobs.append((elem, param, degenerate, cbw, dec_fmt, read_bytes,
-                             bin_path, stride, binding['byte_offset']))
+                             bin_path, stride, binding['byte_offset'],
+                             elem['per_instance']))
 
         if not jobs:
             return []
@@ -4999,7 +4998,7 @@ class HLSLInterpreter:
         file_cache = {}
         overrides = [dict() for _ in idx_list]
         for (elem, param, degenerate, cbw, dec_fmt, read_bytes, bin_path,
-             stride, base_off) in jobs:
+             stride, base_off, per_instance) in jobs:
             pname = param['name']
             target = min(self._type_component_count(param['type']), 4)
             if bin_path not in file_cache:
@@ -5007,7 +5006,16 @@ class HLSLInterpreter:
                     file_cache[bin_path] = f.read()
             data = file_cache[bin_path]
             for row_i, vtx_idx in enumerate(idx_list):
-                off = base_off + vtx_idx * stride + elem['byte_offset']
+                # A per-instance attribute is fetched by instance id, not vertex
+                # id. RenderDoc's golden mesh dump (and our single-instance
+                # execution) covers instance 0, so every drawn vertex reads the
+                # same instance-0 slice at the buffer's bind offset. RenderDoc's
+                # ia_vertex_data.csv omits per-instance slots entirely, so the
+                # binary is the ONLY source for these inputs (e.g. The Witcher 3
+                # packs the per-instance world transform + tangent frame into
+                # TEXCOORD0 here).
+                fetch_idx = 0 if per_instance else vtx_idx
+                off = base_off + fetch_idx * stride + elem['byte_offset']
                 raw = data[off:off + read_bytes]
                 if len(raw) < read_bytes:
                     continue
@@ -5023,7 +5031,7 @@ class HLSLInterpreter:
                 # This guards against formats _decode_vertex_element does not
                 # model (e.g. R8G8B8A8_UINT BLENDINDICES) silently corrupting a
                 # column that the CSV got right.
-                if not degenerate and csv_vertex_data is not None:
+                if not degenerate and not per_instance and csv_vertex_data is not None:
                     if row_i >= len(csv_vertex_data):
                         continue
                     csv_val = csv_vertex_data[row_i].get(pname)

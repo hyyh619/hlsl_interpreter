@@ -2547,9 +2547,39 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+feat: VS register-level DXBC golden (dxbc_interp/dxbc_diff) + per-instance VB load fix.
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step154-vs-register-level-dxbc-golden.md`。
+
+**补上 step 153 缺的那把尺子**：新增独立执行 GPU 真实指令流（`VS_shader_disasm.txt`）的 DXBC 虚拟机
+`dxbc_interp.py`（vs_5_0：ALU/int/bit/控制流/`sample_l`/`sample_c_lz`/`ld_*`，无类型 32-bit lane 按位重解释）
++ 驱动 `dxbc_diff.py`（复用 render 的加载器装 cbuffer/顶点/纹理，逐指令 trace，与 golden `*_vs_mesh.csv`
+`SV_Position`-first 对比）。这样「o3 偏离」能被分解到具体指令。
+
+**靶向 witcher event16215**：首跑 `o0=NaN`，trace 定位首个 NaN 在 `11:dp2=0 → 12:rsq=inf → 13:mul=nan`
+（零长向量归一化），上溯到向量源 `v1.zw`。**根因：per-instance 输入 v1 被加载成全 0**——`v1`(TEXCOORD0) 是
+`R32G32B32A32_FLOAT`/PerInstance，来自 `vb_slot1` bind offset 336（shader 把 v1.zw 位重解释成 2×half 切线帧、
+v1.xy 是世界坐标）；但 `ia_vertex_data.csv` 不含 per-instance 列，而 `load_per_vertex_binary_data` 里
+`if elem['per_instance']: continue` 直接跳过二进制——v1 两头落空恒 0。**修复**：per-instance 元素不跳过，按
+instance 0（`base_off+0*stride`）取偏移，绕过 CSV 一致性门（CSV 永无 per-instance 列，二进制是唯一真值）。
+修后 DXBC VM 的 **o0/o1/o4/o5/o6 全部对齐 golden**，只剩切线帧 o2/o3。
+
+**定位 o2/o3**：trace 跟到 disasm 489–517 的细节法线扰动，`504: sample_l(texture2darray) t4 → r0.xz=[0,0]`
+——采样返回 0，于是 `r5.xy = r2.xz*0.15 + [0,0]` 全来自回退项，切线欠扰动（小分量比 golden 小 ~4×）。
+**采样值就是杠杆。**
+
+**关键交叉验证**：真实 `render.py`(vs_only) 在 event16215 上**修复前后都只错 o2/o3（TexCoord2/3）**——per-instance
+修复不改变 HLSL 解释器结果，因为反编译 HLSL 用 `POSITION+cbuffer` 算 o0、DXBC 指令流用 per-instance v1 算 o0，
+两条不同公式输入正确时都对 golden。**寄存器级 golden 由此证明**：o2/o3 偏离**不是** HLSL 反编译有损（step 153
+的怀疑），而是 HLSL 解释器与 DXBC VM **共有的 Texture2DArray 细节法线采样缺口**——忠实执行的 GPU 指令流在 o2/o3
+上同样失败，trace 指向唯一根因 line 504 array 采样返回 0。
+
+**结果**：新增 VS 寄存器级 golden 工具；修复 per-instance VB 加载（真实输入 bug，DXBC 侧验证 o0/o1/o4/o5/o6 对齐）；
+把 step 153「o3/切线帧」悬案分解为两个具体环节（①per-instance 输入已修；②Texture2DArray 采样已定位，二者共有、非
+反编译问题）。另含科学计数法字面量解析修复（`4.65e-10` 的指数 `-` 不再被当减法切开）+ 回归 `vs_only` 开关。
+**回归 125/125 PASS（exit 0），零回归。** 后续：实现 VS 端 Texture2DArray 切片采样即可推动 o2/o3 收敛（同时惠及两个解释器）。
 
 # 155
 ## Prompts

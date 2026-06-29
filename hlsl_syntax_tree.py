@@ -73,6 +73,16 @@ def _find_top_level_operator_cached(expr: str) -> Optional[Tuple[int, str]]:
 
             two_char = expr[i:i+2]
             if char in _OPERATORS and not (i >= 1 and two_char in _OPERATORS):
+                # Skip a +/- that is the sign of a scientific-notation exponent
+                # (the '-' in '4.65661287e-10'): it sits right after 'e'/'E'
+                # that follows a digit or '.', so it is part of the numeric
+                # literal, not a subtraction operator. Without this, the literal
+                # is split into '4.65661287e' - '10*...', corrupting any shader
+                # that uses e-notation constants.
+                if (char in ('+', '-') and i >= 2 and expr[i-1] in 'eE'
+                        and (expr[i-2].isdigit() or expr[i-2] == '.')):
+                    i += 1
+                    continue
                 # Skip unary +/- that follows an operator or opening delimiter
                 if char in ('+', '-') and i >= 1:
                     j = i - 1
