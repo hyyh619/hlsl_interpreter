@@ -168,6 +168,45 @@
 <b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。C1 修复时 AI 直接知道要看 golden 对比日志、改完跑回归——都来自 <code>CLAUDE.md</code>。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>。
 </div>
 
+<h3>好提示词 vs 差提示词：本项目的真实对照</h3>
+<p>以下例子全部摘自本仓库 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code> 的真实提示词，可逐条核对。</p>
+
+<div class="callout green">
+<b>✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径</b>
+<pre><code>output.log 打印：
+Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100
+[STMT] o4.xyz = r1.xyz =&gt; o4.xyz = ['-61.6382','11.2829','-88.1203']
+o4.xyz 错了，正确值应该是 ['11.2829','-88.1203','-58.05407']。请修复，注意：
+  1. 问题在解释执行 HLSL 中，请修复；
+  2. 不要更改 golden data 的加载函数，golden 加载是正确的；
+  3. 修复后跑 python render.py ./Cases/Default.json，读 output.log
+     确认还有没有 Error，有就继续修直到 VS 输出正确。</code></pre>
+<b>为什么好</b>：① 贴出实际值<b>和</b>期望值、精确到分量；② 圈定问题域在"解释执行"；③ 预先排除一条诱人但错误的修法（"别改 golden 加载"——否则 AI 可能为凑数字去改基准、制造假绿）；④ 给可机判的验证回路。这条提示词正命中 <code>CLAUDE.md</code> 记载的"3Dmigoto 尾部 float3 错位"陷阱。
+</div>
+
+<div class="callout amber">
+<b>❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工</b>
+<p style="margin:6px 0">第一条提示词（信息不足）：<i>"rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe"</i>。AI 没被告知 <code>pipeline_state.csv</code> 里 FillMode 到底有哪些取值，只能猜，于是写出：</p>
+<pre><code>fill_mode_map = {
+    'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
+    '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
+}</code></pre>
+<p style="margin:6px 0">用户不得不再发<b>一条纠正提示词</b>返工：<i>"fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid。"</i> <span class="red">代价 = 多一轮往返 + 一次返工。</span></p>
+<p style="margin:6px 0"><b>改进版（一次说清）</b>：<i>"请实现 wireframe 光栅化。注意 D3D11 的 FillMode 只有 <code>Wireframe</code> 和 <code>Solid</code> 两种取值（<code>pipeline_state.csv</code> 里就是这两个字符串），按这两种分派即可。"</i></p>
+<b>要点</b>：差不在"语气"而在"信息密度"。B1 缺的是<b>领域约束</b>（取值集合）——凡是 AI 需要靠猜才能填的空，就该在提示词里直接给死。
+</div>
+
+<p>同一个 bug，两种问法的对照：</p>
+<table>
+  <tr><th>　</th><th>提示词</th><th>结果</th></tr>
+  <tr><td class="red">❌ B2<br>（差版）</td><td>"颜色不对，请修一下 VS。"</td><td>AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。</td></tr>
+  <tr><td class="grn">✅ G2<br>（真实采用）</td><td>贴出 6 行精确报错（<span class="mono">Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054</span> …），并写明"跑 <code>render.py</code> 后读 <code>Cases/output.log</code>，确认还有没有 Error，有就继续修直到 VS 输出正确"。</td><td>AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。</td></tr>
+</table>
+
+<div class="callout">
+<b>一句话总结</b>：好提示词 = <b>精确证据</b>（实际值+期望值/报错原文）+ <b>可机判成功标准</b> + <b>数据/代码位置</b> + 明确的<b>"不要做什么"</b>。差提示词的通病不是"太短"，而是<b>把需要确定性的地方留给 AI 去猜</b>（缺取值集合、缺基准、缺验证方式）——猜错的代价就是额外的返工轮次。
+</div>
+
 <!-- Q2 -->
 <h2 id="q2">2 · 分析需求、生成开发计划</h2>
 <p>面对"挨个修复 issue"这种开放任务，AI 先 <b>侦察(triage) → 聚类 → 排序 → 立计划</b>，而不是盲目动手。</p>

@@ -117,6 +117,51 @@ python render.py ./Cases/Default.json
 - **把"不要做什么"写出来**（已知无解的类别），避免无效探索。
 - **要求留痕**（写 session 文档），既是交付物，也是下一轮的记忆。
 
+### 1.5 好提示词 vs 差提示词：本项目的真实对照
+
+下面三组例子全部摘自本仓库 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md` 的真实提示词，可逐条核对。
+
+#### ✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径
+> output.log 的打印如下：
+> `Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100`
+> `[STMT] o4.xyz = r1.xyz => o4.xyz = ['-61.6382', '11.2829', '-88.1203']`
+> 从语法树执行结果看 o4.xyz 错了。正确值应该是 `o4.xyz = ['11.2829', '-88.1203', '-58.05407']`。请修复，注意：
+> 1. 问题看起来是解释执行 HLSL 中出现的，请修复；
+> 2. **不要更改 golden data 的加载函数，golden 加载是正确的**；
+> 3. 修复后跑 `python render.py ./Cases/Default.json`，读 output.log 确认还有没有 Error，有就继续修直到 VS 输出正确。
+
+**为什么好**：① 贴出实际值**和**期望值，精确到分量（AI 一眼知道差在哪）；② 把问题域圈定在"解释执行"；③ 预先排除一条诱人但错误的修法（"别去改 golden 加载"——否则 AI 很可能为了让数字对上而去改基准，制造假绿）；④ 给出可机判的验证回路。这条提示词直接命中了 `CLAUDE.md` 里记载的"3Dmigoto 尾部 float3 错位"陷阱。
+
+#### ❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工
+第一条提示词（信息不足）：
+> rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe
+
+AI 没有被告知"本项目 `pipeline_state.csv` 里的 FillMode 到底有哪些取值"，只能猜，于是写出：
+```python
+fill_mode_map = {
+    'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
+    '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
+}
+```
+用户不得不再发**一条纠正提示词**返工：
+> fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid，相应的 rasterizer 也要按这两种 fill mode 光栅化。
+
+**代价**：多一轮往返 + 一次返工。**改进版（一次说清）**：
+> 请实现 wireframe 光栅化。注意 D3D11 的 FillMode 只有 `Wireframe` 和 `Solid` 两种取值（`pipeline_state.csv` 里就是这两个字符串），按这两种分派即可。
+
+> **要点**：差不在"语气"而在"信息密度"。B1 缺的是**领域约束**（取值集合）——凡是 AI 需要靠猜才能填的空，就该在提示词里直接给死。
+
+#### ✅ 好例 G2 vs ❌ 差例 B2 —— 同一个 bug，两种问法
+| | 提示词 | 结果 |
+|---|---|---|
+| ❌ B2（设想的差版） | "颜色不对，请修一下 VS。" | AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。 |
+| ✅ G2（真实采用版） | 贴出 6 行精确报错（`Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054` …），并写明"跑 `python render.py ./Cases/Default.json` 后读 `Cases/output.log`，确认还有没有 Error，有就继续修直到 VS 输出正确"。 | AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。 |
+
+> G2 的精髓是把"对不对"变成**机器可判的布尔**（无 `Error:` 行）——既是给 AI 的目标，也是 AI 自查的依据，无需人来回判读。
+
+#### 一句话总结
+**好提示词 = 精确证据（实际值+期望值/报错原文）+ 可机判成功标准 + 数据/代码位置 + 明确的"不要做什么"。** 差提示词的通病不是"太短"，而是**把需要确定性的地方留给 AI 去猜**（缺取值集合、缺基准、缺验证方式）——猜错的代价就是额外的返工轮次。
+
 ---
 
 ## 2. AI 如何分析需求、生成开发计划
