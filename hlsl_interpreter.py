@@ -5340,7 +5340,14 @@ class HLSLInterpreter:
             + [p for p in vs_output_params if not _is_sv_position(p)]
         )
 
-        # Assign a contiguous slice of physical columns to each output.
+        # Assign a contiguous slice of physical columns to each output, in
+        # SV_Position-first order, each output taking exactly its DUMPED width
+        # (`_dumped_count`, from the header group). This is what remaps an
+        # arbitrary run of reduced-width outputs — e.g. N consecutive float3s
+        # like Octopath event3502's TEXCOORD12(.xyz)+TEXCOORD13(.xyz), or the
+        # Collision suite's trailing float3 NORMAL+WORLDPOS — onto the right
+        # physical columns: each float3 consumes 3 columns, so the cursor stays
+        # aligned and no later output is mis-sliced by assuming float4 widths.
         param_cols = []  # (canonical_key, [col_idx, ...])
         cursor = 0
         for param in ordered_params:
@@ -5364,6 +5371,19 @@ class HLSLInterpreter:
             # Genuinely integer outputs (uint/int) keep their value.
             is_float = str(param.get('type', 'float')).startswith('float')
             param_cols.append((key, cols, is_float))
+
+        # Reconciliation guard: the SV-Position-first, dumped-width assignment
+        # must consume EXACTLY the physical component columns. A leftover or
+        # overrun means the dumped widths (header groups) disagree with the
+        # data layout — the signature of an unhandled mesh-export misalignment.
+        # Surface it loudly instead of silently mis-slicing later outputs.
+        if cursor != len(comp_col_indices):
+            self.log_output(
+                f"Warning: golden column reconciliation off by "
+                f"{len(comp_col_indices) - cursor} (assigned {cursor} of "
+                f"{len(comp_col_indices)} component columns) in "
+                f"{os.path.basename(csv_path)} — output widths may be misaligned."
+            )
 
         golden = []
         for row in rows[1:]:

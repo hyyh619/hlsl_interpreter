@@ -2707,17 +2707,44 @@ LOD，故 `w` 置 0。
 swizzle），与「实现切片采样」是不同更深问题，叠加 step 156 的 o3 主序，仍不入 0.01 容差。**切片采样缺口已补齐
 （真实数据+值收敛），精确 PASS 受 texel 精确性限制**——与 step 156 预判一致。
 
-# 158
+# 158 D：实现 golden CSV「N 个连续 float3 输出」的列重映射
 ## Prompts
+D：实现 golden CSV「N 个连续 float3 输出」的列重映射
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+harden golden N-consecutive-float3 column remapping (already implemented) + reconciliation guard + lock event3502 in regression (step 158).
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step158-golden-n-consecutive-float3-remap.md`。
+
+**核心结论：该重映射已正确实现，step 156 的前提不准确。** 细读 `load_vs_golden_from_mesh_csv` 发现它不是
+「只补偿单个 trailing float3」，而是**「SV_Position 在前 + 每输出按 dumped 宽度（header 列组计数
+`_dumped_count`）定位」**——这本身就能正确重映射**任意条数的 reduced-width（含 float3）连续输出**。step 156
+写「loader 只补偿一个 float3」是没细读 loader 的误判（CLAUDE.md 里 `[None,x,y]` 那段是早被重写掉的旧实现，
+现 loader 与比较函数里都没有）。
+
+**三处实证**：①**event3502**（典型 N 连续 float3：`TEXCOORD12` float4 只写.xyz→3 列 + `TEXCOORD13`
+float3→3 列，两连续 3 列组）——step 156 半精度修复后本步实测 **PASS 384/384**；②**Collision 套件**
+（中间 float2×2 + 尾部连续 float3 `NORMAL`/`WORLDPOS`）长期 PASS；③**全 86 Dump 用例**加对账诊断后扫描，
+**0 触发错位告警**（SV-first+dumped-width 切分每例都精确消费完物理列）。
+
+**本步落地（加固+锁定，零行为风险）**：①给列分配补显式注释点明它就是 N-连续-float3 重映射处，并加
+**reconciliation guard**——分配必须恰好消费完物理分量列，`cursor != len(comp_col_indices)` 即 log 告警
+（把「静默错切」变「响亮报警」）；②把 `Octopath-frame746_event3502.zip`（2 连续 float3 + half4 解码）加入
+回归，**126/126 PASS**，同时守护 step 156 half4 与本步列重映射。
+
+**澄清其余 D 失败 ≠ 列重映射**：event2135/2912 的 `TEXCOORD10/11` 是**四元数/骨骼基分量置换**（o0 实测
+x↔y 交换、o1 3-cycle，每输出置换各异，非统一移位 → 解释器解码 bug）；event664/3012 是 sv_position 蒙皮/精度；
+event576/2651/2682 是地形退化。均与 golden 列无关。
+
+**结果**：核实重映射已正确实现，加对账诊断+显式文档，锁 event3502 入回归（**126/126，零回归**）。诚实结论：
+本步无新用例因「列重映射」翻盘——该功能本就正确，step 156「待修」系误读 loader。D 类下一个真正可推进点是
+event2135/2912 的四元数/骨骼基分量置换（解码顺序 bug，非列重映射）。
 
 # 159
 ## Prompts
