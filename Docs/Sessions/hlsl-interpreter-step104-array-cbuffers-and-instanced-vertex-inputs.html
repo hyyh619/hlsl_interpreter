@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 104 — Array cbuffers &amp; per-instance vertex inputs (witcher3_countryside_event895)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step104-array-cbuffers-and-instanced-vertex-inputs</span></div>
+<div class="wrap">
+<h1>Step 104 — Array cbuffers &amp; per-instance vertex inputs (witcher3_countryside_event895)</h1>
+<h2>Goal</h2>
+<p>Run the new witcher3_countryside capture cases listed in<br><code>Cases/witcher3_countryside_zip_files.csv</code>, find and fix any pipeline errors,<br>keep the regression suite green, and commit each fix. This step covers the<br>first case: <code>witcher3_countryside_event895.zip</code>.</p>
+<h2>1. Symptom</h2>
+<p>First run crashed before producing any output:</p>
+<pre><code>File "hlsl_interpreter.py", line 2668, in load_cbuffer_data_from_csv
+    self.log_output(f"  {f.name} ({ft}): [{', '.join(f'{v:.5f}' for v in data)}]")
+TypeError: 'NoneType' object is not iterable</code></pre>
+<p>After the crash was fixed, the VS output was completely wrong:</p>
+<pre><code>Error: Row 0 sv_position[0]: output=83.421631 golden=0.093390 diff=83.328241
+Error: Row 0 sv_position[1]: output=-34.681599 golden=0.359850 diff=35.041449
+...
+Total PASSED rows: 0/4428</code></pre>
+<h2>2. Root-cause investigation (whole-pipeline analysis)</h2>
+<p>This capture is the first one to use <b>two features never exercised before</b>:</p>
+<h3>(a) Array constant buffers</h3>
+<p><code>VS_shader.hlsl</code> declares cbuffers as arrays, not matrices:</p>
+<pre><code>cbuffer cb2 : register(b2) { float4 cb2[10]; }
+cbuffer cb1 : register(b1) { float4 cb1[4]; }</code></pre>
+<p><code>VS_constant_buffers.csv</code> stores the elements with a <code>&lt;name&gt;_v&lt;index&gt;</code> naming:<br><code>cb1_v0, cb1_v1, …</code>. Three gaps:</p>
+<ol>
+<li><b><code>parse_cbuffer</code></b> split <code>float4 cb1[4]</code> into <code>field_name = "cb1[4]"</code> — the <code>[4]</code> was never stripped, and no array length was recorded.</li>
+<li><b><code>load_cbuffer_data_from_csv</code></b> only understood matrix <code>.row</code> names and plain scalars, so it never matched the <code>cb1_v0</code> element rows. <code>field.data</code> stayed <code>None</code>.</li>
+<li><b><code>get_value</code></b> had no array-subscript path, so <code>cb1[0].yyyy</code> could not be resolved even once the data was loaded. (The crash itself was in the cbuffer logging code trying to iterate the <code>None</code> data.)</li>
+</ol>
+<p>Prior cases only ever used <code>float4x4</code> matrix cbuffers (<code>.row0</code>-style), so array<br>cbuffers had simply never been implemented.</p>
+<h3>(b) Instanced vertex inputs</h3>
+<p><code>main()</code> takes per-instance inputs:</p>
+<pre><code>float4 v1 : INSTANCE_TRANSFORM0,
+float4 v2 : INSTANCE_TRANSFORM1,
+float4 v3 : INSTANCE_TRANSFORM2,
+float4 v4 : INSTANCE_LOD_PARAMS0,
+uint   v5 : SV_InstanceID0,</code></pre>
+<p><code>ia_input_layouts.csv</code> shows these come from a **separate per-instance vertex<br>buffer (input slot 7, <code>PerInstance=True</code>)**, while <code>ia_vertex_data.csv</code> only<br>contains the per-vertex POSITION stream (slot 0):</p>
+<pre><code>1,INSTANCE_TRANSFORM0,R32G32B32A32_FLOAT,4,4,7,ResourceId::20417,0,True,1
+...
+VertexBuffer slot 7: ResourceId::20417  ByteOffset=1727552  ByteStride=64</code></pre>
+<p><code>load_ia_vertex_data</code> therefore left <code>v1/v2/v3/v4</code> at zero. With the instance<br>transform zeroed, the VS math collapses to<br><code>o0 = (cb1[0].w, cb1[1].w, cb1[2].w, cb1[3].w)</code> — exactly the wrong values<br>observed (<code>83.42, -34.68, -0.46, 1.0</code>), confirming the diagnosis.</p>
+<p><b>Key detail:</b> the instance data does <b>not</b> start at byte 0 of the binary.<br>The bound <code>ByteOffset</code> for slot 7 is <code>1727552</code>. Reading from offset 0 produced<br>plausible-but-wrong transforms (y completely off); reading at the bound offset<br>reproduced golden to within tolerance. Verified offline before coding:</p>
+<pre><code>computed o0: [0.09324, 0.35981, 0.49656, 1.0]
+golden     : [0.09339, 0.35985, 0.49645, 1.0]   # diff only from CSV rounding</code></pre>
+<h2>3. Fix</h2>
+<p><code>hlsl_interpreter.py</code>:</p>
+<ul>
+<li><code>FieldDefinition</code>: added <code>array_size: int = 0</code>.</li>
+<li><code>parse_cbuffer</code>: strip <code>[N]</code> from the field name and record <code>array_size</code>.</li>
+<li><code>load_cbuffer_data_from_csv</code>: for array fields, gather <code>&lt;name&gt;_v0..v{N-1}</code> rows into a list-of-vectors (same shape as a matrix).</li>
+<li>cbuffer logging: print array fields element-by-element (this was the crash site).</li>
+<li><code>get_value</code>: new array-subscript branch resolving <code>cb1[0]</code>, <code>cb2[8].xyz</code>, <code>arr[i].w</code> against local vars, globals, and cbuffer fields.</li>
+<li>New <code>load_per_instance_data(...)</code>: parses <code>ia_input_layouts.csv</code> (element + vertex-buffer-binding sections), and for each <code>PerInstance=True</code> element decodes instance 0 from <code>vb_slot{N}_res_{resid}.bin</code> at <code>binding.ByteOffset + instance*stride + element.ByteOffset</code>, mapping it to the VS input param by semantic. Helpers <code>_decode_vertex_element</code> (FLOAT / half / UNORM / UINT formats), <code>_half_to_float</code>, <code>_extract_resid</code>. Sets <code>SV_InstanceID</code> to the instance index.</li>
+<li>Added <code>import struct</code>.</li>
+</ul>
+<p><code>render.py</code>:</p>
+<ul>
+<li>After <code>load_ia_vertex_data</code>, call <code>load_per_instance_data(...)</code> and merge the instance-0 inputs into every vertex dict.</li>
+</ul>
+<p><b>Assumption documented in code:</b> single-instance draws (all vertices share<br>instance 0). All witcher3_countryside cases have <code>golden rows == vertex rows</code>,<br>confirming a single instance. Multi-instance draws are not yet modelled.</p>
+<h2>4. Result for event895</h2>
+<pre><code>Total PASSED rows: 4428/4428      # VS output now matches golden exactly
+0 lines starting with "Error:"
+Output-merger: 403 pixels written; Golden depth 406 | matched 393 | missing 13 | extra 10</code></pre>
+<p>The only residual diffs are <code>Error [DepthDiff]</code> lines — 13 missing + 10 extra<br>edge pixels (~97% match) lying along a single near-diagonal triangle edge, with<br>MSAA disabled. These are the sub-pixel coverage / top-left-rule boundary<br>limitation already investigated and accepted in step102, <b>not</b> the<br>per-component VS error this task targets. The project's regression gate<br>(<code>run_regression.py</code>) intentionally counts only <code>Error:</code> (colon) lines and<br><code>PASSED == total</code>, so DepthDiff lines are informational and non-gating.</p>
+<h2>5. Regression</h2>
+<p>Added <code>witcher3_countryside_event895.zip</code> to<br><code>Cases/regression_test_zip_files.csv</code>. Full suite:</p>
+<pre><code>7/7 passed
+  ... all 6 Collision cases unchanged ...
+  PASS  witcher3_countryside_event895.zip  passed 4428/4428</code></pre>
+<p>No existing case regressed; the array-cbuffer and instance-loading changes are<br>backward compatible (matrix cbuffers and non-instanced draws are untouched).</p>
+<h2>6. Commit</h2>
+<p>Committed as a single fix covering the interpreter + render wiring + regression<br>list + this session doc.</p>
+</div></body></html>

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 91 — Implement full D3D11 depth clip (geometric near/far clipping)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step91-implement-depth-clip</span></div>
+<div class="wrap">
+<h1>Step 91 — Implement full D3D11 depth clip (geometric near/far clipping)</h1>
+<h2>Prompt</h2>
+<blockquote>检查是否实现了 depth clip → 实现完整的 D3D 的 depth clip 功能。<br>把你思考、执行和结果都写入到一份 md 文件中，放到 Sessions 目录下。</blockquote>
+<h2>1. Investigation — was depth clip implemented?</h2>
+<p><b>No.</b> The audit of <code>rasterizer.py</code> found:</p>
+<ol>
+<li><b><code>depth_clip_enable</code> was dead config.</b> Declared on <code>RasterizerConfig</code> and read from JSON / <code>create_default_config</code>, but <b>never consulted by any logic</b> — setting it <code>False</code> did nothing. It also was <b>not parsed</b> from <code>pipeline_state.csv</code> (the capture's <code>Rasterizer,DepthClip,True</code> row was ignored).</li>
+<li><b>Only a per-pixel proxy existed for triangles.</b> <code>_rasterize_triangle</code> rejected a fragment when its interpolated NDC z fell outside <code>min_depth..max_depth</code> (viewport range). This conflated two distinct D3D concepts:<ul>
+<li>near/far <b>clip</b> (fixed at NDC z ∈ [0,1]), and</li>
+<li>viewport depth <b>remap</b> (<code>MinDepth/MaxDepth</code>). It also ignored <code>depth_clip_enable</code> (couldn't be turned off).</li>
+</ul></li>
+<li><b>No true geometric clipping.</b> D3D clips primitives against the near plane <i>before</i> the perspective divide, splitting triangles and interpolating new vertices. Here there was none — a vertex behind the camera (<code>w ≤ 0</code>) would project through a flipped/garbage divide.</li>
+<li><b>Points and lines had no depth test at all</b>, and no viewport depth remap was applied anywhere.</li>
+</ol>
+<p>User chose: <b>完整几何裁剪</b> (full geometric clipping).</p>
+<h2>2. Design</h2>
+<p>Clip in <b>homogeneous clip space</b> before the perspective divide. The D3D clip volume is <code>0 ≤ z ≤ w</code>, which implies <code>w &gt; 0</code>. Modelled as half-space tests <code>dist(p) ≥ 0</code>:</p>
+<table>
+<tr><th>Plane</th><th>Predicate</th><th>When active</th></tr>
+<tr><td>w &gt; 0</td><td><code>w - eps</code></td><td><b>always</b> (keeps the perspective divide finite; removes behind-camera geometry)</td></tr>
+<tr><td>near</td><td><code>z</code></td><td>only when <code>depth_clip_enable</code></td></tr>
+<tr><td>far</td><td><code>w - z</code></td><td>only when <code>depth_clip_enable</code></td></tr>
+</table>
+<p>Key correctness facts that made this safe and small:</p>
+<ul>
+<li><b>Linear-in-clip-space interpolation.</b> New vertices at plane crossings interpolate position (incl. <code>w</code>) <i>and</i> every attribute linearly in clip space (<code>_lerp_vertex</code>). The rasterizer's existing perspective divide (<code>attr/w</code>) then restores perspective-correct values — because attribute and <code>w</code> were interpolated identically.</li>
+<li><b>Fully-inside is identity.</b> Sutherland–Hodgman returns the <i>original</i> vertex objects when no edge crosses a plane, so the overwhelmingly common case (all geometry on-screen) produces a single unchanged triangle — <b>zero floating-point perturbation</b>, hence no regression risk.</li>
+<li><b>The per-pixel depth test becomes redundant.</b> After geometric clipping every surviving vertex has NDC z ∈ [0,1]; a covered fragment's depth is a convex combination of those, so it stays in range. The old <code>min_depth ≤ depth ≤ max_depth</code> rejection was removed.</li>
+<li><b><code>depth_clip_enable = False</code></b> = D3D semantics: near/far planes dropped (geometry kept), output depth <b>clamped</b> to the viewport range instead.</li>
+<li><b>Viewport depth remap</b> finally applied: <code>depth = MinDepth + ndc_z·(MaxDepth − MinDepth)</code> (identity for the default [0,1], so no regression impact).</li>
+</ul>
+<p>Because the regression gate is VS-output-vs-golden (independent of rasterization), and the in-range path is byte-identical, this is regression-neutral.</p>
+<h2>3. Changes (<code>rasterizer.py</code>)</h2>
+<ul>
+<li>Added module constant <code>_CLIP_W_EPS</code> (the always-on w&gt;0 plane).</li>
+<li>New helpers:<ul>
+<li><code>_map_depth(ndc_z)</code> — viewport remap + clamp-when-disabled.</li>
+<li><code>_lerp_vertex(va, vb, t)</code> — clip-space linear interpolation of a whole vertex dict.</li>
+<li><code>_clip_planes()</code> — the active half-space predicates per <code>depth_clip_enable</code>.</li>
+<li><code>_clip_segment(v0, v1)</code> — Liang–Barsky line clip (returns clipped endpoints or <code>None</code>).</li>
+<li><code>_clip_polygon_against_plane(verts, dist)</code> — Sutherland–Hodgman.</li>
+<li><code>_clip_triangle(v0, v1, v2)</code> — clips against all active planes → fan of sub-triangles.</li>
+</ul></li>
+<li><code>_rasterize_triangle</code> is now a thin wrapper: clip → rasterize each sub-triangle via the renamed core <code>_raster_triangle_core</code>, returning the aggregate status (<code>rasterized</code>/<code>culled</code>/<code>clipped</code>).</li>
+<li><code>_raster_triangle_core</code> (the old body): removed the per-pixel depth-range rejection; depth now goes through <code>_map_depth</code>; wireframe edges drawn from the clipped sub-triangle vertices.</li>
+<li><code>_rasterize_point</code>: w-clip + near/far discard (when enabled) + <code>_map_depth</code>.</li>
+<li><code>_rasterize_line</code>: clips the segment first, interpolates depth from post-clip <b>NDC z</b> (was clip-space z) through <code>_map_depth</code>.</li>
+<li><code>load_config_from_pipeline_state_csv</code>: now parses <code>Rasterizer,DepthClip</code>/<code>DepthClipEnable</code>.</li>
+</ul>
+<h2>4. Verification</h2>
+<p><b>Regression suite — 6/6 PASS</b> (<code>python run_regression.py</code>), all rows matched (204/204, 1149/1149, 315/315, 6/6, 696/696, 3/3). The in-range identity path means VS-vs-golden is untouched.</p>
+<p><b>Targeted depth-clip checks</b> (ad-hoc script, since regression captures are all on-screen):</p>
+<table>
+<tr><th>Test</th><th>Result</th></tr>
+<tr><td>A. Fully-inside triangle</td><td><code>_clip_triangle</code> returns 1 sub-tri with the <b>same vertex objects</b> (identity) ✅</td></tr>
+<tr><td>B. Triangle straddling near plane</td><td>clip ON → 2 sub-tris, fewer pixels than OFF, all depths ∈ [0,1]; clip OFF renders the extra region with clamped depth ✅</td></tr>
+<tr><td>C. Vertex behind camera (<code>w &lt; 0</code>)</td><td>geometrically removed, no garbage, depths ∈ [0,1] ✅</td></tr>
+<tr><td>D. Point list</td><td>clip ON keeps 1/3 (near/far out-of-range discarded); OFF keeps 3/3, depths clamped to <code>[0, 0.5, 1.0]</code> ✅</td></tr>
+<tr><td>E. <code>pipeline_state.csv</code> <code>DepthClip,False</code></td><td>parsed → <code>depth_clip_enable = False</code> ✅</td></tr>
+</table>
+<h2>5. Known limitations</h2>
+<ul>
+<li>Fan re-triangulation of a clipped polygon can double-cover the shared diagonal edge under the inclusive (<code>&gt;= 0</code>) fill rule. Harmless for nearest-depth occlusion (same depth), and never triggered by on-screen geometry. A top-left fill rule would remove it if exactness is needed later.</li>
+<li>x/y guard-band clipping is still handled by the existing screen bounding-box clamp (per-pixel), not geometric — out of scope for <i>depth</i> clip.</li>
+</ul>
+</div></body></html>

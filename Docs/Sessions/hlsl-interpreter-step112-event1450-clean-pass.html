@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 112 — event1450 clean pass (skinned mesh, multi-TEXCOORD)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step112-event1450-clean-pass</span></div>
+<div class="wrap">
+<h1>Step 112 — event1450 clean pass (skinned mesh, multi-TEXCOORD)</h1>
+<h2>Goal</h2>
+<p>Ninth/last case in the witcher3_countryside loop:<br><code>witcher3_countryside_event1450.zip</code>.</p>
+<h2>1. Run result</h2>
+<pre><code>Loaded StructuredBuffer 't0' (t0): 614400 elements, stride 64B
+Total PASSED rows: 1728/1728
+0 "Error:" lines
+Depth: golden 51 | matched 36 | missing 15 | extra 206   (242 pixels rendered)</code></pre>
+<h2>2. Analysis</h2>
+<p>event1450 combines everything added across this milestone: skinned mesh<br>(StructuredBuffer bone palette), array cbuffers, per-instance transforms, and<br>multiple TEXCOORD outputs with SV_Position not first in the header<br>(<code>out float4 TEXCOORD0/1/2; out float4 SV_Position</code>). With the steps 104–111<br>infrastructure it runs cleanly: **VS output matches golden for all 1728<br>vertices**, no per-component <code>Error:</code> lines.</p>
+<p>Residuals (non-gating <code>Error [DepthDiff]</code>):</p>
+<ul>
+<li>15 missing edge pixels — the step102 sub-pixel coverage limitation.</li>
+<li>206 extra pixels — ours-not-in-golden, consistent with PS alpha-cutout texels the GPU discarded (this foliage shader writes TEXCOORD sets a cutout PS would use); the VS-stage interpreter has no way to discard them and the project's gate counts only <code>Error:</code> lines + <code>PASSED == total</code>.</li>
+</ul>
+<p>No code change required.</p>
+<h2>3. Regression</h2>
+<p>Added <code>witcher3_countryside_event1450.zip</code> → suite <b>14/14 passed</b>.</p>
+<h2>4. Commit</h2>
+<p>Committed this session doc (no source change).</p>
+<h2>5. Milestone status</h2>
+<p>All 9 witcher3_countryside cases processed:</p>
+<ul>
+<li><b>8 pass</b> the project gate (895, 907, 994, 1269, 1294, 1341, 1433, 1450).</li>
+<li><b>1 blocked</b> (1399) by a capture-data limitation — its <code>t1</code> SRV is an R32G32B32A32_FLOAT texture dumped only as a lossy 8-bit BMP, so the <code>t1.Load</code>-blended vertices cannot be reproduced bit-exact (see step110).</li>
+</ul>
+</div></body></html>

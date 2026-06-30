@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 119 — witcher3_countryside triage + multi-array cbuffer binary-override fix</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override</span></div>
+<div class="wrap">
+<h1>Step 119 — witcher3_countryside triage + multi-array cbuffer binary-override fix</h1>
+<h2>Goal</h2>
+<p>Continue the RunDrawFromDump long-tail work. The witcher3_countryside batch (160<br>zips in <code>Dump/</code>) had only 31 events in the regression CSV; the other 129 were<br>never individually triaged. Triage them, find a fixable failure class, fix it,<br>keep the regression green, commit, and add a representative case to the suite.</p>
+<h2>Triage method</h2>
+<p>Wrote a small headless triage runner (scratchpad <code>triage.py</code>) that points<br><code>data_path</code> straight at a <code>Dump/*.zip</code>, runs <code>render.py</code> with the mesh viewer<br>off, and classifies each run by parsing its log:</p>
+<ul>
+<li><code>PASS</code>  — exits clean, no <code>Error:</code> lines, <code>Total PASSED rows X/X</code>.</li>
+<li><code>FAIL</code>  — produced <code>Error:</code> lines (per-component VS-vs-golden mismatch).</li>
+<li><code>CRASH</code> — non-zero exit.</li>
+<li><code>NOCMP</code> — no golden VS comparison in the log (nothing gradeable).</li>
+<li><code>TIMEOUT</code> — exceeded the wall-clock budget (90s); pure-Python rasterization on big draws, same slow class as the Tank cases — not a correctness bug.</li>
+</ul>
+<p>~25 s per run serial; ran 6 in parallel. CPU contention inflates per-run time,<br>so the final confirmation runs were done with a single worker.</p>
+<h3>Triage outcome (129 untriaged witcher3 events)</h3>
+<p>Most PASS. The failing ones clustered into:</p>
+<ol>
+<li><b><code>sv_position</code>/<code>TexCoord</code> reading 0</b> — <code>event23341</code>, <code>event23141</code>, <code>event23251</code>, <code>event23183</code>, <code>event23195</code>. <b>← fixed this session (one bug).</b></li>
+<li><b>packed-uint octahedral normals</b> — <code>event16215</code>, <code>event16834</code>. Known class-11 long-tail (deeper octahedral normal decode), still unsolved.</li>
+<li><b>unsupported raw structured buffer</b> — <code>event22201</code> (and similar): the disasm literally carries <code>// No code for instruction (needs manual fix): ld_raw_indexable(raw_buffer) ... t21</code> plus <code>dcl_resource_raw t21</code>. The VS reads a raw buffer the capture never dumped — a feature/capture limitation, not a fixable interpreter bug. Deferred.</li>
+<li><b>slow draws (TIMEOUT)</b> — ~26 events. Correct-but-slow, same as Tank. Deferred.</li>
+</ol>
+<h2>Root cause of class 1 (the fix)</h2>
+<p>Example <code>event23341</code>. Its VS cbuffer:</p>
+<pre><code>cbuffer Constants : register(b0) {
+  float4 mvp[2]    : packoffset(c0);
+  float4 texgen[2] : packoffset(c2);
+}</code></pre>
+<p><code>o2</code> (SV_Position) = <code>dot(v1, mvp[i])</code> was correct, but <code>o1</code> (TEXCOORD) =<br><code>dot(v1, texgen[i])</code> came out 0 → all TexCoord errors.</p>
+<p>Two layers conspired:</p>
+<ul>
+<li>The combined float CSV (<code>VS_constant_buffers.csv</code>) stores only <b>one representative value per array name</b> (<code>mvp</code>, <code>texgen</code>), never the per-element <code>mvp_v0</code>/<code>mvp_v1</code> keys the CSV loader looks for — so both arrays loaded as <code>field.data = [None, None]</code>.</li>
+<li><code>override_cbuffers_from_binary</code> then re-loaded the real bytes from <code>constant_2860.bin</code>, but its fill loop did:</li>
+</ul>
+<pre><code>  for field in cb_def.fields:
+      if field.array_size &gt; 0:
+          field.data = decoded[:m]
+          break          # ← only the FIRST array field, starting at register 0</code></pre>
+<p>  So <code>mvp</code> got <code>decoded[0:2]</code> (correct) and the loop <b>broke</b>, leaving<br>  <code>texgen.data = [None, None]</code> → <code>texgen[i]</code> evaluated to 0.</p>
+<p>This is invisible whenever a cbuffer has a single array at c0 (the old<br>assumption), which is why every prior witcher case passed.</p>
+<h2>Fix</h2>
+<p><code>hlsl_interpreter.py</code>:</p>
+<ol>
+<li><code>FieldDefinition</code> gains <code>reg_offset: int = -1</code>.</li>
+<li><code>parse_cbuffer</code> parses <code>packoffset(cN)</code> into <code>reg_offset</code> (3Dmigoto always emits it).</li>
+<li>New <code>_field_register_offsets(fields)</code> returns each field's 16-byte register offset: prefer the explicit packoffset, else replay HLSL constant-buffer packing (vectors never straddle a register; arrays/matrices register-align).</li>
+<li>The binary-override fill loop now fills <b>every</b> array field from its own register window (<code>decoded[reg_off : reg_off + array_size]</code>) instead of only the first.</li>
+</ol>
+<p>So <code>mvp</code> ← <code>decoded[0:2]</code>, <code>texgen</code> ← <code>decoded[2:4]</code>. Single-array cbuffers<br>(array at c0) are unchanged.</p>
+<h2>Verification</h2>
+<ul>
+<li><code>event23341</code> 0→30/30; <code>event23141</code> 162/162; <code>event23251</code> 54/54; <code>event23183</code> 30/30; <code>event23195</code> 36/36. All five class-1 cases pass, no new errors.</li>
+<li><code>event22201</code> still FAILs — confirmed unsupported raw-buffer class, deferred.</li>
+<li>Regression suite: 44/44 PASS (unchanged by the fix). <code>event23341</code> then added as the 45th case.</li>
+</ul>
+<h2>Regression coverage added</h2>
+<p>Added <code>witcher3_countryside_event23341.zip</code> to<br><code>Cases/regression_test_zip_files.csv</code> — the clearest two-array cbuffer case<br>(<code>mvp[2]@c0</code> + <code>texgen[2]@c2</code>).</p>
+<h2>Investigated but deferred: event20899 (atmosphere-output computation)</h2>
+<p>Spent real effort confirming this is <i>not</i> a vertex-load or golden-mapping bug:</p>
+<ul>
+<li>POSITION (R16G16B16A16_UNORM) and TEXCOORD0 (R16G16_FLOAT) both decode correctly (verified the binary VB bytes by hand: vertex 372 → texcoord (0.39990, 0.94092) = golden). The <code>ia_vertex_data.csv</code> is in <b>draw order</b> (row VTX=k pulls VB-vertex IDX), and row 0 (IDX=372) holds the right values.</li>
+<li>The golden VS-mesh is SV_Position-first; the loader maps it correctly here — outputs o2, o3, o4, o5 and o6(SV_Position) <b>all match golden exactly</b>, and even o0.w / o1.w match. So the comparison is wired right.</li>
+<li>The only failing components are <b>o0.xyz</b> (small diffs, ~0.01–0.03) and <b>o1.xyz</b> (large, e.g. 2.4669 vs golden 0.67958). Both are the atmosphere / in-scattering colour outputs computed through long <code>exp2</code>/<code>log2</code>/division chains over many <code>cb12</code> values. This is the hard precision/intrinsic long-tail, not a structural bug — deferred rather than risk a speculative change.</li>
+</ul>
+<h2>Still unfixed (long tail, unchanged from step 118)</h2>
+<ul>
+<li>packed-uint octahedral normals (<code>event16215</code>/<code>16834</code>).</li>
+<li>quaternion typed-buffer SNORM/UNORM ambiguity (Octopath) — capture limitation.</li>
+<li>unsupported raw structured buffers (<code>event22201</code> …) — capture/feature limitation.</li>
+<li>float32 precision tail (<code>event1828</code>, <code>event2091</code>).</li>
+<li>slow pure-Python rasterization timeouts (Tank + ~26 witcher draws).</li>
+</ul>
+</div></body></html>

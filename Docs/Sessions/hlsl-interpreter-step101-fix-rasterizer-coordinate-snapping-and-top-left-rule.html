@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 101 — Make triangle rasterization conform to D3D11 §3.4.1 (Coordinate Snapping) and §3.4.2.1 (Top-Left Rule)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule</span></div>
+<div class="wrap">
+<h1>Step 101 — Make triangle rasterization conform to D3D11 §3.4.1 (Coordinate Snapping) and §3.4.2.1 (Top-Left Rule)</h1>
+<h2>Task</h2>
+<p>Audit the triangle traversal in <code>rasterizer.py</code> against the D3D11 rasterizer<br>rule and fix any non-conformance:</p>
+<ul>
+<li><b>§3.4.1 Coordinate Snapping</b> — after clipping, perspective divide and viewport scale, vertex x/y are snapped to <code>n.8</code> fixed-point integers (8 fractional bits = a 1/256 sub-pixel grid). Culling and attribute interpolation are set up on the <i>snapped</i> positions.</li>
+<li><b>§3.4.2 Triangle Rasterization Rules / §3.4.2.1 Top-Left Rule</b> — a pixel is covered when its sample location falls inside the triangle. A sample exactly on an edge belongs to the triangle only if that edge is a <b>top</b> edge (exactly horizontal and above the others) or a <b>left</b> edge (not horizontal, on the left side). This prevents adjacent triangles from overdrawing shared edges.</li>
+</ul>
+<h2>Thinking / investigation</h2>
+<h3>What the code did before</h3>
+<p><code>_raster_triangle_core</code> ([rasterizer.py]) projected vertices with<br><code>Viewport.transform_to_screen</code>, which does <code>int(...)</code> — truncating each vertex<br>to a <b>whole pixel</b>. There was no sub-pixel precision at all, so §3.4.1's <code>n.8</code><br>snapping was effectively "snap to n.0".</p>
+<p><code>_shade_lane</code> then evaluated the three edge functions at the integer <b>corner</b><br><code>p = (x, y)</code>, not the pixel-center sample <code>(x + 0.5, y + 0.5)</code> the spec's<br>coverage test assumes.</p>
+<p>The coverage test was:</p>
+<pre><code>inside = (area &gt; 0 and w0 &gt;= 0 and w1 &gt;= 0 and w2 &gt;= 0) or \
+         (area &lt; 0 and w0 &lt;= 0 and w1 &lt;= 0 and w2 &lt;= 0)</code></pre>
+<p>Every edge is <b>inclusive</b> (<code>&gt;= 0</code> / <code>&lt;= 0</code>). So a sample landing exactly on a<br>shared edge passed the test for <b>both</b> adjacent triangles → the Top-Left rule<br>was simply absent, and shared edges were double-covered (overdraw, the exact<br>artifact §3.4.2.1 exists to prevent).</p>
+<h3>Two violations identified</h3>
+<ol>
+<li><b>§3.4.1</b> — integer truncation instead of 1/256 sub-pixel snapping, and the coverage sample taken at the pixel corner instead of its center.</li>
+<li><b>§3.4.2.1</b> — Top-Left rule not implemented; all edges inclusive.</li>
+</ol>
+<h3>Designing the Top-Left test (winding-agnostic)</h3>
+<p>The triangle can be wound either way (the project supports both <code>FrontFace</code><br>settings and <code>CullMode.NONE</code>), and screen space is <b>y-down</b> (the viewport<br>transform flips Y). To make one rule cover every case I normalize by the sign<br>of the signed area so the interior is always the <code>e_i &gt;= 0</code> half-space:</p>
+<pre><code>edge_sign = +1 if area &gt; 0 else -1
+e_i = w_i * edge_sign        # interior &lt;=&gt; e_i &gt;= 0 for all i</code></pre>
+<p>For a sample exactly on an edge (<code>e_i == 0</code>), include it iff that edge is top or<br>left. Classifying from the edge's direction vector <code>D = (Q - P) * edge_sign</code><br>(canonical winding) in y-down screen space:</p>
+<pre><code>is_top  = (D.y == 0 and D.x &lt; 0)   # horizontal, pointing left
+is_left = (D.y &gt; 0)                # points downward (screen y grows down)
+top_left = is_top or is_left</code></pre>
+<p>I verified this against two opposite windings of a right triangle by hand<br>(area = -1 case and area = +1 case); in both, the formula picks out exactly the<br>one top edge and the one (or two) left edges that geometry demands. <code>w0</code> is the<br>edge opposite v0 (uses v1→v2), <code>w1</code> opposite v1 (v2→v0), <code>w2</code> opposite v2<br>(v0→v1), so the per-edge flags <code>tl0/tl1/tl2</code> pair with <code>w0/w1/w2</code>.</p>
+<h3>Why <code>== 0.0</code> is safe here (not a float gamble)</h3>
+<p>Snapped vertices are exact multiples of 1/256; the center adds 0.5 = 128/256.<br>Every difference fed to the edge function is therefore an exact dyadic rational,<br>and for screen coordinates up to a few thousand pixels the products and sums<br>stay well under 2^53, so they are represented <b>exactly</b> in float64. An on-edge<br>sample yields a bit-exact <code>0.0</code>. The <code>== 0.0</code> on-edge test is reliable.</p>
+<h2>Changes</h2>
+<p><code>rasterizer.py</code>:</p>
+<ol>
+<li><b>New <code>Viewport.transform_to_screen_subpixel</code></b> — same projection as <code>transform_to_screen</code> but returns floats and snaps x/y to the 1/256 grid (<code>round(v * 256) / 256</code>) instead of truncating. <code>transform_to_screen</code> is kept unchanged for the point/line paths (they walk whole pixels).</li>
+</ol>
+<ol>
+<li><b><code>_raster_triangle_core</code></b> now:<ul>
+<li>projects the three vertices with <code>transform_to_screen_subpixel</code> (snapped sub-pixel positions drive area/cull/edge-functions/interpolation, per §3.4.1);</li>
+<li>computes the pixel bounding box with <code>floor</code>/<code>ceil</code> over the sub-pixel extents (the integer pixels whose center could be covered);</li>
+<li>precomputes <code>edge_sign</code> and the per-edge top-left flags <code>tl0/tl1/tl2</code>.</li>
+</ul></li>
+</ol>
+<ol>
+<li><b><code>_shade_lane</code></b> now samples the <b>pixel center</b> <code>(x + 0.5, y + 0.5)</code> and applies the Top-Left coverage test: interior on every edge, and any edge the sample lies exactly on must be top or left.</li>
+</ol>
+<p>The 2×2 quad-aligned traversal (for PS derivative lanes) is unchanged — only the<br>sample point and the inside test moved.</p>
+<h2>Verification</h2>
+<h3>Regression suite (mandatory) — all pass</h3>
+<pre><code>6/6 passed
+  event28   204/204
+  event104  1149/1149
+  event351  315/315
+  event371  6/6
+  event399  696/696
+  event516  3/3</code></pre>
+<p>VS-vs-golden comparison happens before rasterization, so it is unaffected (and<br>no case crashes). The regression suite does not check pixel coverage, so I added<br>a direct coverage test.</p>
+<h3>Direct coverage test — watertight, no overdraw</h3>
+<p>Split an 8×8 quad into two triangles sharing the diagonal<br><code>(0,0)–(8,8)</code> (cull off), rasterized each, compared covered pixel sets:</p>
+<pre><code>Tri A pixels: 36
+Tri B pixels: 28
+Shared-edge double-covered pixels: 0
+Union: 64</code></pre>
+<p><code>Union = 64 = 8×8</code> with <b>zero</b> double-coverage proves the Top-Left rule is<br>working: the shared diagonal is drawn by exactly one triangle, the quad tiles<br>with no gaps and no overlap. Before the fix the inclusive <code>&gt;= 0</code> test would have<br>double-drawn the diagonal.</p>
+<h2>Result</h2>
+<p>The triangle path now conforms to D3D11 §3.4.1 (n.8 sub-pixel snapping,<br>center-sample coverage, snapped geometry feeding cull + interpolation) and<br>§3.4.2.1 (Top-Left rule). All 6 regression captures still pass; coverage is<br>watertight and overdraw-free on shared edges.</p>
+</div></body></html>

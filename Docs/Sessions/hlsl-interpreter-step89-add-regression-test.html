@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 89 — Add a regression-test workflow</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step89-add-regression-test</span></div>
+<div class="wrap">
+<h1>Step 89 — Add a regression-test workflow</h1>
+<h2>Goal</h2>
+<p>The user asked to add a <b>Regression Test</b> item to <code>CLAUDE.md</code> requiring that every time Claude Code changes code, a set of regression tests is run. The list of regression cases is described by <code>Cases/regression_test_zip_files.csv</code>.</p>
+<h2>Thinking</h2>
+<p>The project has <b>no unit tests</b> — correctness is validated by the "verify-by-log" workflow: run the pipeline against a capture zip and grep <code>output.log</code> for lines starting with <code>Error:</code> (per-component VS-vs-golden mismatches). A regression suite is just that workflow, repeated over a fixed list of zips, with a machine-checkable pass criterion.</p>
+<p>Findings that shaped the design:</p>
+<ul>
+<li><code>Cases/regression_test_zip_files.csv</code> already existed and listed 6 zips (a <code>filename</code> header + 6 <code>Collision-fix-constant-buffer-and-RdotV-zero_event*.zip</code> captures), all present in <code>Cases/</code>.</li>
+<li><code>CLAUDE.md</code> already had an empty <code>## Regression Test</code> heading at the end — it just needed content.</li>
+<li><code>render.py</code> takes a single JSON config and branches into <code>_run_zip_workflow</code> when <code>data_path</code> is set. The pass signal lives in the log as <code>Total PASSED rows: X/Y</code> (emitted by <code>compare_vs_output_with_golden_params</code>), and failures appear as <code>Error:</code> lines.</li>
+<li><code>log_file_path</code> resolves relative to the config file's directory.</li>
+<li><code>mesh_view_enabled: true</code> (as in <code>Default.json</code>) would pop a Tkinter GUI — unacceptable for automated runs.</li>
+<li>Topology: <code>Default.json</code> pins <code>primitive_topology: 4</code>, but per <code>CLAUDE.md</code> the CSV topology wins <b>unless</b> explicitly set in JSON. To respect each zip's own <code>pipeline_state.csv</code>, the runner must <b>omit</b> <code>primitive_topology</code>.</li>
+</ul>
+<p>Design decision: rather than make the regression a manual "edit Default.json and eyeball the log" chore, I added a small data-driven runner, <code>run_regression.py</code>, so the <code>CLAUDE.md</code> instruction becomes a single reproducible command. Each case runs as a <b>subprocess</b> (<code>python render.py &lt;tmp-config&gt;</code>) so a <code>sys.exit(1)</code> or GUI thread inside one case can't abort the whole suite.</p>
+<h2>Execution</h2>
+<ol>
+<li><b><code>run_regression.py</code></b> (new). Reads <code>Cases/regression_test_zip_files.csv</code>, and for each zip:<ul>
+<li>builds a headless config (mesh viewer off, <code>log_to_file</code> on, topology omitted so the zip's <code>pipeline_state.csv</code> decides),</li>
+<li>writes a throwaway <code>Cases/.regression_tmp_&lt;stem&gt;.json</code> and runs <code>render.py</code> on it as a subprocess,</li>
+<li>writes the per-case log to <code>Cases/regression_logs/&lt;stem&gt;.log</code>,</li>
+<li>parses the log for <code>Error:</code> lines and the <code>Total PASSED rows: X/Y</code> summary,</li>
+<li>prints a PASS/FAIL table and <b>exits non-zero</b> if any case fails (so it can gate a change). Temp configs are deleted after each run.</li>
+</ul></li>
+</ol>
+<p>   A case <b>passes</b> iff: <code>render.py</code> exits cleanly, the log has zero <code>Error:</code> lines, and <code>X == Y</code> in <code>Total PASSED rows</code>.</p>
+<ol>
+<li><b><code>CLAUDE.md</code></b> — filled in the <code>## Regression Test</code> section: when to run (after every code change), how (<code>python run_regression.py</code>), the data-driven CSV (edit the CSV to change coverage), the three-part pass criterion, and where to look on failure (<code>Cases/regression_logs/</code>).</li>
+</ol>
+<h2>Results</h2>
+<p>Ran <code>python run_regression.py</code> — all 6 cases pass:</p>
+<table>
+<tr><th>Status</th><th>Case</th><th>Rows</th></tr>
+<tr><td>PASS</td><td><code>...event28.zip</code></td><td>204/204</td></tr>
+<tr><td>PASS</td><td><code>...event104.zip</code></td><td>1149/1149</td></tr>
+<tr><td>PASS</td><td><code>...event351.zip</code></td><td>315/315</td></tr>
+<tr><td>PASS</td><td><code>...event371.zip</code></td><td>6/6</td></tr>
+<tr><td>PASS</td><td><code>...event399.zip</code></td><td>696/696</td></tr>
+<tr><td>PASS</td><td><code>...event516.zip</code></td><td>3/3</td></tr>
+</table>
+<p><code>6/6 passed</code>, exit code 0. The suite is now the standard post-change gate.</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>CLAUDE.md</code> — populated the <code>## Regression Test</code> section.</li>
+<li><code>run_regression.py</code> — new CSV-driven, headless regression runner.</li>
+</ul>
+<h2>Notes / follow-ups</h2>
+<ul>
+<li>The runner leaves per-case logs in <code>Cases/regression_logs/</code> for inspection; consider adding <code>Cases/regression_logs/</code> and <code>Cases/.regression_tmp_*.json</code> to <code>.gitignore</code> if they shouldn't be committed.</li>
+<li>To extend coverage, add a zip filename to <code>Cases/regression_test_zip_files.csv</code> — no code change needed.</li>
+</ul>
+</div></body></html>

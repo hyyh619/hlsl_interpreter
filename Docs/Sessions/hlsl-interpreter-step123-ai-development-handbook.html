@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 123 — 撰写《AI 辅助开发手册》（HTML + Markdown 两版）</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step123-ai-development-handbook</span></div>
+<div class="wrap">
+<h1>Step 123 — 撰写《AI 辅助开发手册》（HTML + Markdown 两版）</h1>
+<h2>任务</h2>
+<p>用户要求把"如何与 AI 协作开发"沉淀成一份开发手册，回答 11 个问题（提示词、需求分析、<br>执行、数据流、调试、回归、TDD、纠错、记忆系统、两个 agent 周期对比），并产出两个版本：<br>HTML（带图）与 Markdown。所有论述要用<b>本项目这次开发里的真实例子</b>佐证。</p>
+<h2>思考</h2>
+<p>把 11 个问题映射到本仓库可核对的真实材料，避免泛泛而谈。选定贯穿全篇的三个案例<br>（都来自最近 step119–120，证据链完整、可复述）：</p>
+<ul>
+<li><b>C1 多数组 cbuffer</b>（step119，提交 <code>1716ee5</code>）：<code>override_cbuffers_from_binary</code> 只填首个数组字段就 <code>break</code>，<code>texgen[2]@c2</code> 读成 0。一个根因修好 5 个 case。</li>
+<li><b>C2 反规格化数 FTZ</b>（step120，提交 <code>c398d86</code>）：<code>cb12[271].z</code> 字节 <code>0x00000001</code> 作 float 是反规格化数 <code>1.4e-45</code>，GPU flush-to-zero 取 0；解释器保留非零→分支选错。</li>
+<li><b>C3 (int) 强转语义</b>（step120，提交 <code>122e4f4</code>）：<code>(int2)v1.zw</code> 被位重解释成 <code>1073741824</code> 而非 <code>2</code>，越界读纹理→<code>0/0=NaN</code>；改为仅在位运算下位重解释。</li>
+</ul>
+<p>各问题的取材：</p>
+<ol>
+<li>提示词 → CLAUDE.md 四层上下文 + 本轮编号任务清单 + 约束清单 + 留痕要求。</li>
+<li>需求分析/计划 → triage 129 个 zip、聚类成根因、按 ROI 用 TodoWrite 排序。</li>
+<li>执行 → 七步闭环，以 C1 沿数据流回溯到那行 <code>break</code> 为例。</li>
+<li>数据流 → AI 累积上下文输入 / 工具调用输出 / 项目自身 zip→管线→golden 数据流。</li>
+<li>调试输出 → <code>[STMT]</code>/<code>[BINARY OP]</code>/<code>[METHOD]</code> 轨迹、分量级 <code>Error:</code>、<code>Total PASSED</code>， 以 C3 的 <code>[1073741824]</code> smoking gun 和 C2 的分支回溯为例。</li>
+<li>回归 → 数据驱动 CSV + run_regression.py + 三条判据 + 每类加代表 case（23341/20899）。</li>
+<li>TDD → "golden 即测试"变体，红→绿→防回退，以 C2 的 0/2160→2160/2160 为例。</li>
+<li>纠错 → 自我纠错(C2 误判翻案)、回归当裁判(C3 先证伪再改)、CLAUDE.md 护栏、用户预标约束。</li>
+<li>记忆系统 → memory/ 一事一文件 + MEMORY.md 索引，列出现有记忆及其避免的重复劳动。</li>
+<li>两周期 → 前期 opencode+minimax-m2.7（奠基/小步），后期 claude code+opus（攻坚/闭环）。</li>
+</ol>
+<h2>执行</h2>
+<ul>
+<li><code>Docs/AI-Development-Handbook.md</code> — 302 行 Markdown，含目录、表格、ASCII 数据流图。</li>
+<li><code>Docs/AI-Development-Handbook.html</code> — 自包含 HTML，深色技术文档风，内嵌 5 个 SVG 图 （提示词四层、开发闭环、输入/输出数据流、TDD 红绿循环、两周期时间线）、表格与 callout。无外部资源依赖，本地浏览器直接打开即可看图。</li>
+<li>校验：HTML 标签配平（svg 5/5、div 32/32、table 4/4、10 个 h2）。</li>
+</ul>
+<h2>结果</h2>
+<p>两版手册落在 <code>Docs/</code>；本 step 文档与提示词历史更新。手册内容全部可回溯到本仓库的<br>提交（<code>1716ee5</code>/<code>c398d86</code>/<code>122e4f4</code>）、<code>Sessions/</code> 日志与 <code>memory/</code> 记忆文件。</p>
+<p>第 10 题（两个 agent 周期对比）基于 Sessions/ 步骤日志与 git 时间线的可见证据归纳：<br>step1–~110 小步搭骨架的节奏对应前期 opencode+minimax；step110+ 真机 capture +<br>回归纪律 + 根因攻坚对应后期 claude code+opus。</p>
+</div></body></html>

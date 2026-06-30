@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mesh_view.py字体配置修复</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step65-fix-font-error</span></div>
+<div class="wrap">
+<h1>mesh_view.py字体配置修复</h1>
+<p><b>Session ID:</b> ses_1b6933407ffehVZv6xTqYZEkxs<br><b>Created:</b> 2026/5/21 15:25:27<br><b>Updated:</b> 2026/5/21 15:27:11</p>
+<hr>
+<h2>User</h2>
+<p>修复mesh_view.py的下列问题<br>Traceback (most recent call last):<br>  File "c:\Python314\Lib\tkinter\__init__.py", line 2082, in __call__<br>    return self.func(*args)<br>           ~~~~~~~~~^^^^^^^<br>  File "C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py", line 1010, in _on_info_font_size_changed<br>    self._vertex_info_inner_frame.config(font=("Consolas", size))<br>    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^<br>  File "c:\Python314\Lib\tkinter\__init__.py", line 1836, in configure<br>    return self._configure('configure', cnf, kw)<br>           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^<br>  File "c:\Python314\Lib\tkinter\__init__.py", line 1826, in _configure<br>    self.tk.call(_flatten((self._w, cmd)) + self._options(cnf))<br>    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^<br>_tkinter.TclError: unknown option "-font"<br>Exception in Tkinter callback<br>Traceback (most recent call last):<br>  File "c:\Python314\Lib\tkinter\__init__.py", line 2082, in __call__<br>    return self.func(*args)<br>           ~~~~~~~~~^^^^^^^<br>  File "C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py", line 1010, in _on_info_font_size_changed<br>    self._vertex_info_inner_frame.config(font=("Consolas", size))<br>    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^<br>  File "c:\Python314\Lib\tkinter\__init__.py", line 1836, in configure<br>    return self._configure('configure', cnf, kw)<br>           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^<br>  File "c:\Python314\Lib\tkinter\__init__.py", line 1826, in _configure<br>    self.tk.call(_flatten((self._w, cmd)) + self._options(cnf))<br>    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^<br>_tkinter.TclError: unknown option "-font" </p>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 14.6s)</h2>
+<p>_Thinking:_</p>
+<p>The user wants me to fix an error in mesh_view.py. The error indicates that <code>_vertex_info_inner_frame.config(font=("Consolas", size))</code> is failing because the <code>font</code> option is not valid for whatever widget type <code>_vertex_info_inner_frame</code> is.</p>
+<p>Let me first read the file to understand the issue.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\mesh_view.py",
+  "limit": 50,
+  "offset": 1000
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+1000:         self._vertex_shader_log.append(text)
+1001:         if self._vertex_shader_log_text:
+1002:             self._vertex_shader_log_text.insert(tk.END, text + "\n")
+1003:             self._vertex_shader_log_text.see(tk.END)
+1004: 
+1005:     def _on_info_font_size_changed(self):
+1006:         """处理顶点信息面板字体大小变化"""
+1007:         size = self._info_font_size_var.get()
+1008:         self._vertex_info_font_size = size
+1009:         if self._vertex_info_inner_frame:
+1010:             self._vertex_info_inner_frame.config(font=("Consolas", size))
+1011:         self._update_vertex_info_panel()
+1012: 
+1013:     def _on_log_font_size_changed(self):
+1014:         """处理着色器日志字体大小变化"""
+1015:         size = self._log_font_size_var.get()
+1016:         self._shader_log_font_size = size
+1017:         if self._vertex_shader_log_text:
+1018:             self._vertex_shader_log_text.config(font=("Consolas", size))
+1019: 
+1020:     def _on_mouse_wheel_input(self, event):
+1021:         """处理输入画布鼠标滚轮缩放"""
+1022:         if self._active_view_var.get():
+1023:             if event.delta &gt; 0:
+1024:                 self._input_scale *= 1.1
+1025:             else:
+1026:                 self._input_scale *= 0.9
+1027:             self._input_scale = max(MESH_VIEW_MIN_SCALE, min(MESH_VIEW_MAX_SCALE, self._input_scale))
+1028:         self._draw_mesh()
+1029: 
+1030:     def _on_mouse_wheel_output(self, event):
+1031:         """处理输出画布鼠标滚轮缩放"""
+1032:         if not self._active_view_var.get():
+1033:             if event.delta &gt; 0:
+1034:                 self._output_scale *= 1.1
+1035:             else:
+1036:                 self._output_scale *= 0.9
+1037:             self._output_scale = max(MESH_VIEW_MIN_SCALE, min(MESH_VIEW_MAX_SCALE, self._output_scale))
+1038:         self._draw_mesh()
+1039: 
+1040:     def _on_resize(self, event):
+1041:         """处理窗口大小改变"""
+1042:         self._draw_mesh()
+1043: 
+1044:     def _on_layout_changed(self):
+1045:         """处理布局变更"""
+1046:         if not hasattr(self, '_layout_var') or self._layout_var is None:
+1047:             return
+1048:         layout = self._layout_var.get()
+1049:         if layout == "default":
+
+(Showing lines 1000-1049 of 1551. Use offset=1050 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 24.9s)</h2>
+<p>_Thinking:_</p>
+<p>The issue is that <code>Frame</code> widgets in Tkinter don't support the <code>font</code> option. You can only set fonts on widgets that display text like <code>Label</code>, <code>Button</code>, <code>Text</code>, etc.</p>
+<p>Let me look at how <code>_vertex_info_inner_frame</code> is created to understand the context better and find the right fix.</p>
+<p><b>Tool: grep</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "path": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter",
+  "pattern": "_vertex_info_inner_frame"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Found 11 matches
+C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py:
+  Line 99:         self._vertex_info_inner_frame = None
+
+  Line 238:         self._vertex_info_inner_frame = tk.Canvas(info_canvas_frame, bg="#1a1a2e", highlightthickness=0, yscrollcommand=self._vertex_info_scroll_y.set)
+
+  Line 239:         self._vertex_info_inner_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+  Line 240:         self._vertex_info_scroll_y.config(command=self._vertex_info_inner_frame.yview)
+
+  Line 241:         self._vertex_info_panel = self._vertex_info_inner_frame
+
+  Line 1009:         if self._vertex_info_inner_frame:
+
+  Line 1010:             self._vertex_info_inner_frame.config(font=("Consolas", size))
+
+  Line 1084:             self._vertex_info_inner_frame = tk.Canvas(info_canvas_frame, bg="#1a1a2e", highlightthickness=0, yscrollcommand=self._vertex_info_scroll_y.set)
+
+  Line 1085:             self._vertex_info_inner_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+  Line 1086:             self._vertex_info_scroll_y.config(command=self._vertex_info_inner_frame.yview)
+
+  Line 1087:             self._vertex_info_panel = self._vertex_info_inner_frame
+</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 17.3s)</h2>
+<p>_Thinking:_</p>
+<p>The issue is clear - <code>_vertex_info_inner_frame</code> is a <code>tk.Canvas</code> object, and <code>Canvas</code> doesn't have a <code>font</code> configuration option. The code is trying to set a font on a Canvas, which is invalid.</p>
+<p>Let me look at how <code>_vertex_shader_log_text</code> is defined and used to understand the correct approach. Line 1017-1018 shows it's a Text widget which does support font.</p>
+<p>For the Canvas-based info panel, instead of setting a font on the Canvas itself, the font would need to be applied to individual text items drawn on the Canvas, or perhaps the code should use a different widget type if it needs font support.</p>
+<p>Let me look at the context around how the vertex info panel works to understand what it's displaying and how.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\mesh_view.py",
+  "limit": 30,
+  "offset": 235
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+235:         info_canvas_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+236:         self._vertex_info_scroll_y = ttk.Scrollbar(info_canvas_frame)
+237:         self._vertex_info_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+238:         self._vertex_info_inner_frame = tk.Canvas(info_canvas_frame, bg="#1a1a2e", highlightthickness=0, yscrollcommand=self._vertex_info_scroll_y.set)
+239:         self._vertex_info_inner_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+240:         self._vertex_info_scroll_y.config(command=self._vertex_info_inner_frame.yview)
+241:         self._vertex_info_panel = self._vertex_info_inner_frame
+242: 
+243:         log_label_frame = ttk.LabelFrame(right_paned, text="Vertex Shader Execution Log", padding=2)
+244:         right_paned.add(log_label_frame)
+245:         log_scroll = ttk.Scrollbar(log_label_frame)
+246:         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+247:         self._vertex_shader_log_text = tk.Text(log_label_frame, bg="#0d0d1a", fg="#00ff00", font=("Consolas", self._shader_log_font_size), height=8, wrap=tk.WORD, yscrollcommand=log_scroll.set)
+248:         self._vertex_shader_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+249:         log_scroll.config(command=self._vertex_shader_log_text.yview)
+250: 
+251:         self._input_canvas.bind("&lt;Button-1&gt;", lambda e: self._on_mouse_drag_input(e))
+252:         self._input_canvas.bind("&lt;B1-Motion&gt;", lambda e: self._on_mouse_drag_input(e))
+253:         self._input_canvas.bind("&lt;ButtonRelease-1&gt;", lambda e: self._on_mouse_release(e))
+254:         self._input_canvas.bind("&lt;MouseWheel&gt;", lambda e: self._on_mouse_wheel_input(e))
+255:         self._input_canvas.bind("&lt;Button-3&gt;", lambda e: self._on_right_click_input(e))
+256: 
+257:         self._output_canvas.bind("&lt;Button-1&gt;", lambda e: self._on_mouse_drag_output(e))
+258:         self._output_canvas.bind("&lt;B1-Motion&gt;", lambda e: self._on_mouse_drag_output(e))
+259:         self._output_canvas.bind("&lt;ButtonRelease-1&gt;", lambda e: self._on_mouse_release(e))
+260:         self._output_canvas.bind("&lt;MouseWheel&gt;", lambda e: self._on_mouse_wheel_output(e))
+261:         self._output_canvas.bind("&lt;Button-3&gt;", lambda e: self._on_right_click_output(e))
+262: 
+263:         self._root.bind("&lt;Configure&gt;", lambda e: self._on_resize(e))
+264: 
+
+(Showing lines 235-264 of 1551. Use offset=265 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 20.4s)</h2>
+<p>_Thinking:_</p>
+<p>The problem is clear. <code>_vertex_info_inner_frame</code> is a <code>tk.Canvas</code> object, which doesn't have a <code>font</code> configuration option. Only widget types like <code>tk.Label</code>, <code>tk.Text</code>, <code>tk.Button</code> etc. support the <code>font</code> option.</p>
+<p>The code at line 1010 tries to set font on a Canvas, which is invalid.</p>
+<p>Looking at line 241, we see <code>self._vertex_info_panel = self._vertex_info_inner_frame</code> - so they use <code>_vertex_info_panel</code> to reference this canvas. But the font setting should probably target the widgets inside the canvas (the actual vertex info labels), not the canvas itself.</p>
+<p>Let me look at how <code>_update_vertex_info_panel</code> works to understand better how vertex info is displayed.</p>
+<p><b>Tool: grep</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "path": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter",
+  "pattern": "_update_vertex_info_panel"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Found 4 matches
+C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py:
+  Line 742:             self._update_vertex_info_panel()
+
+  Line 767:             self._update_vertex_info_panel()
+
+  Line 769:     def _update_vertex_info_panel(self):
+
+  Line 1011:         self._update_vertex_info_panel()
+</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 10.1s)</h2>
+<p>_Thinking:_</p>
+<p>The issue is clear - <code>tk.Canvas</code> doesn't support the <code>font</code> option. The fix should remove that line since <code>_update_vertex_info_panel()</code> likely creates text items with proper font settings anyway.</p>
+<p>Let me verify this is the correct fix by checking what <code>_update_vertex_info_panel</code> does.</p>
+<p><b>Tool: read</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\mesh_view.py",
+  "limit": 50,
+  "offset": 769
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>&lt;path&gt;C:\Development\Graphics\irrlicht-1.8.3\hlsl_interpreter\mesh_view.py&lt;/path&gt;
+&lt;type&gt;file&lt;/type&gt;
+&lt;content&gt;
+769:     def _update_vertex_info_panel(self):
+770:         """更新顶点信息面板"""
+771:         if not self._vertex_info_panel:
+772:             return
+773: 
+774:         self._vertex_info_panel.delete("all")
+775: 
+776:         font_size = self._vertex_info_font_size
+777:         line_height = font_size + 10
+778: 
+779:         self._vertex_info_panel.create_text(10, 10, anchor=tk.NW, fill="white", font=("Consolas", font_size), text="Selected Vertex Info")
+780:         y_pos = 10 + line_height * 2
+781: 
+782:         input_idx = self._selected_input_vertex_index
+783:         output_idx = self._selected_output_vertex_index
+784: 
+785:         if input_idx is not None and input_idx &lt; len(self.input_vertices):
+786:             v = self.input_vertices[input_idx]
+787:             self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="#00ff00", font=("Consolas", font_size), text=f"--- Input Vertex [{input_idx}] ---")
+788:             y_pos += line_height * 1.5
+789: 
+790:             pos = v.position
+791:             self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="white", font=("Consolas", font_size - 1), text=f"Position: ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
+792:             y_pos += line_height
+793: 
+794:             if v.normal:
+795:                 n = v.normal
+796:                 self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="white", font=("Consolas", font_size - 1), text=f"Normal: ({n[0]:.4f}, {n[1]:.4f}, {n[2]:.4f})")
+797:                 y_pos += line_height
+798: 
+799:             if v.color:
+800:                 c = v.color
+801:                 self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="white", font=("Consolas", font_size - 1), text=f"Color: ({c[0]:.4f}, {c[1]:.4f}, {c[2]:.4f}, {c[3]:.4f})")
+802:                 y_pos += line_height
+803: 
+804:             y_pos += line_height
+805:         else:
+806:             self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="gray", font=("Consolas", font_size - 1), text="No Input Vertex Selected")
+807:             y_pos += line_height * 2
+808: 
+809:         if output_idx is not None and output_idx &lt; len(self.output_vertices):
+810:             v = self.output_vertices[output_idx]
+811:             self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="#ff8800", font=("Consolas", font_size), text=f"--- Output Vertex [{output_idx}] ---")
+812:             y_pos += line_height * 1.5
+813: 
+814:             pos = v.position
+815:             self._vertex_info_panel.create_text(10, y_pos, anchor=tk.NW, fill="white", font=("Consolas", font_size - 1), text=f"Position: ({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})")
+816:             y_pos += line_height
+817: 
+818:             if v.normal:
+
+(Showing lines 769-818 of 1551. Use offset=819 to continue.)
+&lt;/content&gt;</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 9.2s)</h2>
+<p>_Thinking:_</p>
+<p>Now I understand the issue. The code on line 1010 is trying to set <code>font</code> on a <code>tk.Canvas</code> widget, but Canvas doesn't support the <code>font</code> configuration option. The font is only used when drawing text with <code>create_text</code>, which is already handled in <code>_update_vertex_info_panel</code>.</p>
+<p>The fix should simply remove the line that tries to configure font on the Canvas since it's not a valid operation and the font is already being used correctly in <code>create_text</code> calls within <code>_update_vertex_info_panel</code>.</p>
+<p>Let me remove the problematic line.</p>
+<p>问题是 <code>tk.Canvas</code> 不支持 <code>font</code> 配置选项。字体只在 <code>create_text</code> 调用中使用，而 <code>_update_vertex_info_panel</code> 已经正确处理了字体大小。</p>
+<p><b>Tool: edit</b></p>
+<p><b>Input:</b></p>
+<pre><code>{
+  "filePath": "C:\\Development\\Graphics\\irrlicht-1.8.3\\hlsl_interpreter\\mesh_view.py",
+  "newString": "def _on_info_font_size_changed(self):\n        \"\"\"处理顶点信息面板字体大小变化\"\"\"\n        size = self._info_font_size_var.get()\n        self._vertex_info_font_size = size\n        self._update_vertex_info_panel()",
+  "oldString": "def _on_info_font_size_changed(self):\n        \"\"\"处理顶点信息面板字体大小变化\"\"\"\n        size = self._info_font_size_var.get()\n        self._vertex_info_font_size = size\n        if self._vertex_info_inner_frame:\n            self._vertex_info_inner_frame.config(font=(\"Consolas\", size))\n        self._update_vertex_info_panel()"
+}</code></pre>
+<p><b>Output:</b></p>
+<pre><code>Edit applied successfully.</code></pre>
+<hr>
+<h2>Assistant (Build · MiniMax-M2.7 · 6.9s)</h2>
+<p>_Thinking:_</p>
+<p>修复完成。问题是 <code>_vertex_info_inner_frame</code> 是一个 <code>tk.Canvas</code>，Canvas 不支持 <code>font</code> 配置选项。代码试图通过 <code>config(font=...)</code> 来设置字体，但 Canvas 没有这个选项。</p>
+<p>修复方法：移除对 Canvas 设置字体的代码，因为字体已经在 <code>_update_vertex_info_panel()</code> 中通过 <code>create_text(..., font=("Consolas", font_size))</code> 使用了。Canvas 使用 <code>create_text</code> 创建文本时直接指定字体，而不是通过 <code>config(font=...)</code> 来设置字体。</p>
+<p>修复完成。<code>_vertex_info_inner_frame</code> 是 <code>tk.Canvas</code>，不支持 <code>font</code> 配置选项。字体已经在 <code>_update_vertex_info_panel()</code> 中通过 <code>create_text(..., font=("Consolas", font_size))</code> 正确使用。</p>
+<hr>
+</div></body></html>

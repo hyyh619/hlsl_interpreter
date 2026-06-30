@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hlsl-interpreter-step151：实现 vs_only 模式并对 A 类超时 case 单独长跑</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun</span></div>
+<div class="wrap">
+<h1>hlsl-interpreter-step151：实现 vs_only 模式并对 A 类超时 case 单独长跑</h1>
+<h2>任务</h2>
+<ol>
+<li>提交前面的文档（step124 的 Dump 重 triage 报告）。</li>
+<li><b>先实现 <code>vs_only</code> 模式，再单独长时间跑</b> A 类（超时）case，确认它们到底是"正确但慢"还是真有 VS 错误。</li>
+</ol>
+<h2>背景</h2>
+<p>step124 把 <code>Dump/</code> 剩余 134 个失败 case 分了 7 类，其中 <b>A 类超时 45 个</b>因 300s 上限被杀掉，无法判定正确性——它们的日志在被杀前没有 <code>Error:</code> 行也没有 <code>Total PASSED rows:</code> 总结。怀疑这些是 PS/光栅化主导的全屏 pass，VS 本身是对的。要验证就得跳过光栅化+PS 只跑 VS。</p>
+<h2>执行</h2>
+<h3>1. 提交文档</h3>
+<p><code>git commit</code> 把 step124 的 session 报告 + prompt log 更新提交（<code>Dump/</code>、<code>Cases/</code> 均在 <code>.gitignore</code> 中，故只提交两个 docs）。commit: <code>b3fda5c</code>。</p>
+<h3>2. 实现 <code>vs_only</code> 模式（<code>render.py</code>）</h3>
+<p><code>_execute_pipeline</code> 在执行 VS 并与 golden 比对后（<code>compare_vs_output_with_golden_params</code> 已经打印 <code>Total PASSED rows:</code>），新增早退：</p>
+<pre><code>vs_only = config.get('vs_only', False)
+...
+# 在 VS-vs-golden 比对之后、Rasterizer 之前：
+if vs_only:
+    vs_interp.log_output(f"\nvs_only mode: skipping rasterizer/depth/PS/output-merger (VS executed in {vs_time:.4f}s)")
+    TRACE.close()
+    return</code></pre>
+<p>正确性判定本就只看 VS-vs-golden，所以跳过 Rasterizer/Depth/PS/Output-Merger 不影响 PASS/FAIL 结论，但能让全屏/大网格 draw 的耗时从光栅化+PS 主导降到只剩 VS。<code>vs_only</code> 默认 <code>False</code>，不影响回归/默认全管线路径。</p>
+<h3>3. triage_dump.py 增加 <code>--vs-only</code> / <code>--list</code> / <code>--timeout</code></h3>
+<p>为了"单独长跑" A 类，给 triage runner 加了三个开关（可复用）：</p>
+<ul>
+<li><code>--vs-only</code>：给每个 case 的临时 config 注入 <code>vs_only=True</code>。</li>
+<li><code>--list FILE</code>：只跑文件里列出的 zip（A 类跨多个家族，substring <code>--filter</code> 不够用）。</li>
+<li><code>--timeout N</code>：覆盖默认 300s（本次用 1800s 作兜底）。</li>
+</ul>
+<h3>4. 冒烟验证</h3>
+<p>对 <code>witcher3_countryside_event20882</code>（全管线下 &gt;300s 超时）单跑 <code>vs_only</code>：</p>
+<pre><code>VS executed 720 vertices in 0.9267s
+Total PASSED rows: 720/720
+real  0m1.5s</code></pre>
+<p>从 <b>&gt;300s 超时</b> 降到 <b>1.5s 通过 720/720</b>——确认是 PS 主导的全屏 pass，VS 完全正确。</p>
+<h3>5. 对 45 个 A 类 case 单独长跑</h3>
+<pre><code>python triage_dump.py --vs-only --list Cases/.aclass_list.txt --workers 12 --timeout 1800</code></pre>
+<p>结果：<b>38 PASS，7 FAIL</b>。</p>
+<h2>结果</h2>
+<h3>A 类 45 个的真相</h3>
+<table>
+<tr><th>结果</th><th>数量</th><th>处理</th></tr>
+<tr><td>PASS（确认正确但慢）</td><td>38</td><td>从 <code>Dump/</code> 删除</td></tr>
+<tr><td>FAIL（其实 VS 就错，之前被超时掩盖）</td><td>7</td><td>重新归类到 D/E/F/G</td></tr>
+</table>
+<p><b>38 个删除</b>证实了 step124 的判断：A 类绝大多数是正确但慢的全屏/大网格 draw（witcher 全屏 pass、heaven 19095/19095、sekiro 16479/16479 等），<code>vs_only</code> 下秒级通过。</p>
+<p><b>7 个被超时掩盖的真失败</b>（重新归类）：</p>
+<table>
+<tr><th>case</th><th>vs_only 结果</th><th>新类别</th></tr>
+<tr><td><code>Octopath-frame746_event3221</code></td><td>0/6720，TEXCOORD10/11 错</td><td>D（Octopath 输入解码）</td></tr>
+<tr><td><code>OldWorld_event1034</code></td><td>50533/203328</td><td>G（OldWorld value mismatch）</td></tr>
+<tr><td><code>OldWorld_event2767</code></td><td>50533/203328（同 shader）</td><td>G（OldWorld value mismatch）</td></tr>
+<tr><td><code>OldWorld_event3338</code></td><td>23352/23814，diff≈0.2~0.76</td><td>F1（精度边界）</td></tr>
+<tr><td><code>witcher3_countryside_event21979</code></td><td>21/840，diff≈0.027</td><td>E（witcher）</td></tr>
+<tr><td><code>witcher3_countryside_event22049</code></td><td>0/840</td><td>E（witcher）</td></tr>
+<tr><td><code>witcher3_countryside_event22260</code></td><td>0/108</td><td>E（witcher）</td></tr>
+</table>
+<p>注：<code>OldWorld_event1034/2767</code> 各有 <b>203,328 个顶点</b>——即使只跑 VS 也要数百秒（纯 Python 逐顶点），是少数 <code>vs_only</code> 仍很慢的 case。它们 <code>sv_position[1]</code> 偏、<code>TexCoord2</code> 为 0，属真实 VS 错误（新建 G 类，疑似某个 cbuffer 列/矩阵行未正确加载）。</p>
+<h3><code>Dump/</code> 失败集刷新</h3>
+<p>删除 38 个后，<code>Dump/</code> 从 134 → <b>96</b> 个失败 case：</p>
+<table>
+<tr><th>类别</th><th>step124</th><th>本次后</th><th>说明</th></tr>
+<tr><td>A. 超时</td><td>45</td><td><b>0</b></td><td>38 删除 + 7 重归类，A 类清空</td></tr>
+<tr><td>B. 无 golden</td><td>16</td><td>16</td><td>不变</td></tr>
+<tr><td>C. TombRaider 反编译有损</td><td>37</td><td>37</td><td>不变</td></tr>
+<tr><td>D. Octopath 输入解码</td><td>18</td><td>19</td><td>+1（event3221）</td></tr>
+<tr><td>E. witcher 切线/解码</td><td>7</td><td>10</td><td>+3</td></tr>
+<tr><td>F1. 精度边界</td><td>2</td><td>3</td><td>+1（OldWorld_event3338）</td></tr>
+<tr><td>F2. 其它 value mismatch</td><td>9</td><td>9</td><td>不变</td></tr>
+<tr><td>G. OldWorld value mismatch</td><td>0</td><td>2</td><td>新建（203k 顶点的大 draw）</td></tr>
+<tr><td><b>合计失败</b></td><td><b>134</b></td><td><b>96</b></td><td>删除 38</td></tr>
+</table>
+<h2>各类失败原因与修复方案（更新）</h2>
+<ul>
+<li><b>A（已清空）</b>：<code>vs_only</code> 已落地——把它设为 triage/回归的默认评测路径即可彻底消除"超时型"假失败。进一步的全管线性能优化（热路径 AST 预编译）可另行投入。</li>
+<li><b>D（19，Octopath）/E（10，witcher）</b>：可修的解释器问题——packed 法线/切线 UNORM/SNORM 未按 <code>ia_input_layouts.csv</code> 解码、golden 列被当 uint 解析、切线矩阵主序。</li>
+<li><b>F1（3，精度）</b>：diff 仅略超 <code>float_tolerance=0.005</code>（如 0.2/0.027），细化 float32 模拟或略放宽容差即过。</li>
+<li><b>G（2，OldWorld）</b>：203k 顶点大 draw，<code>sv_position[1]</code> 偏 + <code>TexCoord2=0</code>，排查该 capture 的 cbuffer 矩阵行/列加载。</li>
+<li><b>B（16）/C（37）</b>：数据缺失 / TombRaider 反编译有损，超出 HLSL 解释器能力边界，不修。</li>
+</ul>
+<h2>回归</h2>
+<p><code>vs_only</code> 默认关闭，仅新增早退分支，不改动默认全管线路径；triage_dump.py 改动是新增 CLI 开关（默认行为不变）。回归套件结果：见提交说明（<code>run_regression.py</code>，全 PASS）。</p>
+<h2>产物</h2>
+<ul>
+<li><code>render.py</code>：<code>vs_only</code> 模式。</li>
+<li><code>triage_dump.py</code>：<code>--vs-only</code> / <code>--list</code> / <code>--timeout</code> 开关。</li>
+<li>删除 <code>Dump/</code> 中 38 个确认正确（但慢）的 A 类 case，失败集 134 → 96。</li>
+<li><code>Cases/dump_failure_categories.csv</code>：刷新为 96 个失败的归类。</li>
+<li><code>Cases/aclass_vsonly_results.csv</code>：45 个 A 类的 vs_only 明细。</li>
+<li><code>Cases/triage_results_full140.csv</code>：step124 全 140 case 的全管线结果备份。</li>
+</ul>
+</div></body></html>

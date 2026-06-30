@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hlsl-step93：剩余 Dump/ 失败 case 分类与修复建议</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step93-classify-remaining-dump-failures</span></div>
+<div class="wrap">
+<h1>hlsl-step93：剩余 Dump/ 失败 case 分类与修复建议</h1>
+<h2>背景</h2>
+<p>经过 step92 的修复，<code>Dump/</code> 中通过的 332 个 case 已被删除，剩余 <b>181 个失败 case</b>。<br>本文档对这 181 个 case 按<b>失败根因</b>分类，给出每一类的具体原因（含证据）和可操作的修复建议。</p>
+<p>分类依据：<code>Cases/triage_results.csv</code> 的 detail 字段 + 各 case 在 <code>Cases/triage_logs/</code> 的日志 +<br>对代表性 case 的 HLSL 源码 / 反汇编 / cbuffer 结构的逐一分析。</p>
+<hr>
+<h2>总览</h2>
+<table>
+<tr><th>类别</th><th>数量</th><th>性质</th><th>是否解释器 bug</th><th>修复优先级</th></tr>
+<tr><td>A. 超时 (timeout)</td><td>37</td><td>正确但慢</td><td>否（性能）</td><td>低</td></tr>
+<tr><td>B. 无 golden 对比</td><td>17</td><td>无法验证</td><td>否（数据缺失）</td><td>不修复（标注 N/A）</td></tr>
+<tr><td>C. sekiro 实例索引 + struct-in-cbuffer</td><td>53</td><td>输出错误</td><td>部分（反编译缺口 + 缺特性）</td><td>高（数量大）</td></tr>
+<tr><td>D. TombRaider struct 成员矩阵选择子丢失</td><td>43</td><td>输出错误</td><td>否（反编译有损）</td><td>不可从 HLSL 修复</td></tr>
+<tr><td>E. 输入/输出 signature 映射 &amp; 顶点格式解码</td><td>29</td><td>输出错误</td><td>是</td><td>中</td></tr>
+<tr><td>F. 派生（derivative）quad 重执行崩溃</td><td>2</td><td>崩溃</td><td>是</td><td>中</td></tr>
+<tr><td><b>合计</b></td><td><b>181</b></td><td></td><td></td><td></td></tr>
+</table>
+<p>各类家族分布：</p>
+<ul>
+<li><b>A 超时(37)</b>：witcher3(17)、TankMechanicSimulator(8)、sekiro(3)、heaven(3)、OldWorld(2)、Nobu(2)、valley(1)、Octopath(1)</li>
+<li><b>B 无golden(17)</b>：sekiro(6)、manhattan(6)、witcher3(3)、Nobu(1)、EndlessSpace2(1)</li>
+<li><b>C sekiro(53)</b>：sekiro2 / sekiro4 的几何 VS</li>
+<li><b>D TombRaider(43)</b>：全部 TombRaider-frame25229</li>
+<li><b>E 其他(29)</b>：Octopath(18)、witcher3(7)、EndlessSpace2(2)、OldWorld(1)、Nobu(1)</li>
+<li><b>F 崩溃(2)</b>：sekiro2_event13516、sekiro4_event20560</li>
+</ul>
+<hr>
+<h2>A 类：超时（37 个）</h2>
+<h3>具体原因</h3>
+<p>解释器是<b>纯 Python 逐顶点 / 逐像素</b>执行，没有任何向量化或编译。当一个 draw 的顶点数很大、<br>或像素着色器要跑满整个视口（full-screen pass）时，单个 case 会超过 triage 的 300 秒上限。<br>这<b>不是正确性 bug</b>——这些 case 的 VS 输出在跑完时通常是正确的（回归套件里的<br><code>witcher3_event7358</code> 就是同类的全屏 pass，给足时间即可通过）。</p>
+<p>证据：日志在被杀掉前没有出现任何 <code>Error:</code> 行，也没有 <code>Total PASSED rows:</code> 总结行（被中途<br>终止）。受影响最多的是 witcher3（17）与 TankMechanicSimulator（8）。</p>
+<h3>修复建议</h3>
+<ol>
+<li><b>回归/triage 只评测 VS</b>：正确性判定只看 VS-vs-golden，但 <code>render.py</code> 跑了整条管线（含 PS 光栅化）。增加一个 <code>vs_only</code> 配置项，跑完 VS 对比后即返回，跳过光栅化/PS，可消除绝大多数超时。</li>
+<li><b>优化解释器热路径</b>：<code>evaluate_syntax_tree</code> / <code>get_value</code> 每个顶点都重新走一遍字符串解析。 可对 main 函数体做一次性"预编译"（把每条语句解析成可复用的 AST，缓存 swizzle/下标解析结果）。</li>
+<li><b>提高 triage 超时阈值</b>（回归已是 1800s），仅作兜底，不解决根本性能问题。</li>
+</ol>
+<hr>
+<h2>B 类：无 golden 对比（17 个）</h2>
+<h3>具体原因</h3>
+<p>日志里没有 <code>Total PASSED rows:</code>，detail 为 <code>no VS-vs-golden comparison in log</code>。意味着这些 capture<br>里 <b>没有可对比的 golden VS 网格</b>，原因有三种：</p>
+<ul>
+<li>该 draw 顶点数为 0 / 被完全裁剪；</li>
+<li>capture 是 indirect draw 或 GPU 生成几何，3Dmigoto 未导出 <code>*_vs_mesh.csv</code>；</li>
+<li>manhattan(6) 这类全部缺 golden mesh，属于 capture 本身不完整。</li>
+</ul>
+<h3>修复建议</h3>
+<p>这类 case <b>无法用 VS-vs-golden 工作流验证</b>，不是解释器问题。建议：</p>
+<ul>
+<li>从扫描集中标注为 <b>N/A / 跳过</b>，不计入"失败"；</li>
+<li>若想覆盖，需要换一种验证方式（如对比最终 RT 像素，而非 VS 输出）。</li>
+</ul>
+<hr>
+<h2>C 类：sekiro 实例索引 + struct-in-cbuffer（53 个，最大可修复群）</h2>
+<h3>具体原因（以 sekiro2_event2282 为例）</h3>
+<p>sekiro 几何 VS 的核心逻辑是<b>通过 ByteAddressBuffer 做实例索引</b>，再用索引取对象矩阵：</p>
+<pre><code>ByteAddressBuffer g_InstanceIndexBuffer : register(t20);
+...
+  r0.x = (int)v5.x + VC_InstanceIdxOffset;
+  r0.x = (uint)r0.x &lt;&lt; 2;
+// No code for instruction (needs manual fix):
+ld_raw_indexable(raw_buffer)(mixed,mixed,mixed,mixed) r0.x, r0.x, t20.xxxx   // ← 被 3Dmigoto 注释掉
+  r0.y = (int)r0.x * 17;
+  ...
+  r2.x = dot(r1.xyzw, VC_aObjMatrix[r0.x/3]._m00_m10_m20_m30);   // 用未解析的 r0.x 索引
+  o0.x = dot(r1.xyzw, VC_MatrixViewProj._m00_m10_m20_m30);       // sv_position</code></pre>
+<p>三个叠加的障碍：</p>
+<ol>
+<li><b>反编译缺口（主因）</b>：<code>ld_raw_indexable ... t20</code> 这条<b>原始缓冲区加载被 3Dmigoto 标注为 "No code for instruction (needs manual fix)" 并注释掉</b>。于是实例索引 <code>r0.x</code> 不会被赋值， 后续 <code>VC_aObjMatrix[r0.x/3]</code>、<code>VC_InstanceData[r0.y]</code> 取到错误矩阵 → <code>sv_position</code> 完全错误 （输出 -246.7 vs golden 19.4）。</li>
+<li><b>struct-in-cbuffer 命名成员访问</b>：<code>cbInstanceData</code> 里是 <code>struct { float4x3 mWorld; ... uint4 matricesData; ... } VC_InstanceData[2]</code>，需要按<b>成员名</b> 访问（<code>VC_InstanceData[i].matricesData.x</code>）。step92 加的 <code>__struct__</code> 支持只能做 <code>_mRC</code> 寄存器 式访问，<b>还不支持命名成员</b>。</li>
+<li><b>float4x3 矩阵</b>：<code>VC_aObjMatrix[i]._m00_m10_m20_m30</code> 是 4x3 矩阵的 <code>_mRC</code>，需要确认二进制加载 与访问器对 float4x3 正确。</li>
+</ol>
+<h3>修复建议（按收益排序）</h3>
+<ol>
+<li><b>实现 ByteAddressBuffer（t20）原始加载</b>：解析 <code>dcl_resource_raw t20</code>，从 capture 的 <code>vb</code>/raw 资源里读取实例索引缓冲，补上被注释的 <code>ld_raw_indexable</code>（即 <code>g_InstanceIndexBuffer.Load(addr)</code>）。 这是解锁 sekiro 的关键。</li>
+<li><b>扩展 struct-in-cbuffer 为命名成员</b>：在 <code>__struct__</code> 字段里保存"成员名 → 字节偏移/类型"表， 让 <code>NAME[i].member</code>、<code>NAME[i].member.swizzle</code> 能按偏移取值（复用 step92 的元素寄存器布局）。</li>
+<li><b>校验 float4x3 二进制加载 + <code>_mRC</code></b>：确保 <code>override_cbuffers_from_binary</code> 对 float4x3（48 字节、 3 寄存器）按 row_major 存放，<code>_m00_m10_m20_m30</code> 取列向量正确。</li>
+</ol>
+<blockquote>风险提示：即便补齐上述特性，若该 draw 的实例索引缓冲在 capture 中缺失，仍无法复现；需先确认<br>t20 资源是否随 zip 导出。</blockquote>
+<hr>
+<h2>D 类：TombRaider struct 成员矩阵选择子丢失（43 个，不可从 HLSL 修复）</h2>
+<h3>具体原因（step92 已确诊）</h3>
+<p>TombRaider 的 cbuffer 是 `struct { row_major float4x4 WorldViewProject; World; ViewProject; }<br>WorldParameters[12]`。反汇编显示：</p>
+<ul>
+<li><b>位置</b> o1 用 <code>cb0[base+0..3]</code>（第 1 个矩阵 WorldViewProject）；</li>
+<li><b>法线/切线</b> o3/o4/o5 用 <code>cb0[base+4..6]</code>（第 2 个矩阵 World）。</li>
+</ul>
+<p>但 3Dmigoto 反编译出的 HLSL <b>把 struct 成员选择子丢弃了</b>——位置和法线都写成同样的<br><code>._m00_m01_m02</code> / <code>._m10_m11_m12</code> / <code>._m20_m21_m22</code>。同一个 <code>_m00</code> 在位置语境指 WorldViewProject、<br>在法线语境指 World，<b>只有反汇编的 <code>cb0[base+N]</code> 寄存器号能区分</b>，HLSL 源里这个信息已经不存在。</p>
+<p>验证：用 World 矩阵（寄存器 +4/+5/+6）手算 o3.x = 0.5929，正好等于 golden 0.59292，证明诊断成立。<br>step92 后 <b>位置 o1 和 TEXCOORD0 已正确</b>，仅法线相关输出（TEXCOORD2/3/4）错误。</p>
+<h3>修复建议</h3>
+<ul>
+<li><b>只能从反汇编修复</b>：解析 <code>VS_shader_disasm.txt</code> 里的 <code>cb0[r0.x + N]</code> 真实寄存器号来驱动取值， 而不是相信 HLSL 的 <code>_mRC</code> token。这等于为这类 capture 增加一条"反汇编驱动"的解释路径，工作量大。</li>
+<li>或<b>接受现状</b>：position 已对，法线输出标注为"反编译有损不可解释"。</li>
+<li>对一个"直接解释 HLSL"的解释器而言，这类 case 超出其能力边界，建议不投入。</li>
+</ul>
+<hr>
+<h2>E 类：输入/输出 signature 映射 &amp; 顶点格式解码（29 个）</h2>
+<p>涵盖 Octopath(18)、witcher3(7)、EndlessSpace2(2)、OldWorld(1)、Nobu(1)。这类的 sv_position 往往<br><b>接近或部分正确</b>，错的是某些 TEXCOORD/COLOR 输出，根因集中在两点：</p>
+<h3>原因 1：直接拷贝的输入属性被解码错（witcher3_event22229）</h3>
+<pre><code>o4.xyzw = v1.xyzw;   // o4 = TEXCOORD3 → 对比键 TexCoord4</code></pre>
+<p>输出 40.49 vs golden 21.76。o4 只是把输入 <code>v1</code> 原样拷出，却不匹配，说明 **输入顶点属性 v1 的<br>布局/格式解码有误**（<code>ia_input_layouts.csv</code> 里的 offset 或 packed 格式没正确还原）。Octopath<br>多个 case 的 <code>TexCoord = 0.501961</code>（= 128/255）也指向 <b>归一化字节属性未按格式解码</b>。</p>
+<h3>原因 2：高编号 / 多输出语义映射到错误 golden 列（Octopath_event3502）</h3>
+<p>该 VS 输出 <code>o3..o6</code> 含 <code>TEXCOORD12 / TEXCOORD13</code> 等高编号语义；golden 对应列为 0 而输出非 0，<br>说明 <code>map_params_to_signature</code> / <code>load_vs_golden_from_mesh_csv</code> 对**高编号或大量 TEXCOORD 语义的<br>列映射**没对齐。</p>
+<h3>原因 3：精度/边界（OldWorld_event3338）</h3>
+<p><code>passed 23352/23814</code>，仅极少数行以<b>很小的 diff（0.76、0.2）</b>失败，属 float32 精度或特定分支的<br>边界差异，非结构性错误。</p>
+<h3>个别需单独看</h3>
+<ul>
+<li><code>witcher3_event16215</code>：TexCoord2/3 错（切线空间旋转矩阵），可能是矩阵约定（行/列主序）问题。</li>
+<li><code>witcher3_event16834</code>：着色器除零产生 nan/inf（纹理返回 0 后做除法），属数值定义问题。</li>
+</ul>
+<h3>修复建议</h3>
+<ol>
+<li><b>复核输入顶点解码</b>：对照 <code>ia_input_layouts.csv</code> 的 <code>Format</code>（如 <code>R8G8B8A8_UNORM</code>、 <code>R16G16_SNORM</code>、packed uint），确认 <code>ia_vertex_data</code> → VS 输入的解码与 offset 正确。</li>
+<li><b>复核输出 signature 列映射</b>：让 <code>load_vs_golden_from_mesh_csv</code> 用 <b>完整 indexed 语义</b> （TEXCOORD12 而非 TEXCOORD）匹配 golden 列；核对高编号语义不串列。</li>
+<li><b>逐 case 排查 16215 / 16834</b>：前者查矩阵主序，后者按"除零 → 0/inf 的 GPU 定义"对齐。</li>
+</ol>
+<hr>
+<h2>F 类：派生 quad 重执行崩溃（2 个）</h2>
+<h3>具体原因</h3>
+<p><code>sekiro2_event13516</code>、<code>sekiro4_event20560</code> 在 PS 里调用带<b>自动派生（ddx/ddy）的纹理采样</b>，<br>触发 <code>_compute_uv_derivatives</code> 对邻居 lane 的重执行（<code>_get_lane_locals</code>）。</p>
+<ul>
+<li>step92 已修第一处崩溃：<code>_sample_linear</code> 对 NaN UV 调 <code>int()</code> 抛 <code>ValueError</code>（已加 NaN/Inf 钳为 0）。</li>
+<li><b>仍存在第二处崩溃</b>：邻居 lane 重执行某条语句时，<code>execute_binary_op</code> 执行 <code>[l * r for l,r in zip(left,right)]</code> 抛 <code>TypeError: can't multiply sequence by non-int of type 'float'</code> ——即某个表达式在 lane 重执行环境里返回了 <b>list</b>，但上下文期望 scalar，导致 <code>list * float</code>。</li>
+</ul>
+<h3>修复建议</h3>
+<ol>
+<li><b>lane 重执行环境健壮化</b>：<code>_get_lane_locals</code> 重放 main 时，对返回类型与主 lane 不一致的情况 做防御（缺失输入按 0/标量回退），避免 <code>list * float</code>。</li>
+<li><b><code>execute_binary_op</code> 类型护栏</b>：当一侧是 list、另一侧是标量做逐元素乘时按广播处理；当类型确实 非法时返回 0 并记日志，而不是抛异常中断整条 draw。</li>
+<li>修好后这 2 个 case 会从"崩溃"降级为"value-mismatch"（其 sv_position 另有 C 类的实例索引问题）。</li>
+</ol>
+<hr>
+<h2>结论与建议优先级</h2>
+<table>
+<tr><th>优先级</th><th>动作</th><th>预计收益</th></tr>
+<tr><td>高</td><td>C 类：实现 ByteAddressBuffer 原始加载 + struct 命名成员访问</td><td>最多解锁 53 个 sekiro</td></tr>
+<tr><td>中</td><td>E 类：复核输入顶点格式解码 + 输出 signature 列映射</td><td>解锁部分 Octopath/witcher（约 29）</td></tr>
+<tr><td>中</td><td>F 类：lane 重执行 / 二元运算类型护栏</td><td>消除 2 个崩溃（提升健壮性）</td></tr>
+<tr><td>低</td><td>A 类：加 <code>vs_only</code> 模式跳过 PS</td><td>消除大部分 37 个超时</td></tr>
+<tr><td>不修</td><td>B 类（17，无 golden）、D 类（43，TombRaider 反编译有损）</td><td>超出 HLSL 解释器能力边界</td></tr>
+</table>
+<p>理论可达：修复 C + E + F 后，约 <b>53 + 29 + 2 = 84</b> 个 case 有望从失败转为通过（其中 C 取决于<br>t20 资源是否随 capture 导出）；A 类 37 个可通过 <code>vs_only</code> 或加时通过；剩余 B(17)+D(43)=60 个属于<br>数据缺失或反编译有损，不在解释器修复范围内。</p>
+</div></body></html>

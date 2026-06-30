@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HLSL Interpreter 开发文档</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="index.html">← 文档首页</a> <span class="crumb">/ 首页</span></div>
+<div class="wrap">
+<h1>HLSL Interpreter 开发文档</h1>
+<h2>手册</h2>
+<ul>
+<li><a href="AI-Development-Handbook.html">AI 辅助开发手册</a></li>
+</ul>
+<h2>提示词历史 (Prompts)</h2>
+<ul>
+<li><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html">Claude Code Session 提示词历史</a>（每步经 <code>Sessions/...md</code> 引用链接到对应 Session）</li>
+<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html">OpenCode Session 提示词历史</a>（每步标题带 → Session 链接）</li>
+</ul>
+<h2>开发步骤日志 (Sessions, 138)</h2>
+<ol style="line-height:1.9">
+<li><a href="Sessions/hlsl-step1-init-code.html">Python实现HLSL着色器代码解释器</a> <span style="color:#6b7480;font-size:12px">hlsl-step1-init-code</span></li>
+<li><a href="Sessions/hlsl-step2-print-cbuffer.html">CSV字符串值根据data type转换为对应数据类型</a> <span style="color:#6b7480;font-size:12px">hlsl-step2-print-cbuffer</span></li>
+<li><a href="Sessions/hlsl-step3-print-struct.html">CSV结构加载后打印首组field数据</a> <span style="color:#6b7480;font-size:12px">hlsl-step3-print-struct</span></li>
+<li><a href="Sessions/hlsl-step4-change-data-loading.html">HLSL解释器数据加载从JSON迁移到CSV</a> <span style="color:#6b7480;font-size:12px">hlsl-step4-change-data-loading</span></li>
+<li><a href="Sessions/hlsl-step5-add-executeVS-raphle-loop.html">HLSL解释器设计</a> <span style="color:#6b7480;font-size:12px">hlsl-step5-add-executeVS-raphle-loop</span></li>
+<li><a href="Sessions/hlsl-step6-add-missed-data-type.html">Refactoring code to use DATA_TYPE_LIST consistently</a> <span style="color:#6b7480;font-size:12px">hlsl-step6-add-missed-data-type</span></li>
+<li><a href="Sessions/hlsl-step7-add-eval-print.html">添加evaluate_expression和execute_statement日志输出</a> <span style="color:#6b7480;font-size:12px">hlsl-step7-add-eval-print</span></li>
+<li><a href="Sessions/hlsl-step8-add-warning-log-for-val-none.html">float[234]正则匹配字符串说明</a> <span style="color:#6b7480;font-size:12px">hlsl-step8-add-warning-log-for-val-none</span></li>
+<li><a href="Sessions/hlsl-step9-create-syntax-tree-for-expr.html">实现HLSL语法树模块</a> <span style="color:#6b7480;font-size:12px">hlsl-step9-create-syntax-tree-for-expr</span></li>
+<li><a href="Sessions/hlsl-step10-add-eval-print-for-syntax-tree.html">操作符执行时打印操作数和结果</a> <span style="color:#6b7480;font-size:12px">hlsl-step10-add-eval-print-for-syntax-tree</span></li>
+<li><a href="Sessions/hlsl-step11-fix-vector-mul-matrix.html">解释器矩阵乘法实现修正</a> <span style="color:#6b7480;font-size:12px">hlsl-step11-fix-vector-mul-matrix</span></li>
+<li><a href="Sessions/hlsl-step12-format-matrix-print.html">矩阵打印行列对齐实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step12-format-matrix-print</span></li>
+<li><a href="Sessions/hlsl-step13-add-comments-for-all.html">Add float3x3 casting to syntax parser</a> <span style="color:#6b7480;font-size:12px">hlsl-step13-add-comments-for-all</span></li>
+<li><a href="Sessions/hlsl-step14-add-cast-and-comments.html">添加float4x4/float3x3到float2x2的cast</a> <span style="color:#6b7480;font-size:12px">hlsl-step14-add-cast-and-comments</span></li>
+<li><a href="Sessions/hlsl-step15-add-output-golden-compare.html">New session - 2026-05-15T01:59:56.642Z</a> <span style="color:#6b7480;font-size:12px">hlsl-step15-add-output-golden-compare</span></li>
+<li><a href="Sessions/hlsl-step16-refine-output-golden-compare.html">compare_vs_output_with_golden函数重构改进</a> <span style="color:#6b7480;font-size:12px">hlsl-step16-refine-output-golden-compare</span></li>
+<li><a href="Sessions/hlsl-step17-add-error-print-for-arg-check.html">evaluate_syntax_tree参数检查添加错误日志</a> <span style="color:#6b7480;font-size:12px">hlsl-step17-add-error-print-for-arg-check</span></li>
+<li><a href="Sessions/hlsl-step18-make-all-to-syntax-tree-run-too-long.html">HLSL解释器语法树执行修复</a> <span style="color:#6b7480;font-size:12px">hlsl-step18-make-all-to-syntax-tree-run-too-long</span></li>
+<li><a href="Sessions/hlsl-step19-construct-tree-with-operator-priority.html">修复 HLSL 解释器运算符优先级</a> <span style="color:#6b7480;font-size:12px">hlsl-step19-construct-tree-with-operator-priority</span></li>
+<li><a href="Sessions/hlsl-step20-create-dot-operator.html">为HLSL解释器添加点运算符实现向量元素访问</a> <span style="color:#6b7480;font-size:12px">hlsl-step20-create-dot-operator</span></li>
+<li><a href="Sessions/hlsl-step21-support-swizzle-for-vector.html">添加HLSL向量swizzle支持</a> <span style="color:#6b7480;font-size:12px">hlsl-step21-support-swizzle-for-vector</span></li>
+<li><a href="Sessions/hlsl-step22-add-log-file.html">hlsl_interpreter.py 输出重定向到文件</a> <span style="color:#6b7480;font-size:12px">hlsl-step22-add-log-file</span></li>
+<li><a href="Sessions/hlsl-step23-add-print-controller.html">Add print_sequency control to HLSL interpreter</a> <span style="color:#6b7480;font-size:12px">hlsl-step23-add-print-controller</span></li>
+<li><a href="Sessions/hlsl-step24-optimize-log-file.html">HLSLInterpreter日志文件管理改进</a> <span style="color:#6b7480;font-size:12px">hlsl-step24-optimize-log-file</span></li>
+<li><a href="Sessions/hlsl-step25-print-execution-time.html">HLSLInterpreter添加执行时间统计</a> <span style="color:#6b7480;font-size:12px">hlsl-step25-print-execution-time</span></li>
+<li><a href="Sessions/hlsl-step26-add-json-configure.html">修改HLSLInterpreter使用JSON配置</a> <span style="color:#6b7480;font-size:12px">hlsl-step26-add-json-configure</span></li>
+<li><a href="Sessions/hlsl-step27-print-passed-number.html">HLSL解释器golden data验证通过</a> <span style="color:#6b7480;font-size:12px">hlsl-step27-print-passed-number</span></li>
+<li><a href="Sessions/hlsl-step28-log-file-mode-print-seq-config.html">将HLSLInterpreter的log配置改为JSON读取</a> <span style="color:#6b7480;font-size:12px">hlsl-step28-log-file-mode-print-seq-config</span></li>
+<li><a href="Sessions/hlsl-step29-cannot-fix-body-split-code.html">HLSL解释器语句切分逻辑缺少大括号匹配问题</a> <span style="color:#6b7480;font-size:12px">hlsl-step29-cannot-fix-body-split-code</span></li>
+<li><a href="Sessions/hlsl-step30-add-configure-for-print.html">HLSL解释器JSON配置添加日志输出控制项</a> <span style="color:#6b7480;font-size:12px">hlsl-step30-add-configure-for-print</span></li>
+<li><a href="Sessions/hlsl-step31-fix-two-char-operator-failed.html">修复hlsl_interpreter.py中&lt;=&quot;操作符解析错误</a> <span style="color:#6b7480;font-size:12px">hlsl-step31-fix-two-char-operator-failed</span></li>
+<li><a href="Sessions/hlsl-step32-add-tolerance-configure.html">float_tolerance参数JSON配置化</a> <span style="color:#6b7480;font-size:12px">hlsl-step32-add-tolerance-configure</span></li>
+<li><a href="Sessions/hlsl-step33-add-comments.html">hlsl_interpreter.py 运算符解析逻辑注释</a> <span style="color:#6b7480;font-size:12px">hlsl-step33-add-comments</span></li>
+<li><a href="Sessions/hlsl-step34-add-execute-count-for-vs.html">executeVS增加execute_count参数控制处理次数</a> <span style="color:#6b7480;font-size:12px">hlsl-step34-add-execute-count-for-vs</span></li>
+<li><a href="Sessions/hlsl-step35-add-execute-if-cond-else-statements.html">HLSL解释器if-else条件语句支持</a> <span style="color:#6b7480;font-size:12px">hlsl-step35-add-execute-if-cond-else-statements</span></li>
+<li><a href="Sessions/hlsl-step36-refine-if-cond-else-merge-them-first.html">HLSLInterpreter if-else合并顺序调整</a> <span style="color:#6b7480;font-size:12px">hlsl-step36-refine-if-cond-else-merge-them-first</span></li>
+<li><a href="Sessions/hlsl-step37-support-input.Color.x-two-dots.html">HLSL颜色通道赋值修复</a> <span style="color:#6b7480;font-size:12px">hlsl-step37-support-input.Color.x-two-dots</span></li>
+<li><a href="Sessions/hlsl-step38-add-thread-workers.html">多线程执行executeVS并保持结果有序</a> <span style="color:#6b7480;font-size:12px">hlsl-step38-add-thread-workers</span></li>
+<li><a href="Sessions/hlsl-step39-create-function-cache-to-improve-perf.html">多线程执行executeVS并保持结果有序</a> <span style="color:#6b7480;font-size:12px">hlsl-step39-create-function-cache-to-improve-perf</span></li>
+<li><a href="Sessions/hlsl-step40-add-primitive-topology.html">hlsl_interpreter.py添加primitive拓扑配置</a> <span style="color:#6b7480;font-size:12px">hlsl-step40-add-primitive-topology</span></li>
+<li><a href="Sessions/hlsl-step41-Create-MeshView-GUI.html">MeshView 3D图形顶点显示实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step41-Create-MeshView-GUI</span></li>
+<li><a href="Sessions/hlsl-step42-add-rotate-scale-button.html">MeshView enable配置项创建</a> <span style="color:#6b7480;font-size:12px">hlsl-step42-add-rotate-scale-button</span></li>
+<li><a href="Sessions/hlsl-step43-add-move-button.html">MeshView enable配置项创建</a> <span style="color:#6b7480;font-size:12px">hlsl-step43-add-move-button</span></li>
+<li><a href="Sessions/hlsl-step44-create-animation-render-vertex.html">Mesh逐步渲染动画控制功能实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step44-create-animation-render-vertex</span></li>
+<li><a href="Sessions/hlsl-step45-add-normal-vector-show.html">mesh_view.py顶点法向量显示</a> <span style="color:#6b7480;font-size:12px">hlsl-step45-add-normal-vector-show</span></li>
+<li><a href="Sessions/hlsl-step46-add-vs-output-mesh-view.html">HLSLInterpreter结果MeshView实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step46-add-vs-output-mesh-view</span></li>
+<li><a href="Sessions/hlsl-step47-add-two-windows-to-show-intput-output.html">MeshView双窗口：vertex输入与results输出</a> <span style="color:#6b7480;font-size:12px">hlsl-step47-add-two-windows-to-show-intput-output</span></li>
+<li><a href="Sessions/hlsl-step48-change-sync-button-to-choose.html">MeshView双窗口：vertex输入与results输出</a> <span style="color:#6b7480;font-size:12px">hlsl-step48-change-sync-button-to-choose</span></li>
+<li><a href="Sessions/hlsl-step49-fix-animation-failure.html">mesh_view.py双窗口顶点逐步渲染功能实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step49-fix-animation-failure</span></li>
+<li><a href="Sessions/hlsl-step50-add-user-input-open-MeshView.html">hlsl_interpreter.py增加o和r键输入处理</a> <span style="color:#6b7480;font-size:12px">hlsl-step50-add-user-input-open-MeshView</span></li>
+<li><a href="Sessions/hlsl-step51-optimize-re-pattern.html">优化HLSLInterpreter pattern管理</a> <span style="color:#6b7480;font-size:12px">hlsl-step51-optimize-re-pattern</span></li>
+<li><a href="Sessions/hlsl-step52-refine-parser-code-to-new-file.html">语法树解析器独立文件重构</a> <span style="color:#6b7480;font-size:12px">hlsl-step52-refine-parser-code-to-new-file</span></li>
+<li><a href="Sessions/hlsl-step53-optimize-parser1.html">HLSL语法树静态方法与缓存优化</a> <span style="color:#6b7480;font-size:12px">hlsl-step53-optimize-parser1</span></li>
+<li><a href="Sessions/hlsl-step54-add-log-cache-for-file-write.html">HLSLInterpreter日志缓冲输出实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step54-add-log-cache-for-file-write</span></li>
+<li><a href="Sessions/hlsl-step55-optimize-interpreter-code.html">审查hlsl_interpreter.py代码性能</a> <span style="color:#6b7480;font-size:12px">hlsl-step55-optimize-interpreter-code</span></li>
+<li><a href="Sessions/hlsl-step56-create-vertex-object.html">顶点对象和顶点池实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step56-create-vertex-object</span></li>
+<li><a href="Sessions/hlsl-step57-fix-threading-error.html">hlsl_interpreter.py的Tcl apartment错误修复</a> <span style="color:#6b7480;font-size:12px">hlsl-step57-fix-threading-error</span></li>
+<li><a href="Sessions/hlsl-step58-move-tk-UI-to-separate-thread.html">MeshView独立线程实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step58-move-tk-UI-to-separate-thread</span></li>
+<li><a href="Sessions/hlsl-step59-fix-MeshView-close-crash.html">MeshView独立线程实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step59-fix-MeshView-close-crash</span></li>
+<li><a href="Sessions/hlsl-step60-add-result-zoom-status.html">MeshView状态栏缩放倍数显示改进</a> <span style="color:#6b7480;font-size:12px">hlsl-step60-add-result-zoom-status</span></li>
+<li><a href="Sessions/hlsl-step61-support-vertex-pick.html">MeshView顶点选中功能实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step61-support-vertex-pick</span></li>
+<li><a href="Sessions/hlsl-step62-add-re-execute-vs.html">MeshView选中顶点信息窗口功能增强</a> <span style="color:#6b7480;font-size:12px">hlsl-step62-add-re-execute-vs</span></li>
+<li><a href="Sessions/hlsl-step63-add-window-layout.html">MeshView窗口布局调整及调试信息显示增强</a> <span style="color:#6b7480;font-size:12px">hlsl-step63-add-window-layout</span></li>
+<li><a href="Sessions/hlsl-step64-add-font-size-and-scrollbar.html">MeshView UI改进：滚动条、字体调整、状态栏恢复</a> <span style="color:#6b7480;font-size:12px">hlsl-step64-add-font-size-and-scrollbar</span></li>
+<li><a href="Sessions/hlsl-step65-fix-font-error.html">mesh_view.py字体配置修复</a> <span style="color:#6b7480;font-size:12px">hlsl-step65-fix-font-error</span></li>
+<li><a href="Sessions/hlsl-step66-update-development-documentation.html">统计hlsl-inter提交并更新文档</a> <span style="color:#6b7480;font-size:12px">hlsl-step66-update-development-documentation</span></li>
+<li><a href="Sessions/hlsl-step67-fix-re-execute-VS-button-deactive.html">MeshView vertex shader button greyed out</a> <span style="color:#6b7480;font-size:12px">hlsl-step67-fix-re-execute-VS-button-deactive</span></li>
+<li><a href="Sessions/hlsl-step68-fix-wrong-input-name-for-re-exec.html">MeshView vertex input字段名与HLSL结构不匹配</a> <span style="color:#6b7480;font-size:12px">hlsl-step68-fix-wrong-input-name-for-re-exec</span></li>
+<li><a href="Sessions/hlsl-step69-input-vertics-save-texcoord.html">MeshView添加纹理坐标数据</a> <span style="color:#6b7480;font-size:12px">hlsl-step69-input-vertics-save-texcoord</span></li>
+<li><a href="Sessions/hlsl-step70-add-output-windows-for-ra-ps-pe.html">MeshView output窗口Tab视图改造</a> <span style="color:#6b7480;font-size:12px">hlsl-step70-add-output-windows-for-ra-ps-pe</span></li>
+<li><a href="Sessions/hlsl-step71-convert-raw-data-to-json.html">解析rasterizer_param.txt生成JSON</a> <span style="color:#6b7480;font-size:12px">hlsl-step71-convert-raw-data-to-json</span></li>
+<li><a href="Sessions/hlsl-step72-implement-rasterizer-1.html">D3D11光栅化器实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step72-implement-rasterizer-1</span></li>
+<li><a href="Sessions/hlsl-step73-add-d3d-definition.html">D3D primitive topology definition consolidation</a> <span style="color:#6b7480;font-size:12px">hlsl-step73-add-d3d-definition</span></li>
+<li><a href="Sessions/hlsl-step74-create-render.py.html">HLSL解释器代码重构</a> <span style="color:#6b7480;font-size:12px">hlsl-step74-create-render.py</span></li>
+<li><a href="Sessions/hlsl-step75-fix-wrong-interpolate.html">Rasterizer顶点属性重心坐标插值实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step75-fix-wrong-interpolate</span></li>
+<li><a href="Sessions/hlsl-step76-show-rasterized-pixel.html">MeshView输出窗口显示Rasterizer结果</a> <span style="color:#6b7480;font-size:12px">hlsl-step76-show-rasterized-pixel</span></li>
+<li><a href="Sessions/hlsl-step77-create-texture-sampling.html">D3D11纹理采样实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step77-create-texture-sampling</span></li>
+<li><a href="Sessions/hlsl-step78-implement-executePS.html">HLSL解释器executePS函数实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step78-implement-executePS</span></li>
+<li><a href="Sessions/hlsl-step79-separate-texture-desc-sampler.html">Texture采样执行器与描述符分离设计</a> <span style="color:#6b7480;font-size:12px">hlsl-step79-separate-texture-desc-sampler</span></li>
+<li><a href="Sessions/hlsl-step80-load-all-texture-desc-sampler.html">批量加载texture_desc和sampler配置</a> <span style="color:#6b7480;font-size:12px">hlsl-step80-load-all-texture-desc-sampler</span></li>
+<li><a href="Sessions/hlsl-step81-func-body-parse.html">HLSL解释器主函数语句解析修复</a> <span style="color:#6b7480;font-size:12px">hlsl-step81-func-body-parse</span></li>
+<li><a href="Sessions/hlsl-step82-syntax-parse-texture-sample.html">HLSL Sample 方法解析修复</a> <span style="color:#6b7480;font-size:12px">hlsl-step82-syntax-parse-texture-sample</span></li>
+<li><a href="Sessions/hlsl-step83-evaluate-texture-sample-tree.html">HLSL纹理采样语法树实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step83-evaluate-texture-sample-tree</span></li>
+<li><a href="Sessions/hlsl-step84-fix-return-expression.html">return表达式语法树分析与执行实现</a> <span style="color:#6b7480;font-size:12px">hlsl-step84-fix-return-expression</span></li>
+<li><a href="Sessions/hlsl-step85-create-depth-stencil-executor.html">实现Depth深度测试模块</a> <span style="color:#6b7480;font-size:12px">hlsl-step85-create-depth-stencil-executor</span></li>
+<li><a href="Sessions/hlsl-step86-fix-wrong-config-string-of-depth-config.html">修复DepthStencil config字段名错误</a> <span style="color:#6b7480;font-size:12px">hlsl-step86-fix-wrong-config-string-of-depth-config</span></li>
+<li><a href="Sessions/hlsl-step87-claude-code-fix-wrong-vs-execution.html">Read VS shader</a> <span style="color:#6b7480;font-size:12px">hlsl-step87-claude-code-fix-wrong-vs-execution</span></li>
+<li><a href="Sessions/hlsl-step88-optimize-meshview-pixel-rendering.html">Step 88 - 优化 MeshView 顶点/像素绘制性能</a> <span style="color:#6b7480;font-size:12px">hlsl-step88-optimize-meshview-pixel-rendering</span></li>
+<li><a href="Sessions/hlsl-interpreter-step89-add-regression-test.html">Step 89 — Add a regression-test workflow</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step89-add-regression-test</span></li>
+<li><a href="Sessions/hlsl-step89-fix-meshview-macos-threading.html">Step 89: Fix MeshView Crash on macOS (tkinter Thread Safety)</a> <span style="color:#6b7480;font-size:12px">hlsl-step89-fix-meshview-macos-threading</span></li>
+<li><a href="Sessions/hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output.html">Step 90 — Compare pipeline statistics &amp; output-merger pixels against golden</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output</span></li>
+<li><a href="Sessions/hlsl-step90-fix-meshview-macos-threading-v2.html">Step 90 — Fix MeshView macOS Threading (Continued)</a> <span style="color:#6b7480;font-size:12px">hlsl-step90-fix-meshview-macos-threading-v2</span></li>
+<li><a href="Sessions/hlsl-interpreter-step91-implement-depth-clip.html">Step 91 — Implement full D3D11 depth clip (geometric near/far clipping)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step91-implement-depth-clip</span></li>
+<li><a href="Sessions/hlsl-step91-fix-meshview-input-hook-crash.html">Step 91 — Fix MeshView macOS Crash: input() Triggers Tcl EventHook on Background Thread</a> <span style="color:#6b7480;font-size:12px">hlsl-step91-fix-meshview-input-hook-crash</span></li>
+<li><a href="Sessions/hlsl-interpreter-step92-clamp-ps-output-color.html">Step 92 — Does the PS output color need clamping? (output-merger write clamp)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step92-clamp-ps-output-color</span></li>
+<li><a href="Sessions/hlsl-step92-sweep-dump-zips-and-fix-interpreter.html">hlsl-step92: Sweep Dump/ zips — Fix interpreter, expand regression suite</a> <span style="color:#6b7480;font-size:12px">hlsl-step92-sweep-dump-zips-and-fix-interpreter</span></li>
+<li><a href="Sessions/hlsl-interpreter-step93-rt-format-driven-clamp.html">Step 93 — Drive the output-merger clamp from the render-target format</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step93-rt-format-driven-clamp</span></li>
+<li><a href="Sessions/hlsl-step93-classify-remaining-dump-failures.html">hlsl-step93：剩余 Dump/ 失败 case 分类与修复建议</a> <span style="color:#6b7480;font-size:12px">hlsl-step93-classify-remaining-dump-failures</span></li>
+<li><a href="Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.html">Step 94 — Seed the depth buffer from pre_draw_depth_stencil.csv</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step94-load-pre-draw-depth-buffer</span></li>
+<li><a href="Sessions/hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash.html">hlsl-step94：修复 C 类（sekiro 实例索引/struct-in-cbuffer）与 F 类（派生 quad 崩溃）</a> <span style="color:#6b7480;font-size:12px">hlsl-step94-fix-classC-sekiro-and-classF-derivative-crash</span></li>
+<li><a href="Sessions/hlsl-interpreter-step95-samples-passed-tolerance.html">Step 95 — Configurable tolerance for the SamplesPassed comparison</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step95-samples-passed-tolerance</span></li>
+<li><a href="Sessions/hlsl-interpreter-step96-save-output-pixels-bitmap.html">Step 96 — Save the output-merger pixel colors as a bitmap</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step96-save-output-pixels-bitmap</span></li>
+<li><a href="Sessions/hlsl-interpreter-step97-save-golden-pixels-bitmap.html">Step 97 — Save the golden pixel colors as a bitmap</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step97-save-golden-pixels-bitmap</span></li>
+<li><a href="Sessions/hlsl-interpreter-step98-fix-vertex-color-clamp-and-perspective.html">Step 98 — Fix PS color mismatch in event399 (vertex-color clamp + perspective)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step98-fix-vertex-color-clamp-and-perspective</span></li>
+<li><a href="Sessions/hlsl-interpreter-step99-debug-trace-facility.html">Step 99 — Keep the event399 debug instrumentation as a config-gated trace</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step99-debug-trace-facility</span></li>
+<li><a href="Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.html">Step 100 — Fix event104 color mismatch: wrong primitive topology (strip vs list)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip</span></li>
+<li><a href="Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.html">Step 101 — Make triangle rasterization conform to D3D11 §3.4.1 (Coordinate Snapping) and §3.4.2.1 (Top-Left Rule)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule</span></li>
+<li><a href="Sessions/hlsl-interpreter-step102-investigate-event399-pixel-mismatch-msaa-sliver-lod.html">Step 102 — Investigate event399 output-merger pixel mismatches (MSAA / sub-pixel sliver LOD)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step102-investigate-event399-pixel-mismatch-msaa-sliver-lod</span></li>
+<li><a href="Sessions/hlsl-interpreter-step103-golden-depth-output-comparison.html">Step 103 — Compare output depth against golden diff_depth_output.csv</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step103-golden-depth-output-comparison</span></li>
+<li><a href="Sessions/hlsl-interpreter-step104-array-cbuffers-and-instanced-vertex-inputs.html">Step 104 — Array cbuffers &amp; per-instance vertex inputs (witcher3_countryside_event895)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step104-array-cbuffers-and-instanced-vertex-inputs</span></li>
+<li><a href="Sessions/hlsl-interpreter-step105-golden-mesh-sv-position-first-column-order.html">Step 105 — Golden VS-mesh column order: SV_Position is dumped first (witcher3_countryside_event907)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step105-golden-mesh-sv-position-first-column-order</span></li>
+<li><a href="Sessions/hlsl-interpreter-step106-structured-buffer-skinning-and-nan-mask-fix.html">Step 106 — StructuredBuffer skinning, nested-subscript parser fix, NaN-masking fix (witcher3_countryside_event994)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step106-structured-buffer-skinning-and-nan-mask-fix</span></li>
+<li><a href="Sessions/hlsl-interpreter-step107-event1269-clean-pass-occluded-draw.html">Step 107 — event1269 clean pass (fully-occluded skinned draw)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step107-event1269-clean-pass-occluded-draw</span></li>
+<li><a href="Sessions/hlsl-interpreter-step108-event1294-clean-pass.html">Step 108 — event1294 clean pass (skinned mesh)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step108-event1294-clean-pass</span></li>
+<li><a href="Sessions/hlsl-interpreter-step109-event1341-clean-pass.html">Step 109 — event1341 clean pass (skinned mesh)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step109-event1341-clean-pass</span></li>
+<li><a href="Sessions/hlsl-interpreter-step110-event1399-blocked-lossy-t1-texture.html">Step 110 — event1399 blocked by lossy t1 texture (capture-data limitation)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step110-event1399-blocked-lossy-t1-texture</span></li>
+<li><a href="Sessions/hlsl-interpreter-step111-golden-component-count-from-header-and-texcoord-keys.html">Step 111 — Golden component counts from header + TEXCOORD2/3 keys (witcher3_countryside_event1433)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step111-golden-component-count-from-header-and-texcoord-keys</span></li>
+<li><a href="Sessions/hlsl-interpreter-step112-event1450-clean-pass.html">Step 112 — event1450 clean pass (skinned mesh, multi-TEXCOORD)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step112-event1450-clean-pass</span></li>
+<li><a href="Sessions/hlsl-interpreter-step113-raw-img-texture-loading.html">Step 113 — Load textures from raw .img data (format-aware) instead of BMP</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step113-raw-img-texture-loading</span></li>
+<li><a href="Sessions/hlsl-interpreter-step114-texture-load-and-dxbc-vector-load-hazard-event1399.html">Step 114 — Texture2D.Load + DXBC split-vector-load hazard fix (unblocks event1399)</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step114-texture-load-and-dxbc-vector-load-hazard-event1399</span></li>
+<li><a href="Sessions/hlsl-interpreter-step115-dump-bitmaps-by-rendertarget-depthstencil-binding.html">Step 115 — Decide bitmap dumps from pipeline_state.csv RenderTarget / DepthStencil</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step115-dump-bitmaps-by-rendertarget-depthstencil-binding</span></li>
+<li><a href="Sessions/hlsl-interpreter-step116-witcher-countryside-nested-if-else-intrinsics-and-relative-tolerance.html">Step 116 — Witcher3 countryside event1571~3191: nested if/else, missing intrinsics, relative tolerance</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step116-witcher-countryside-nested-if-else-intrinsics-and-relative-tolerance</span></li>
+<li><a href="Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.html">Step 117 — Witcher 3 countryside event6977…event8775</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput</span></li>
+<li><a href="Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.html">Step 118 — RunDrawFromDump batch: Octopath / TankMechanicSimulator / witcher triage &amp; fixes</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes</span></li>
+<li><a href="Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html">Step 119 — witcher3_countryside triage + multi-array cbuffer binary-override fix</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override</span></li>
+<li><a href="Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">Step 120 — GPU denormal FTZ, ftoi cast semantics, and a long-tail assessment</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment</span></li>
+<li><a href="Sessions/hlsl-interpreter-step121-binary-input-data-precision.html">Step 121 — Binary input data precision: VB/IB/cbuffer/texture binary loading</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step121-binary-input-data-precision</span></li>
+<li><a href="Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.html">Step 122 — Load pre-draw depth/stencil buffer from raw DSV resource dump</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw</span></li>
+<li><a href="Sessions/hlsl-interpreter-step123-ai-development-handbook.html">Step 123 — 撰写《AI 辅助开发手册》（HTML + Markdown 两版）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step123-ai-development-handbook</span></li>
+<li><a href="Sessions/hlsl-interpreter-step124-dump-retriage-and-failure-classification.html">hlsl-interpreter-step124：Dump/ 重新triage、删除通过项、失败分类与修复方案</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step124-dump-retriage-and-failure-classification</span></li>
+<li><a href="Sessions/hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun.html">hlsl-interpreter-step151：实现 vs_only 模式并对 A 类超时 case 单独长跑</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step151-vs-only-mode-and-timeout-rerun</span></li>
+<li><a href="Sessions/hlsl-interpreter-step152-fix-dclass-octopath-typed-buffer-and-golden-parse.html">hlsl-interpreter-step152：修复 D 类（Octopath）—— typed buffer SNORM/UNORM/half 解码 + golden 列 uint 解析</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step152-fix-dclass-octopath-typed-buffer-and-golden-parse</span></li>
+<li><a href="Sessions/hlsl-interpreter-step153-eclass-witcher-vs-samplelevel-and-tangent-major-order.html">hlsl-interpreter-step153：E 类（witcher3）—— VS 内 SampleLevel 缺失修复 + 切线/SH 主序divergence诊断</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step153-eclass-witcher-vs-samplelevel-and-tangent-major-order</span></li>
+<li><a href="Sessions/hlsl-interpreter-step154-vs-register-level-dxbc-golden.html">Step 154 — VS 寄存器级 golden（DXBC 逐指令解释器）+ 实例化输入加载修复</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step154-vs-register-level-dxbc-golden</span></li>
+<li><a href="Sessions/hlsl-interpreter-step155-retriage-7class-status.html">Step 155 — 复检 7 类失败：哪几类还没修</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step155-retriage-7class-status</span></li>
+<li><a href="Sessions/hlsl-SyntaxTreeParser-cannot-cache.html">Python 函数缓存你知道吗</a> <span style="color:#6b7480;font-size:12px">hlsl-SyntaxTreeParser-cannot-cache</span></li>
+<li><a href="Sessions/hlsl-optimization.html">2026.5.20</a> <span style="color:#6b7480;font-size:12px">hlsl-optimization</span></li>
+<li><a href="Sessions/hlsl-python-float-precision.html">Python实现IEEE754单精度浮点精度</a> <span style="color:#6b7480;font-size:12px">hlsl-python-float-precision</span></li>
+</ol>
+
+</div></body></html>

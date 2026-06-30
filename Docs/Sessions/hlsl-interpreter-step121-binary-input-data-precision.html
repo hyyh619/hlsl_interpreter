@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 121 — Binary input data precision: VB/IB/cbuffer/texture binary loading</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step121-binary-input-data-precision</span></div>
+<div class="wrap">
+<h1>Step 121 — Binary input data precision: VB/IB/cbuffer/texture binary loading</h1>
+<h2>Goal</h2>
+<p>Upgrade the pipeline's input-data loading to use binary files captured by<br>RenderDoc/3Dmigoto instead of the rounded CSV representations, achieving<br>full float32 precision for vertex buffers, constant buffers, and textures.</p>
+<p>The four changes requested:</p>
+<ol>
+<li><b>Cannot load from parsed CSV files</b> — <code>**_constant_buffer.csv</code> and <code>ia_vertex_data.csv</code> give only rounded decimal text; binary gives exact bits.</li>
+<li><b>Vertex/Index buffer</b> — read <code>ib_res_{id}.bin</code> / <code>vb_slot{N}_res_{id}.bin</code> directly using <code>ia_input_layouts.csv</code> for resource IDs and formats.</li>
+<li><b>Constant buffers</b> — use <code>**_constant_buffer_info.csv</code> → load <code>constant_{id}.bin</code>, use <code>**_constant_buffers.csv</code> for field layout.</li>
+<li><b>SRV/RTV/UAV textures</b> — use <code>.img</code> files instead of <code>.bmp</code>.</li>
+</ol>
+<hr>
+<h2>Implementation (carried over from previous session)</h2>
+<p>All four changes were implemented in the previous session context.  This<br>session focused on fixing regressions revealed by the regression suite.</p>
+<h3>Files changed</h3>
+<ul>
+<li><b><code>hlsl_interpreter.py</code></b> — <code>_decode_vertex_element</code>, <code>override_cbuffers_from_binary</code></li>
+<li><b><code>render.py</code></b> — vertex loading block, CSV-baseline + binary-override strategy</li>
+</ul>
+<hr>
+<h2>Bug fixes applied in this session</h2>
+<h3>Fix 1 — SNORM vertex format decode</h3>
+<p><b>Symptom</b>: TEXCOORD10 / TEXCOORD11 all zeros for Witcher event1854 (ATTRIBUTE1/2<br>attributes use <code>R8G8B8A8_SNORM</code>).</p>
+<p><b>Root cause</b>: <code>_decode_vertex_element</code> fell to the float32 else-branch for SNORM<br>formats, then called <code>struct.unpack_from('&lt;4f', raw)</code> on only 4 bytes →<br><code>struct.error</code> → returned <code>[0, 0, 0, 0]</code>.</p>
+<p><b>Fix</b> (in <code>_decode_vertex_element</code>, after the UNORM block):</p>
+<pre><code>elif 'SNORM' in fmt_u and comp_byte_width == 2:
+    ints = struct.unpack_from(f'&lt;{comp_count}h', raw)
+    vals = [max(-1.0, v / 32767.0) for v in ints]
+elif 'SNORM' in fmt_u and comp_byte_width == 1:
+    ints = struct.unpack_from(f'&lt;{comp_count}b', raw)
+    vals = [max(-1.0, v / 127.0) for v in ints]</code></pre>
+<hr>
+<h3>Fix 2 — float4x4 cbuffer stored column-major, must transpose to row-major</h3>
+<p><b>Symptom</b>: All six Collision cases failed — world transform not applied.<br>Log showed <code>o4.xyz = World._m03_m13_m23 + r0.xyz =&gt; ['1664.0000', ...]</code><br>(translation column was zeros instead of <code>[-1350, -130, -1400]</code>).</p>
+<p><b>Root cause</b>: D3D11 HLSL stores <code>float4x4</code> in cbuffer registers <b>column-major</b>:<br><code>decoded[ri+k]</code> is column k (each a <code>float4</code>).  <code>override_cbuffers_from_binary</code><br>was storing them as rows, so <code>matrix[row][col]</code> lookups returned wrong values.</p>
+<p>The <code>_mRC</code> accessor notation confirms this: <code>_m03</code> means row 0, column 3 —<br>which is the translation column in a standard world matrix.</p>
+<p><b>Fix</b> (in <code>override_cbuffers_from_binary</code>, base==64 branch):</p>
+<pre><code>if base == 64:      # float4x4
+    if ri + 3 &lt; len(decoded):
+        # D3D HLSL stores float4x4 column-major in cbuffer registers:
+        # decoded[ri+k] is column k.  The interpreter accesses elements
+        # as matrix[row][col], so transpose to row-major here.
+        cols = [decoded[ri], decoded[ri+1],
+                decoded[ri+2], decoded[ri+3]]
+        field.data = [[cols[c][r] for c in range(4)] for r in range(4)]</code></pre>
+<hr>
+<h3>Fix 3 — CSV baseline + binary override (missing fallback for slots with no binary)</h3>
+<p><b>Symptom</b>: event1341 and event1399 (Witcher) — NORMAL, TANGENT, COLOR, TEXCOORD1<br>were all zeros; bone skinning broke because BLENDINDICES were wrong.</p>
+<p><b>Root cause</b>: The vertex loading block started with empty dicts and only applied<br>binary overrides.  VB slots 2 and 3 had <code>ResourceId::0</code> (no binary file), so<br>those attributes remained empty; the binary-only path had no fallback.</p>
+<p><b>Fix</b> (in <code>render.py</code>, vertex loading block): Load CSV first as the baseline,<br>then overlay binary overrides with <code>dict.update()</code>:</p>
+<pre><code>csv_vertex_data = vs_interp.load_ia_vertex_data(ia_vertex_csv, vs_input_params)
+# ... re-index csv_vertex_data to match idx_list ...
+bin_overrides = vs_interp.load_per_vertex_binary_data(
+    ia_layouts_csv, data_folder, vs_input_params, idx_list,
+    csv_vertex_data=None,
+)
+for i, ov in enumerate(bin_overrides):
+    if ov and i &lt; len(vertex_data):
+        vertex_data[i].update(ov)</code></pre>
+<hr>
+<h3>Fix 4 — UINT/SINT 1-byte and 2-byte vertex format decode</h3>
+<p><b>Symptom</b>: BLENDINDICES (bone indices, <code>R8G8B8A8_UINT</code>) returned zeros in<br>binary override, overwriting correct CSV values → wrong skinning.</p>
+<p><b>Root cause</b>: <code>_decode_vertex_element</code> handled UINT/SINT only for 4-byte<br>components (<code>comp_byte_width == 4</code>).  <code>R8G8B8A8_UINT</code> has <code>comp_byte_width=1</code>;<br>it fell to the float32 else-branch → <code>struct.error</code> → <code>[0, 0, 0, 0]</code>.</p>
+<p><b>Fix</b> (in <code>_decode_vertex_element</code>, after the 4-byte UINT/SINT block):</p>
+<pre><code>elif ('UINT' in fmt_u or 'SINT' in fmt_u) and comp_byte_width == 2:
+    code = 'h' if 'SINT' in fmt_u else 'H'
+    vals = list(struct.unpack_from(f'&lt;{comp_count}{code}', raw))
+elif ('UINT' in fmt_u or 'SINT' in fmt_u) and comp_byte_width == 1:
+    code = 'b' if 'SINT' in fmt_u else 'B'
+    vals = list(struct.unpack_from(f'&lt;{comp_count}{code}', raw))</code></pre>
+<hr>
+<h2>Regression results</h2>
+<table>
+<tr><th>Phase</th><th>Pass / Total</th><th>Notes</th></tr>
+<tr><td>Before this session</td><td>24 / 46</td><td>IB bug present</td></tr>
+<tr><td>After IB fix + SNORM</td><td>37 / 46</td><td></td></tr>
+<tr><td>After float4x4 + UINT</td><td>42 / 46</td><td></td></tr>
+<tr><td>After CSV fallback</td><td>~43–44 / 46</td><td>event1341 verified 1506/1506 manually</td></tr>
+<tr><td>Final clean run</td><td><b>45 / 46</b></td><td>only event399 fails (pre-existing)</td></tr>
+</table>
+<h3>Known remaining failures (pre-existing)</h3>
+<p><b>event1450</b> — passes 1728/1728 after UINT decode fix (was partially failing in<br>intermediate states due to the binary override zeroing bone indices).</p>
+<p><b>Collision-event399</b> — Color output = 0:</p>
+<ul>
+<li><code>o1.xyz = r0.xyz * r1.www</code> — <code>r1.w</code> is uninitialized (only <code>r1.xyz</code> was set)</li>
+<li><code>r2.xyzw = -(ColorMaterialMode == int4(1,5,2,3))</code> — integer vector comparison semantics may differ between interpreter and GPU</li>
+<li>These are pre-existing interpreter limitations, not regressions from this session.</li>
+</ul>
+<hr>
+<h2>Key design notes for future reference</h2>
+<h3>D3D11 cbuffer matrix storage</h3>
+<p><code>float4x4</code> in a cbuffer occupies 4 consecutive register slots.  The GPU stores<br>matrices <b>column-major</b>: register k holds column k of the matrix.</p>
+<p>The HLSL <code>_mRC</code> notation is row R, column C (0-indexed).  So <code>World._m03</code> is<br>row 0, column 3 — the X translation in a standard TRS world matrix.</p>
+<p>When loading from binary, always transpose: <code>field.data[row][col] = cols[col][row]</code>.</p>
+<h3>CSV baseline strategy</h3>
+<p>The binary override approach must always start from a CSV baseline.  Some VB<br>slots have no binary file (<code>ResourceId::0</code> in <code>ia_input_layouts.csv</code>), in which<br>case CSV is the only source.  Binary overrides are more precise where available,<br>but must never silently zero out attributes for which no binary exists.</p>
+<h3>SNORM decode formula</h3>
+<p>D3D11 SNORM: <code>max(-1.0, value / 127.0)</code> for 8-bit, <code>max(-1.0, value / 32767.0)</code><br>for 16-bit.  The <code>max(-1.0, ...)</code> clamps <code>0x80</code> / <code>0x8000</code> (−128 / −32768) to<br>exactly −1.0 per the D3D spec.</p>
+</div></body></html>

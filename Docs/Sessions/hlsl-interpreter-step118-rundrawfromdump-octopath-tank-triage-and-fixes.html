@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 118 — RunDrawFromDump batch: Octopath / TankMechanicSimulator / witcher triage &amp; fixes</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes</span></div>
+<div class="wrap">
+<h1>Step 118 — RunDrawFromDump batch: Octopath / TankMechanicSimulator / witcher triage &amp; fixes</h1>
+<h2>Task</h2>
+<p>Run every zip under<br><code>C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump</code> (280 archives,<br>4 groups: Collision×1, Octopath-frame746×44, TankMechanicSimulator×75,<br>witcher3_countryside×160). For each case that emits <code>Error:</code> lines, find the<br>root cause in the pipeline, fix it without breaking other cases, keep the<br>regression suite green, commit per root-cause class, and add one representative<br>of each fixed class to the regression list.</p>
+<h2>Approach</h2>
+<p>Sequential per-case full runs would take many hours (large Octopath/Tank<br>captures, full-screen pixel shaders). Instead: <b>triage first</b> with a headless<br>runner (<code>scratchpad/triage.py</code>, per-case timeout, VS verdict parsed from the log<br>even on PS timeout), group failures by error signature + shader features, then<br>fix each root-cause class once and re-triage.</p>
+<hr>
+<h2>Class 1 — 3Dmigoto comment block drops the first statement + missing <code>as*</code> intrinsics</h2>
+<p><b>Representative: <code>Octopath-frame746_event102</code> (1/4 → 4/4).</b></p>
+<p>Symptom: only <code>TexCoord</code> (TEXCOORD0 = <code>o0</code>) mismatched; <code>o0</code> came out 0 while<br><code>SV_POSITION</code> was correct. With <code>cb0[1]=(1,1,0,0)</code>, `o0.xy = v1.xy*cb0[1].xy +<br>cb0[1].zw<code> reduces to </code>v1.xy`, yet the interpreter produced 0.</p>
+<p>Root cause (two bugs):</p>
+<ol>
+<li><b>Comment block fused with the next statement.</b> 3Dmigoto emits ``<code>hlsl // Needs manual fix for instruction: // unknown dcl_: dcl_input_sgv v2.x, instance_id o0.xy = v1.xy * cb0[1].xy + cb0[1].zw; </code>`<code> </code>GenerateStmts<code> splits on </code>;<code> but never stripped </code>//<code> comments, so the two comment lines + the assignment became one statement; the assignment was not recognised (</code>=&gt; (no assignment)<code>) and </code>o0<code> kept its default 0. Added </code>_strip_comments<code> (removes </code>//<code> line and </code>/<i> </i>/<code> block comments, preserving string literals and newlines) and call it at the top of </code>GenerateStmts`.</li>
+</ol>
+<ol>
+<li><b><code>asint</code>/<code>asuint</code>/<code>asfloat</code> unimplemented</b> → returned None and poisoned the expression (<code>o2.x = (int)v2.x + asint(cb0[0].x)</code> became None). Added them as 32-bit bit-pattern reinterpretations (<code>struct.pack</code>/<code>unpack</code>), scalar+vector.</li>
+</ol>
+<p>Both are broad, common patterns (the comment block appears in almost every<br>3Dmigoto shader), so this change is validated against the full regression suite<br>before commit.</p>
+<hr>
+<h2>Triage map (Octopath 44 / Tank 75)</h2>
+<p>Initial triage (classes 1–2 in tree): Octopath 30 fail; Tank 57 pass + 18<br>timeouts that logged no VS verdict. After classes 1–3 the simple instanced-<br>transform Octopath shaders pass (event102/1031/1320 + siblings); the still-<br>failing Octopath cases use materially more complex shaders (see Remaining).</p>
+<h2>Class 2 — <code>mad</code> intrinsic + scalar-swizzle replication (Octopath transform)</h2>
+<p><b>Representative: <code>Octopath-frame746_event1031</code></b> (sv_position errors → 0).</p>
+<p>The Octopath instanced meshes transform the position through a matrix stored in<br>a <code>StructuredBuffer&lt;t0_t{float val[4]}&gt;</code>, indexed by<br><code>mad((int2)v1.xx, int2(36,36), int2(1,3))</code> etc. Two bugs produced garbage<br><code>SV_POSITION</code>:</p>
+<ol>
+<li><b><code>mad(a,b,c)</code> was unimplemented</b> → returned None, so the row indices <code>v1.x*36 + {1,2,3}</code> were None and the wrong <code>t0</code> rows were read. Added <code>mad = a*b + c</code>, component-wise with scalar broadcasting.</li>
+</ol>
+<ol>
+<li><b>Scalar swizzle replication returned None.</b> <code>apply_swizzle</code> only allowed <code>.x</code> on a scalar; <code>(int2)v1.xx</code> (v1 is a scalar <code>uint</code>) gave None, re-breaking the index <code>mad</code>. HLSL lets a scalar be replicated with <code>.x/.xx/.xxx/.xxxx</code>; <code>apply_swizzle</code> now does that.</li>
+</ol>
+<p>With both, <code>event1031</code>'s <code>SV_POSITION</code> matches golden (all <code>sv_position[*]</code><br>errors gone). The dominant Octopath class fails first on <code>sv_position</code>, so this<br>is the high-impact fix.</p>
+<h2>Class 3 — binary cbuffer load + typed-buffer <code>Buffer&lt;T&gt;.Load</code> + SV_VertexID</h2>
+<p><b>Representative: <code>Octopath-frame746_event1031</code> (2/6 → 6/6, errors 0).</b></p>
+<p><code>event1031</code>'s remaining <code>TEXCOORD</code> came from <code>o1.xy = t1.Load(r1.x).xy</code> where<br><code>t1 : Buffer&lt;float4&gt;</code> and<br><code>r1.x = (v2.x + asint(cb1[0].w)) * asint(cb1[0].y)</code> (v2 = SV_VertexID). Three<br>sub-fixes:</p>
+<ol>
+<li><b>Binary cbuffer load</b> (<code>override_cbuffers_from_binary</code>). cb1 holds integer bit-patterns (<code>ints (-1, 1, 0, 0)</code> in <code>constant_30981.bin</code>); the float CSV destroyed them (<code>cb1[0].y</code> int <code>1</code> printed <code>0.000000</code>; <code>-1</code> → <code>nan</code>). <code>asint(cb1[0].y)</code> must recover <code>1</code>. We now re-load cbuffers from the raw <code>constant_&lt;id&gt;.bin</code> (mapped by <code>{VS,PS}_constant_buffer_info.csv</code> slot→file), decoding float4 arrays; float values round-trip identically, integer-as-float denormals survive <code>asint</code> (<code>struct</code> re-pack). <b>No-op when the info CSV is absent (the witcher captures have none), so they are untouched.</b></li>
+</ol>
+<ol>
+<li><b>Typed-buffer <code>Buffer&lt;T&gt;.Load(index)</code></b> (<code>load_typed_buffer_data</code>, <code>_typed_buffer_load</code>, new branch in the <code>.Load</code> method handler). Parses <code>Buffer&lt;T&gt; tN : register(tN)</code>, loads <code>buffer_&lt;resid&gt;.bin</code> via <code>buffer_params.csv</code>, decodes <code>elem_size//4</code> float32 components (here 8B → R32G32) padded to 4 with <code>(0,0,0,1)</code>, and fetches <code>element[index]</code>. The existing <code>.Load</code> only modelled <code>Texture2D.Load(int3)</code>.</li>
+</ol>
+<ol>
+<li><b>Per-vertex <code>SV_VertexID</code></b> (render.py). It was never set, so <code>r1.x</code> was 0 for every vertex and all read <code>t1[0]</code>. Now set to the index-buffer value (<code>idx_list[i]</code>, +BaseVertex=0) per vertex.</li>
+</ol>
+<ol>
+<li><b>Exact int bits for <code>asint</code>/<code>asuint</code> of a cbuffer component</b> (<code>_cbuffer_component_raw_int</code>, <code>_cb_raw</code>). <code>-1</code> stored as NaN does not survive the float round-trip, so <code>asint(cb1[0].x)</code> (a <code>&amp; -1</code> mask in the colour path) gave garbage. We keep the int32 bit array from the binary load and, when the <code>asint</code>/<code>asuint</code> argument is a literal <code>cbN[i].c</code>, return the exact int.</li>
+</ol>
+<ol>
+<li><b>Typed-buffer format inference</b> (<code>_typed_buffer_load</code>). <code>buffer_params.csv</code> gives only element byte size. A second buffer <code>t2</code> (the colour table) is R8G8B8A8_UNORM (4B → (1,1,1,1)); decoding it as float32 gave NaN. Rule: bytes-per-declared-component == 1 → UNORM8, else float32 with <code>elem_size//4</code> components. This fixes the colour path; <b>event1320 now 6/6</b>.</li>
+</ol>
+<p>These five sub-fixes fully fix the core Octopath instanced-transform class<br>(representatives <b>event1031</b> and <b>event1320</b>, both 6/6). Scoped safely: the<br>binary cbuffer / typed-buffer / raw-int paths are all no-ops when the capture<br>lacks the corresponding files (the witcher regression set), so full regression<br>stays green.</p>
+<h2>Class 4 — <code>sincos</code> statement (Octopath foliage)</h2>
+<p><b>Representative: <code>Octopath-frame746_event1487</code> (0/6 → 6/6).</b></p>
+<p>These shaders already parsed the <code>#define cmp -</code> macro and vector ternaries<br>(<code>r9.zzz ? a : b</code>) correctly — the only gap was <b><code>sincos(angle, s, c)</code></b>, a<br>void intrinsic that writes <code>sin</code>→2nd lvalue, <code>cos</code>→3rd. It hit the<br><code>(no assignment)</code> fallback, so the rotation registers kept stale values and the<br>position was wrong. Added a statement handler (<code>_split_top_level_commas</code> +<br><code>_assign_lvalue</code>).</p>
+<h2>Class 5 — <code>exp2</code>/<code>pow</code> overflow no longer crashes (event576/2651/2682)</h2>
+<p>Once cbuffers carried real binary values, an <code>exp2</code>/<code>pow</code> on a large exponent<br>raised <code>OverflowError: math range error</code> and aborted the run. <code>_safe_pow</code><br>saturates to ±inf (and NaN on bad domain) instead; downstream consumers already<br>tolerate inf/NaN. The three crashes became ordinary runs.</p>
+<h2>Class 6 — bitwise operators + hex literals (particle shaders, partial)</h2>
+<p>The particle/quaternion shaders (event2135/1250/3542/3601/3012 …) use integer<br>bit math the parser/evaluator lacked: <code>&lt;&lt;</code>, <code>&gt;&gt;</code>, <code>^</code>, <code>%</code>, unary <code>~</code>, and hex<br>literals (<code>0xffffffff</code>). Added:</p>
+<ul>
+<li><code>_OPERATORS</code> gains <code>^</code>/<code>&lt;&lt;</code>/<code>&gt;&gt;</code>/<code>%</code> (renumbered to keep the existing relative order; <code>^</code> between <code>|</code> and <code>&amp;</code>, shifts between relational and additive).</li>
+<li><code>_parse_expression</code>: unary <code>~</code>/<code>!</code> prefix; the bitwise/shift set is split before the cast branch so <code>(uint)r0.x &lt;&lt; 1</code> is <code>((uint)r0.x) &lt;&lt; 1</code>, not <code>(uint)(r0.x &lt;&lt; 1)</code>; the binary-op whitelist includes the new operators.</li>
+<li><code>execute_binary_op</code>: <code>^</code>/<code>&lt;&lt;</code>/<code>&gt;&gt;</code>/<code>%</code> (32-bit masked, result reinterpreted as signed int32); <code>execute_unary_op</code>: <code>~</code>.</li>
+<li><code>get_value</code>: hex / <code>u</code>-suffixed integer literals.</li>
+</ul>
+<p>Verified on event2135: the <code>bitmask.x = ((~(-1&lt;&lt;31))&lt;&lt;1)&amp;0xffffffff</code> idiom now<br>evaluates to <code>-2</code> (was 0) and the index math is correct — errors dropped 78 → 11.</p>
+<p><b>Blocked beyond this:</b> the remaining errors are the **quaternion typed buffer<br><code>t3</code><b>, which is R8G8B8A8_</b>SNORM** (byte 127 → 1.0), while the sibling texcoord<br><code>t2</code> is R8G8B8A8_<b>UNORM</b> — both 4 bytes, and the capture records **no view<br>format** for VS typed buffers (<code>buffer_params.csv</code> has only element byte size;<br><code>texture_params.csv</code> covers PS textures only; the DXBC disasm declares all as<br><code>(float,float,float,float)</code>). UNORM vs SNORM therefore cannot be disambiguated<br>from the captured metadata — a capture-data limitation, so these particle cases<br>stay unfixed. The bitwise support is committed as correct general infrastructure.</p>
+<h2>Class 7 — binary-VB rescue when the CSV column is all-zero (event1854)</h2>
+<p><b>Representative: <code>Octopath-frame746_event1854</code> (0/6 → 6/6).</b></p>
+<p><code>o3 = COLOR0 = v3</code> (<code>ATTRIBUTE3 : B8G8R8A8_UNORM</code>, slot 4) came out 0 vs golden<br><code>(1,1,1,1)</code>: <code>ia_vertex_data.csv</code> stored ATTRIBUTE3 as zeros, but the real bytes<br>are in the binary VB. The class-3 agreement guard blocked the override (CSV <code>0</code><br>≠ binary <code>1</code>). The guard exists to protect <i>non-zero</i> CSV columns the decoder<br>might mis-read (R8G8B8A8_UINT BLENDINDICES), so it now also accepts the binary<br>when <b>the CSV column is all-zero and the binary is not</b> (<code>_is_all_zero</code>) — the<br>CSV simply failed to capture that element. A non-zero CSV that disagrees is<br>still kept, so skinned meshes stay correct.</p>
+<h2>Tank timeouts — slow, not wrong (deferred)</h2>
+<p>Ran <code>TankMechanicSimulator_event1090</code> to completion bounds: with a vertex cap it<br>finishes instantly and the VS shows <b>0 <code>Error:</code> lines</b>; the full run is slow<br>only because it rasterizes and depth-compares ~62 k pixels in pure Python (the<br><code>Error [DepthDiff]</code> lines are depth-buffer diffs, not VS mismatches). So the 18<br>Tank "timeouts" are a performance limit of the headless triage, not interpreter<br>bugs — deferred (would need a much larger per-case timeout to confirm each).</p>
+<h2>Class 8 — float32 arithmetic emulation (precision hashes)</h2>
+<p>**Representatives: <code>Octopath-frame746_event1897</code> (0/6 → 6/6) and <code>event283</code><br>(0/48 → 48/48).**</p>
+<p>Some outputs are hash/noise functions like<br><code>r0.w = (10+v1.w); r0.w *= r0.w; r2 = frac(float3(1361.4563,…) * r0.www)</code>. The<br>interpreter computes in Python <code>float</code> (double); the GPU uses float32. After a<br><code>×1361</code> amplification the ~1e-5 double/float32 gap moves the <code>frac</code> result by<br>order 1 — so SV_POSITION matched but the noise output was garbage.</p>
+<p>Added GPU float32 emulation (<code>_to_f32</code> round-trips a double through<br><code>struct.pack('&lt;f')</code>): when enabled, every <code>+ - * /</code> binary result, numeric<br>literal, and <code>frac</code>/<code>mad</code> result is rounded to float32, so the amplified value<br>is the exact float32 the GPU saw before <code>frac</code>. Gated by the config flag<br><code>float32_emulation</code>; the regression suite turns it <b>on</b> for every case<br>(<code>run_regression.py</code> BASE_CONFIG) and stays green, confirming it is a<br>strictly-more-accurate default rather than a per-case hack.</p>
+<p><code>event1828</code> has a <i>different</i> residual precision issue (not pure arithmetic) and<br>is still open.</p>
+<h2>Class 9 — match binary cbuffer by register, not name (witcher Dump set)</h2>
+<p><b>Representative: <code>witcher3_countryside_event23303</code> (0/6 → 6/6).</b></p>
+<p>The 160 witcher captures in the Dump dir are a <b>newer format</b> than the ones<br>already in regression: the cbuffer is declared `cbuffer Constants : register(b0)<br>{ float4 vfuniforms[48]; }<code> and indexed dynamically (</code>vfuniforms[r0.x]`). Its<br><code>VS_constant_buffers.csv</code> holds <b>only element 0</b> of the 48-entry array — the<br>real data is in <code>constant_&lt;id&gt;.bin</code>. <code>override_cbuffers_from_binary</code> keyed the<br>target cbuffer as <code>cb{slot}</code>, so a cbuffer named <code>Constants</code> was never loaded<br>from binary and <code>vfuniforms[i]</code> resolved to None.</p>
+<p>Fix: parse <code>register(bN)</code> into <code>CbufferDefinition.register</code> and match the binary<br>file to the cbuffer <b>by register == slot</b> (falling back to the <code>cb{slot}</code> name<br>and the info-CSV <code>Name</code>). Octopath <code>cb0</code>/<code>cb1</code> (register 0/1) still match<br>identically, so nothing regresses.</p>
+<h2>Class 10 — f16tof32 / f32tof16 (packed-half vertex data)</h2>
+<p>Witcher foliage shaders pack two halfs per 32-bit lane and read them with<br><code>f16tof32((uint)v.zw &gt;&gt; 16)</code> / <code>f16tof32(v.zw)</code>. Added both intrinsics via<br>Python's half-float struct codec (<code>'&lt;e'</code>). Correct and general; it advances<br>event16215/16834 but they do <b>not</b> fully pass yet — their <code>v1.zw</code> is packed-<br><b>uint</b> vertex data being loaded as float, so <code>(uint2)v1.zw</code> already lost the<br>high 16 bits before <code>f16tof32</code>. That vertex-format reinterpretation is a deeper<br>open class (below).</p>
+<h2>Class 11 (prototype) — usage-based format inference for packed vertex data</h2>
+<p>The witcher packed-uint vertex shaders (event16215/16834) declare `float4 v1 :<br>TEXCOORD0<code> but use it *both* ways: </code>v1.x + v1.y<code> (float) and </code>(uint2)v1.zw &gt;&gt;<br>16<code> / </code>f16tof32(v1.zw)` (two halfs packed in the .zw lanes). In DXBC the<br>register holds raw bits and each opcode reinterprets them; 3Dmigoto's <code>(uint2)</code><br>cast of a raw attribute is a <i>bit reinterpret</i>, not an <code>ftou</code> conversion.</p>
+<p>Prototype inference:</p>
+<ul>
+<li>A <code>(int)</code>/<code>(uint)</code>-family cast applied <b>directly to a float-typed vertex input</b> (<code>_cast_operand_is_vertex_input</code>) reinterprets the float32 bits (<code>_bitcast_to_int</code>) instead of converting the value.</li>
+<li><code>f16tof32</code> of a float argument likewise reinterprets its bits (the low 16), not <code>int(value)</code>.</li>
+<li><b>Restricted to float-typed inputs</b> so an integer attribute (e.g. event1031's <code>uint v1</code> R32_UINT index used as <code>(int)v1.x</code>) still converts by value — verified event1031 stays 6/6.</li>
+</ul>
+<p>Result: event16215 <code>sv_position</code> now matches (errors 390 → 180) — the position<br>unpacks from <code>v1.zw</code> bits correctly. The residual <code>TexCoord*</code> errors are a<br>deeper octahedral-normal decode (the unpacked halfs feed a<br><code>normalize(r2.zy - r0.yz)</code> reconstruction with another nuance), still open. The<br>inference itself is correct and general; committed as infrastructure (gated by<br>the float-type restriction, full regression green).</p>
+<h2>Remaining classes (not yet fixed — follow-up)</h2>
+<p><b>Witcher Dump set</b> (after classes 9/10): several <code>sv_position</code> cases pass via<br>the register-matched binary cbuffer; the rest split into —</p>
+<ul>
+<li><b>Packed-uint vertex data read as float</b> (event16215/16834 …): <code>v1.zw</code> holds two packed halfs as a uint lane but is loaded as a float, so <code>(uint2)v1.zw</code> and <code>f16tof32</code> see the wrong bits. Needs the IA to keep such attributes as raw uint (format-aware vertex load), then <code>f16tof32</code> finishes them.</li>
+<li>Various <code>TexCoord</code>/<code>TexCoord3/4</code> cases and the ~24 TIMEOUTs (slow, several are the already-passing event7321/7358/7816 just exceeding the 150 s triage cap).</li>
+</ul>
+<p>The still-failing <b>Octopath</b> cases are a long tail of distinct per-shader<br>features, split into:</p>
+<ul>
+<li><b>Float32-precision-limited</b> (logic correct, only a noise/hash output off): event1897 (<code>PARTICLE_LIGHTING_OFFSET = frac(1361.4·(10+v1.w)²)…</code>, SV_POSITION passes), event283 (sv_position diff 0.008), event1828/2091 (TEXCOORD10 diff ~0.03–0.05). Would need float32-rounding emulation of intermediates.</li>
+<li><b>Bit-ops + multi-typed-buffer particle/quaternion shaders</b> (event2135/1250/ 3542/3601/3012 …): need <code>&lt;&lt;</code>/<code>&gt;&gt;</code>/<code>^</code>/<code>%</code>/<code>~</code> operators (not in the precedence table), <code>t3.Load</code> quaternion decode, <code>(uint)</code> truncation chains.</li>
+<li>Large/slow cases now run without crashing but time out in triage at 150 s (event2384 23k+ rows, 576, 2428, 2651, 2682, 3221).</li>
+<li><b>event1854</b> colour path; <b>18 Tank timeouts</b>; <b>witcher 160</b> un-triaged.</li>
+</ul>
+<ul>
+<li><b>Complex Octopath foliage/skinning shaders</b> (event1057/1357/1487/1897/1922/ 2214/2384/2513/2569/2767/2912/3502/3601/3642 …): need <code>sincos</code>, the 3Dmigoto <code>#define cmp -</code> comparison macro (<code>cmp(a&lt;b)</code> → integer mask), vector ternaries (<code>r9.zzz ? a : b</code>), more <code>(int2)</code> cast / <code>frac</code> / <code>floor</code> chains, and a <code>StructuredBuffer t0.Load(index)</code> path. event1487 still shows <code>sv_position</code> errors because the <code>if/else</code> that builds <code>r0</code> uses <code>cmp</code>/<code>sincos</code>.</li>
+<li><b>OverflowError: math range error</b> (event576/2651/2682): once cbuffers carry real binary values an <code>exp2</code>/<code>pow</code> overflows Python <code>float</code> — needs an inf clamp.</li>
+<li><b>event1854</b>: first error <code>Color</code> — distinct colour path.</li>
+<li><b>Tank 18 timeouts</b> (event1090/1172/1189/1278/1357/1406/1947/4186/4236/4458/ 5118/9153/9598/9634/9682/9750/10577/10691): no VS verdict logged within 150 s and the log was empty — hang/very-slow in setup, not confirmed wrong.</li>
+<li><b>witcher3_countryside (160 in the Dump set)</b>: triaged — <b>99/160 clean-pass</b> after class 9 (register-matched binary cbuffer) + f16tof32. The 61 fails split into <code>sv_position</code> (packed-uint vertex data, e.g. event16215/16834 — the lane is <code>R32G32B32A32_FLOAT</code> in the layout but the shader bit-unpacks it with <code>(uint2)v.zw&gt;&gt;16</code> / <code>f16tof32</code>; resolving needs DXBC <code>dcl_input</code> integer flags or usage inference, ambiguous from the captured signature) and <code>TexCoord*</code> groups (event20571/21719/22229… — large counts, likely packed-half texcoords / further &gt;4-TEXCOORD wiring). Deep, deferred.</li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code> — <code>_strip_comments</code> + call in <code>GenerateStmts</code>; <code>asint</code>/<code>asuint</code>/<code>asfloat</code>, <code>mad</code> intrinsics; scalar-swizzle replication in <code>apply_swizzle</code>; typed-buffer parse in <code>_parse_structured_buffers</code>; <code>load_typed_buffer_data</code>, <code>_typed_buffer_load</code>, <code>override_cbuffers_from_binary</code>, <code>_cbuffer_component_raw_int</code> (+ <code>typed_buffers</code>/<code>_cb_raw</code> state).</li>
+<li><code>render.py</code> — wire <code>override_cbuffers_from_binary</code> (VS+PS), <code>load_typed_buffer_data</code>, and per-vertex <code>SV_VertexID</code> from the index column.</li>
+<li><code>hlsl_interpreter.py</code> (class 4/5) — <code>sincos</code> statement handler + <code>_split_top_level_commas</code>/<code>_assign_lvalue</code>; <code>_safe_pow</code> used by <code>exp2</code>/<code>pow</code>.</li>
+<li><code>hlsl_syntax_tree.py</code> + <code>hlsl_interpreter.py</code> (class 6) — <code>_OPERATORS</code> <code>^</code>/<code>&lt;&lt;</code>/<code>&gt;&gt;</code>/<code>%</code>; unary <code>~</code>/<code>!</code> and pre-cast bitwise/shift split in <code>_parse_expression</code>; <code>execute_binary_op</code> shifts/xor/mod, <code>execute_unary_op</code> <code>~</code>; hex/<code>u</code>-suffixed integer literals in <code>get_value</code>.</li>
+<li><code>hlsl_interpreter.py</code> (class 7) — <code>_is_all_zero</code>; binary-VB override now rescues an all-zero CSV column in <code>load_per_vertex_binary_data</code>.</li>
+<li><code>hlsl_interpreter.py</code> + <code>render.py</code> + <code>run_regression.py</code> (class 8) — <code>_to_f32</code>/<code>_f32</code> + <code>f32_emulation</code> flag; float32 rounding in <code>execute_binary_op</code>, numeric literals, <code>frac</code>/<code>mad</code>; wired from config <code>float32_emulation</code> (on in the regression BASE_CONFIG).</li>
+<li><code>hlsl_interpreter.py</code> (class 9/10) — <code>CbufferDefinition.register</code> parsed from <code>register(bN)</code>; <code>override_cbuffers_from_binary</code> matches by register; <code>f16tof32</code>/<code>f32tof16</code> intrinsics.</li>
+<li><code>hlsl_interpreter.py</code> (class 11) — <code>_vertex_input_names</code> (float-typed only), <code>_cast_operand_is_vertex_input</code>, <code>_bitcast_to_int</code>; int-cast of a float vertex attribute and <code>f16tof32</code> of a float reinterpret bits.</li>
+<li><code>hlsl_interpreter.py</code> (class 9/10) — <code>CbufferDefinition.register</code> parsed in <code>parse_cbuffer</code>; <code>override_cbuffers_from_binary</code> matches by register; <code>f16tof32</code>/<code>f32tof16</code> intrinsics.</li>
+</ul>
+<h2>Status at checkpoint</h2>
+<p>Committed: class 1 (<code>cb42511</code>), class 2 (<code>4c3ee2f</code>), class 3 (this). Regression<br>green. Representatives added to the local regression list: event102, event1031,<br>event1320. Remaining classes above are the next iterations of the loop.</p>
+</div></body></html>

@@ -4,7 +4,12 @@
 > 系统说明"如何与 AI 协作完成一个真实工程"。所有例子都取自本仓库的提交、
 > `Sessions/` 步骤日志与 `Prompts/` 提示词历史，可逐条核对。
 >
-> 贯穿全篇的三个核心案例（均来自最近一轮开发，step119–120）：
+> 本手册按**项目的两个开发周期**组织成三大部分：
+> - **第一部分 · 项目总体介绍** —— 这是什么、怎么跑、怎么验证。
+> - **第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）** —— 从零搭骨架的协作方式。
+> - **第三部分 · 基于 ClaudeCode 的开发（攻坚期）** —— 真机数据攻坚长尾的协作方式。
+>
+> 第三部分贯穿的三个核心案例（均来自 step119–120）：
 > - **C1 多数组 cbuffer**：`texgen[2]` 读成 0 → 修复二进制重载只填首个数组字段的 bug。
 > - **C2 反规格化数 FTZ**：大气散射输出 o0/o1 错 → GPU flush-denormals-to-zero 语义。
 > - **C3 (int) 强转语义**：顶点属性 `(int2)v1.zw` 被位重解释成天文数字 → NaN 位置。
@@ -12,21 +17,35 @@
 ---
 
 ## 目录
-0. [项目概述](#0-项目概述)
-1. [如何给 AI 提供提示词](#1-如何给-ai-提供提示词)
-2. [AI 如何分析需求、生成开发计划](#2-ai-如何分析需求生成开发计划)
-3. [AI 如何按计划执行](#3-ai-如何按计划执行)
-4. [AI 的输入 / 输出数据流](#4-ai-的输入--输出数据流)
-5. [什么样的数据流输出能帮助调试](#5-什么样的数据流输出能帮助调试)
-6. [回归测试如何建立与应用](#6-回归测试如何建立与应用)
-7. [TDD 在本项目的应用](#7-tdd-在本项目的应用)
-8. [如何纠正 AI 的错误](#8-如何纠正-ai-的错误)
-9. [记忆系统如何避免重复开发](#9-记忆系统如何避免重复开发)
-10. [两个 Agent 开发周期的对比](#10-两个-agent-开发周期的对比)
+
+**第一部分 · 项目总体介绍**
+
+**第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）**
+1. 如何给 AI 提供提示词
+2. 分析需求、生成开发计划
+3. 如何按计划执行
+4. 如何纠正 AI 的错误
+5. 如何进行调试
+
+**第三部分 · 基于 ClaudeCode 的开发（攻坚期）**
+1. 如何给 AI 提供提示词
+2. 分析需求、生成开发计划
+3. 如何按计划执行
+4. 输入 / 输出数据流
+5. 什么输出能帮助调试
+6. 回归测试的建立与应用
+7. TDD 在本项目的应用
+8. 如何纠正 AI 的错误
+9. 记忆系统避免重复开发
+10. b/c 两个开发部分的对比和优缺点总结
+
+> 每节都附本仓库 `Prompts/` 提示词历史与 `Sessions/` 步骤日志的超链接，可逐条核对。
 
 ---
 
-## 0. 项目概述
+# 第一部分 · 项目总体介绍
+
+## 项目概述
 
 ### 0.1 这是什么
 本项目是一个**纯 Python 实现的 Direct3D 11 图形管线软件仿真器**，核心特点是**直接解释执行 HLSL 着色器源码**——不编译、不调用 `eval`，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段：
@@ -79,7 +98,56 @@ python render.py ./Cases/Default.json
 
 ---
 
-## 1. 如何给 AI 提供提示词
+# 第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）
+
+> 这一期（约 step1–step86，`Sessions/hlsl-step*.md`）用一个能力相对有限的模型，**从零搭出解释器骨架**：HLSL 词法/递归下降解析、语句解释、cbuffer/struct/函数解析、定点管线（rasterizer/depth/OM/texture）、golden 对比雏形。它的协作方式与第三部分截然不同——下面 5 个方面，每个都给 `Prompts/hlsl-interpreter-prompt-OpenCode.html` 里的真实步骤与超链接。
+
+## 1 · 如何给 AI 提供提示词
+
+这一期能力有限的模型对**信息密度**格外敏感：你给得越具体（样例、字段名、期望值），它越不容易跑偏；一旦留白，它就**自己脑补**。
+
+- **✅ 好例 —— 把"要做什么"说到可运行**：项目第一条提示词 [OpenCode #1](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-1) 没有说"写个 HLSL 解释器"这种空话，而是**贴出完整样例 HLSL（`vs_main` 全文）**，并明确"先帮我实现对下列样例代码的解释执行"。给的是一个**具体、可运行的目标**，AI 第一步就有明确靶子。
+- **❌ 反例 —— 留白被脑补**：[OpenCode #97](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-97) 用户事后批注："**没有给具体的信息，导致解析 config 文件的字段名错误，AI 自己脑补的字段名**"。提示词没给出 depth/stencil config 的真实字段名，AI 就臆造了字段名 → 解析错误。
+- **小结**：与第三部分的"可机判成功标准 + 不要做什么"相比，这一期更基础的功课是**把输入说全**——尤其是样例、字段、数据格式这类 AI 无从猜起的事实。
+
+## 2 · 分析需求、生成开发计划
+
+这一期的"计划"不是 AI 自己 triage，而是**用户把大目标切成极小的、可独立验证的步骤**，喂给 AI 一步步做。"找杠杆点"由人来做，AI 负责执行单步。
+
+- **典型证据**：表达式求值器不是一次写成，而是沿一串小步**逐步长出来**——[#12 给求值每个分支加可开关打印](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12) → [#15 修 `transpose` 只执行一半](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15) → [#16 打印操作数/操作符/结果](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16) → [#19 加 `float3x3` cast](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19)。每步只动一个点。
+- **为什么这样**：模型一次只能可靠地推进一小步；把需求切碎、每步产出可立刻肉眼验证，是对其能力的**适配**。这与第三部分"一步覆盖 triage→修复→回归→提交→文档整条闭环"形成鲜明对比。
+
+## 3 · 如何按计划执行
+
+执行单元 = "**描述一个具体现象 → 让 AI 改一个点 → 看打印验证 → 下一步**"。
+
+- **例**：[#15](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15) 用户指出"`execute_statement` 执行 `transpose(WorldViewProj)` 时只执行了一部分"，AI 据此定点修正；[#19](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19) 用户给出具体语句 `normalize(mul(nor, (float3x3)World))` 驱动加 `float3x3` cast。
+- **验证方式**：这一期还没有回归套件、没有成熟的 golden 自动对比，**验证靠人看打印**——所以每步都很小、便于肉眼判断对错。慢，但可控。
+
+## 4 · 如何纠正 AI 的错误
+
+这一期纠错以**重度人工介入**为特征：用户常常要直接给出真因，甚至亲自动手。三个真实案例（均为用户原话批注）：
+
+- **找不到根因**：[#35](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35) —— "MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。" 真因由**用户**点出。
+- **修复不彻底**：[#37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37) —— "MiniMax-M2.7 并不能完全修复……没有考虑到检测到 `<` 后，取 `[i-1:i+1]` 实际取出的是 ` <`，导致错误依旧。" 提交信息直接记成 *"I have to fix it by my hand"*（用户手改）。
+- **误删代码**：[#42](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42) —— "MiniMax-M2.7 **错误地删除**以下语句导致 `execute_main_function` 没有返回执行结果。" AI 在重构 if-else 合并时把 `return` 处理删掉了。
+- **也有亮点**：[#45](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45) —— AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。
+- **小结**：纠错回路短而频繁，**质量把关几乎全在人**——AI 更像"快速打字员 + 局部修补匠"，深层根因与最终正确性靠人兜底。
+
+## 5 · 如何进行调试
+
+这一期最有**长远价值**的产出，是把解释器改造成"**会自述**"的——给求值过程加可开关的打印。正是这套打印，后来演化成第三部分赖以"沿数据流回溯根因"的 `[STMT]`/`[BINARY OP]` 轨迹（见**第三部分 · 5 · 什么输出能帮助调试**）。
+
+- **证据**：[#12 每个求值分支加可开关打印](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12)、[#16 打印操作数/操作符/结果](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16)、[#17 用一个 bool 统一控制打印开关](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-17)、[#31 优化 `log_output` 写文件（避免每条都开关文件）](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-31)。
+- **调试方式**：开打印 → 跑 → **人工读打印**定位哪一步的操作数/结果不对 → 改。没有自动断言，全靠"可读的中间状态 + 人眼"。这一期为整个项目的**可观测性打了地基**。
+
+---
+
+# 第三部分 · 基于 ClaudeCode 的开发（攻坚期）
+
+> 这一期（约 step87 起，`Sessions/hlsl-interpreter-step*.md`）引入 zip/RunDrawFromDump 真机 capture 工作流，建立数据驱动回归套件，并系统化啃长尾。下面 10 个方面，例子取自 `Prompts/hlsl-interpreter-prompt-ClaudeCode.html` 与 `Sessions/`。
+
+## 1 · 如何给 AI 提供提示词
 
 提示词不是"一句话指令"，而是一个**分层的上下文系统**。本项目里有效的提示词由四层组成：
 
@@ -106,22 +174,72 @@ python render.py ./Cases/Default.json
 7. 通过后直接提交 fix，并把同类出错的 zip 选一个加入回归
 8. 把思考/执行/结果写入 Sessions/hlsl-interpreter-stepN-*.md
 ```
-这段提示词的优点：**可验证的完成标准**（无 error、回归通过）、**明确的循环边界**（一个 case 一轮）、**产出要求**（提交 + 文档 + 回归用例）。
+这段提示词的优点：**可验证的完成标准**（无 error、回归通过）、**明确的循环边界**（一个 case 一轮）、**产出要求**（提交 + 文档 + 回归用例）。〔提示词原文：[ClaudeCode #42 继续修复](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)〕
 
 ### 1.3 现状/约束清单
-用户把"已知未修复的长尾"列在前面（八面体法线、raw buffer、SNORM/UNORM、超时），并标注哪些是"capture 限制、无解"。这让 AI **不浪费时间去碰已判定不可解的问题**，把精力放在可解项（C1/C2/C3）。
+用户把"已知未修复的长尾"列在前面（八面体法线、raw buffer、SNORM/UNORM、超时），并标注哪些是"capture 限制、无解"。这让 AI **不浪费时间去碰已判定不可解的问题**，把精力放在可解项（C1/C2/C3）。〔提示词原文同上：[ClaudeCode #42 的"尚未修复（剩余长尾）"清单](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)〕
 
 ### 1.4 给提示词的实操建议
 - **给可验证的成功标准**，而不是"修好它"。本项目的标准是机器可判的：日志无 `Error:` 且 `Total PASSED rows: X/X`。
 - **指明数据/代码在哪**（zip 目录、配置文件），省去 AI 猜测。
-- **把"不要做什么"写出来**（已知无解的类别），避免无效探索。
+- **把"不要做什么"写出来**（已知无解的类别、不可改动的基准），避免无效探索与改错地方。
 - **要求留痕**（写 session 文档），既是交付物，也是下一轮的记忆。
+
+> **反例（缺"不要做什么"→ AI 改错了地方）**：步骤 [#2 修复前序提交引入的 bug](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) 的提示词只说"请修复 Color/WorldPos 的 Error"，**没有声明"golden 数据是基准、不要动它"**。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的**尾部 `float3` 错位**陷阱（golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐）。由于提示词没有禁止改基准，AI 把矛头指向了 **golden 比较侧**——`load_vs_golden_from_mesh_csv` 里的 WorldPos 重映射一度被**注释掉（禁用）**，直到步骤 [#3](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) 才不得不"**恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过**"。正因为吃过这个亏，紧接着的步骤 [#4](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4) 才在提示词里补上明确禁令——"**不要更改 golden data 的加载函数，golden data 加载数据是正确的**"（即下文 §1.5 的好例 G1）。
+>
+> **教训**：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"**基准是对的，只许改解释器**"就能堵死后一条错路；漏掉它，就要付出 #2→#3 这样的来回与返工。〔证据链：[#2 缺禁令](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) → [#3 恢复被注释的重映射](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) → [#4 补上禁令](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4)〕
+
+### 1.5 好提示词 vs 差提示词：本项目的真实对照
+
+下面三组例子全部摘自本仓库 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md` 的真实提示词，可逐条核对（每例均附"提示词原文"超链接，指向对应步骤）。
+
+#### ✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径
+〔提示词原文：[ClaudeCode #4 修复执行 HLSL 得到的 WorldPos.xyz 数据不正确问题](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4)〕
+> output.log 的打印如下：
+> `Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100`
+> `[STMT] o4.xyz = r1.xyz => o4.xyz = ['-61.6382', '11.2829', '-88.1203']`
+> 从语法树执行结果看 o4.xyz 错了。正确值应该是 `o4.xyz = ['11.2829', '-88.1203', '-58.05407']`。请修复，注意：
+> 1. 问题看起来是解释执行 HLSL 中出现的，请修复；
+> 2. **不要更改 golden data 的加载函数，golden 加载是正确的**；
+> 3. 修复后跑 `python render.py ./Cases/Default.json`，读 output.log 确认还有没有 Error，有就继续修直到 VS 输出正确。
+
+**为什么好**：① 贴出实际值**和**期望值，精确到分量（AI 一眼知道差在哪）；② 把问题域圈定在"解释执行"；③ 预先排除一条诱人但错误的修法（"别去改 golden 加载"——否则 AI 很可能为了让数字对上而去改基准，制造假绿）；④ 给出可机判的验证回路。这条提示词直接命中了 `CLAUDE.md` 里记载的"3Dmigoto 尾部 float3 错位"陷阱。
+
+#### ❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工
+第一条提示词（信息不足）〔原文：[ClaudeCode #12 实现 wireframe 绘制](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-12)〕：
+> rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe
+
+AI 没有被告知"本项目 `pipeline_state.csv` 里的 FillMode 到底有哪些取值"，只能猜，于是写出：
+```python
+fill_mode_map = {
+    'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
+    '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
+}
+```
+用户不得不再发**一条纠正提示词**返工〔原文：[ClaudeCode #14 fill mode map 错误](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-14)〕：
+> fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid，相应的 rasterizer 也要按这两种 fill mode 光栅化。
+
+**代价**：多一轮往返 + 一次返工。**改进版（一次说清）**：
+> 请实现 wireframe 光栅化。注意 D3D11 的 FillMode 只有 `Wireframe` 和 `Solid` 两种取值（`pipeline_state.csv` 里就是这两个字符串），按这两种分派即可。
+
+> **要点**：差不在"语气"而在"信息密度"。B1 缺的是**领域约束**（取值集合）——凡是 AI 需要靠猜才能填的空，就该在提示词里直接给死。
+
+#### ✅ 好例 G2 vs ❌ 差例 B2 —— 同一个 bug，两种问法
+| | 提示词 | 结果 |
+|---|---|---|
+| ❌ B2（设想的差版） | "颜色不对，请修一下 VS。" | AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。 |
+| ✅ G2（真实采用版，[原文 ClaudeCode #2](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2)） | 贴出 6 行精确报错（`Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054` …），并写明"跑 `python render.py ./Cases/Default.json` 后读 `Cases/output.log`，确认还有没有 Error，有就继续修直到 VS 输出正确"。 | AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。 |
+
+> G2 的精髓是把"对不对"变成**机器可判的布尔**（无 `Error:` 行）——既是给 AI 的目标，也是 AI 自查的依据，无需人来回判读。
+
+#### 一句话总结
+**好提示词 = 精确证据（实际值+期望值/报错原文）+ 可机判成功标准 + 数据/代码位置 + 明确的"不要做什么"。** 差提示词的通病不是"太短"，而是**把需要确定性的地方留给 AI 去猜**（缺取值集合、缺基准、缺验证方式）——猜错的代价就是额外的返工轮次。
 
 ---
 
-## 2. AI 如何分析需求、生成开发计划
+## 2 · 分析需求、生成开发计划
 
-面对"挨个修复 issue"这种开放任务，AI 不会盲目动手，而是先**侦察（triage）→ 聚类 → 排序 → 立计划**。
+面对"挨个修复 issue"这种开放任务，AI 不会盲目动手，而是先**侦察（triage）→ 聚类 → 排序 → 立计划**。（对比第二部分：那里"切碎需求、找杠杆点"由人做；这里 AI 自己就能 triage 数百个 case 并按根因聚类。）
 
 ### 2.1 侦察：把"未知"变"已知"
 本轮 Dump 目录有 355 个 zip，其中 witcher3_countryside 有 160 个、仅 31 个在回归里、**129 个从未单独验证**。AI 写了一个并行 triage 脚本（`scratchpad/triage.py`）：把每个 zip 跑成 headless 管线、按日志分类为 `PASS / FAIL / CRASH / NOCMP / TIMEOUT`。
@@ -150,7 +268,7 @@ AI 用 `TodoWrite` 把计划落成可勾选清单，并按 ROI 排序：
 
 ---
 
-## 3. AI 如何按计划执行
+## 3 · 如何按计划执行
 
 每个 case 走同一个**闭环**（与用户提示词第 3–8 步对应）：
 
@@ -179,7 +297,7 @@ AI 用 `TodoWrite` 把计划落成可勾选清单，并按 ROI 排序：
 
 ---
 
-## 4. AI 的输入 / 输出数据流
+## 4 · 输入 / 输出数据流
 
 ### 4.1 输入数据流（AI 看到什么）
 ```
@@ -222,7 +340,7 @@ C1 的 bug 就在"cbuffers + constant_*.bin → VS 执行"这一段；C2 在"con
 
 ---
 
-## 5. 什么样的数据流输出能帮助调试
+## 5 · 什么输出能帮助调试
 
 **结论：能把"中间状态"暴露成可 grep 文本的输出，最有价值。** 本项目刻意把解释器做成"会自述"的：
 
@@ -255,7 +373,7 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 
 ---
 
-## 6. 回归测试如何建立与应用
+## 6 · 回归测试的建立与应用
 
 ### 6.1 建立
 本项目**没有单元测试**，回归套件就是安全网。它是**数据驱动**的：
@@ -272,7 +390,7 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 
 ---
 
-## 7. TDD 在本项目的应用
+## 7 · TDD 在本项目的应用
 
 经典 TDD 是"先写失败测试，再写实现使其通过"。本项目是 **TDD 的一种变体——"golden 即测试"**：
 
@@ -287,9 +405,9 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 
 ---
 
-## 8. 如何纠正 AI 的错误
+## 8 · 如何纠正 AI 的错误
 
-AI 会犯错，纠错来自**四个机制**，本轮都出现了：
+AI 会犯错，纠错来自**四个机制**，本轮都出现了（与第二部分"靠人手改兜底"相比，这一期 AI 更多能**自我纠错**，人退到"裁判 + 推动者"）：
 
 ### 8.1 让 AI 自我纠错（更深的证据）
 step119 时 AI 把 event20899 判为"大气数学的精度长尾、暂缓"。这其实是**误判**。step120 用户要求继续后，AI 重新用逐语句轨迹深挖，发现真因是反规格化数分支选错（C2），把它从"不可解"变成"一行修复"。**纠错的关键是回到数据流、要更细的证据，而不是停在第一个看似合理的结论。**
@@ -305,7 +423,7 @@ C3 改动会改变 `(int)floatattr` 的语义，AI 担心破坏既有的打包-u
 
 ---
 
-## 9. 记忆系统如何避免重复开发
+## 9 · 记忆系统避免重复开发
 
 记忆系统是 `~/.claude/projects/.../memory/` 下的**一事一文件 + 一个索引**：
 - `MEMORY.md` —— 索引，每条一行，会话开始时全量载入。
@@ -325,31 +443,37 @@ C3 改动会改变 `(int)floatattr` 的语义，AI 担心破坏既有的打包-u
 
 ---
 
-## 10. 两个 Agent 开发周期的对比
+## 10 · b/c 两个开发部分的对比和优缺点总结
 
 本项目历经两个 agent 周期（约从 step1 到 step123、2026-06-05 起）。以下特征基于 `Sessions/` 日志与提交历史的可见证据归纳。
 
-### 10.1 前期：opencode + minimax-m2.7（奠基期）
+### 10.1 前期：opencode + minimax-m2.7（第二部分 / 奠基期）
 - **做的事**：从 0 搭起解释器骨架——HLSL 词法/递归下降表达式解析（`hlsl_syntax_tree.py`）、语句解释、cbuffer/struct/函数解析、定点管线（rasterizer/depth/OM/texture）、legacy struct 工作流、golden 对比的雏形。
 - **节奏特征**：**小步快跑**。step1 init、step2 打印 cbuffer、step10 给语法树加 eval 打印、step11 修向量×矩阵、step12 格式化矩阵打印……每步一个很小的功能或修复。
-- **适配点**：在能力相对有限的模型上，把任务切得很碎、每步可见即可验证，是稳妥策略；大量"加打印/加注释/修一个算子"的步骤为后期可观测性打了底（第 5 节的轨迹输出就源于此期）。
+- **适配点**：在能力相对有限的模型上，把任务切得很碎、每步可见即可验证，是稳妥策略；大量"加打印/加注释/修一个算子"的步骤为后期可观测性打了底（第三部分 §5 的轨迹输出就源于此期）。
+- **优点**：步幅小、易回退、每步可肉眼验证、成本低；为整个项目的**可观测性**（`[STMT]`/`[BINARY OP]` 打印）打了地基。
+- **缺点**：找不到深层根因（[#35](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35)）、修复不彻底（[#37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37)）、会误删代码（[#42](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42)）；**重度依赖人工兜底**，无回归网、推进慢。
 
-### 10.2 后期：claude code + opus（攻坚期）
+### 10.2 后期：claude code + opus（第三部分 / 攻坚期）
 - **做的事**：引入 zip/RunDrawFromDump 真机 capture 工作流、建立**数据驱动的回归套件**、并系统化啃长尾——批量 triage 280→355 个 capture、按根因聚类、逐类深挖修复（C1/C2/C3、structured buffer skinning、raw .img 纹理、R10A2 解码……）。
 - **节奏特征**：**根因导向、闭环交付**。一步往往覆盖"triage→定位→修复→回归→提交→文档"整条链，单步信息密度高；能在长上下文里同时持有整条管线、并行跑 triage、对高风险改动先证伪再提交。
 - **适配点**：更强的模型 + 更长上下文 + 更全的工具（并行 Bash、后台任务、回归 gate、记忆系统），使"一次推进一个完整根因类"成为可能。
+- **优点**：长上下文可**持有整条管线**、根因导向、闭环交付（含回归 gate + 记忆 + 文档）、能批量 triage、能**自我纠错**（见第三部分 · 8 的 C2 翻案）。
+- **缺点**：单步信息密度高、需要信任；成本高；**对提示词约束敏感**——缺"不要做什么"会改错地方（见第三部分 · 1 的 [#2→#3→#4 反例](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2)）；仍可能误判、需用户推动（C2 一度被判"不可解"）。
 
 ### 10.3 对比小结
-| 维度 | opencode + minimax-m2.7（前期） | claude code + opus（后期） |
+| 维度 | 第二部分：opencode + minimax-m2.7 | 第三部分：claude code + opus |
 |---|---|---|
 | 目标 | 从无到有搭骨架 | 真机数据攻坚长尾 |
 | 步幅 | 小而多（单功能/单算子） | 大而少（整条闭环/整类根因） |
 | 上下文 | 短、聚焦单点 | 长、可持有整条管线 |
+| 计划 | **人**切碎需求、找杠杆点 | **AI** 自己 triage→聚类→排序 |
 | 验证 | 加打印、人工看 | verify-by-log + 自动回归 gate |
+| 纠错 | 人手改兜底（[#37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37)/[#42](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42)） | AI 自我纠错 + 回归当裁判 |
 | 工具用法 | 基本编辑/运行 | 并行 triage、后台任务、记忆、git 闸门 |
-| 典型产物 | "step11 修向量×矩阵" | "step119 一个 bug 修 5 个 case + 扩回归" |
+| 典型产物 | [#11 修向量×矩阵](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-11) | [#42 一个 bug 修 5 个 case + 扩回归](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42) |
 
-> 两个周期是**互补**的：前期的小步与可观测性铺垫，是后期能够"沿数据流快速回溯根因"的前提。没有前期那些 `[STMT]`/`[BINARY OP]` 打印，后期的 C2/C3 根因不可能被一眼看穿。
+> 两个周期是**互补**的：前期的小步与可观测性铺垫，是后期能够"沿数据流快速回溯根因"的前提。没有前期那些 `[STMT]`/`[BINARY OP]` 打印，后期的 C2/C3 根因不可能被一眼看穿。选型启示：**搭骨架/能力有限时，把需求切碎、靠人验证最稳；攻坚/上下文充足时，让 AI 持有全局、用回归+记忆闭环交付最高效。**
 
 ---
 

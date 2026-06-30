@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hlsl-interpreter-step152：修复 D 类（Octopath）—— typed buffer SNORM/UNORM/half 解码 + golden 列 uint 解析</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step152-fix-dclass-octopath-typed-buffer-and-golden-parse</span></div>
+<div class="wrap">
+<h1>hlsl-interpreter-step152：修复 D 类（Octopath）—— typed buffer SNORM/UNORM/half 解码 + golden 列 uint 解析</h1>
+<h2>任务</h2>
+<p>修复 step124/151 分类里的 <b>D 类（19 个 Octopath）</b>：packed 法线/切线 UNORM/SNORM 未按格式解码、golden 列被当 uint 解析。</p>
+<h2>诊断（以 <code>Octopath-frame746_event1828</code> 为样本）</h2>
+<p>D 类 Octopath 是<b>蒙皮/实例化 VS</b>，错的输出 <code>TEXCOORD10/11</code>（变换后的法线/切线）与 <code>TexCoord</code> 来自 <b>typed buffer</b>（<code>Buffer&lt;float4&gt; t1/t2</code>）的 <code>.Load()</code>，不是顶点属性。两个独立根因：</p>
+<h3>Bug 1 — typed buffer 4 字节元素的视图格式被错误解码</h3>
+<p><code>buffer_params.csv</code> 只记录 <code>ElementByteSize</code>，<b>不记录 DXGI 视图格式</b>；DXBC 反汇编一律声明 <code>dcl_resource_buffer (float,float,float,float)</code>（返回类型，恒为 float）。于是一个 4 字节元素的 <code>Buffer&lt;float4&gt;</code> 实际可能是：</p>
+<ul>
+<li><b>R8G8B8A8_SNORM</b>（法线/切线/四元数，byte 127 → +1.0）</li>
+<li><b>R8G8B8A8_UNORM</b>（颜色表，byte 255 → +1.0）</li>
+<li><b>R16G16_FLOAT</b>（packed 纹理坐标，2 个 half）</li>
+</ul>
+<p>旧 <code>_typed_buffer_load</code>：1 字节/分量一律按 <b>UNORM</b>（<code>b/255</code>）。于是 t2 的法线 byte 127 解出 <code>127/255=0.498039</code>，golden 期望 <code>1.0</code>（SNORM）——正是 <code>TEXCOORD10/11</code> 的错误来源。step118 曾确诊此 SNORM/UNORM 歧义但因"capture 无格式元数据"判为不可修。</p>
+<p><b>判别法（按字节分布，已对 Octopath 多个 capture 验证）：</b></p>
+<ol>
+<li><b>先判 R16G16_FLOAT</b>：纹理坐标有限且范围温和，整个 buffer 每个元素都能解成两个有限、<code>|v|&lt;1024</code> 的 half；而 R8G8B8A8 归一化数据的高字节常是 <code>0x7F/0xFF/0x80</code>（half 指数全 1 → Inf/NaN）。所以"<b>全 buffer 所有 half 都有限且在范围内</b>"是 R16G16_FLOAT 的可靠正信号（逐元素全检，几乎排除误判）。</li>
+<li><b>否则按 R8G8B8A8</b>：<code>#0xFF</code>（UNORM 1.0）多于 <code>#0x7F</code>（SNORM 1.0）→ unorm；否则 → snorm（含并列，蒙皮法线/切线/四元数的常见情况）。</li>
+</ol>
+<blockquote>关键修正：最初用"special 字节占比 ≥60% 才判 R8"做门控，但 event2384 的 SNORM 法线指向任意方向、special 占比仅 0.26，被错误回退到 UNORM 而<b>回归</b>。改为"half 有限性"作为唯一正信号、其余一律 R8（snorm/unorm 再分），event2384 恢复且新增多例通过。</blockquote>
+<p>验证字节分布：</p>
+<table>
+<tr><th>buffer</th><th>#0x7F</th><th>#0xFF</th><th>全 half 有限</th><th>判定</th></tr>
+<tr><td>1828 t2（法线）</td><td>24</td><td>0</td><td>否(Inf)</td><td><b>snorm</b> ✓</td></tr>
+<tr><td>1320 t2（颜色）</td><td>0</td><td>24</td><td>否(NaN)</td><td><b>unorm</b> ✓</td></tr>
+<tr><td>2135 t3（四元数）</td><td>12</td><td>0</td><td>否(Inf)</td><td><b>snorm</b> ✓</td></tr>
+<tr><td>1357 t1（纹理坐标）</td><td>—</td><td>—</td><td>是</td><td><b>half</b> ✓（解出 0.2344/0.4575 = golden）</td></tr>
+</table>
+<h3>Bug 2 — golden 列被当 uint 解析</h3>
+<p>golden mesh CSV 按 RenderDoc 的<b>物理列定位</b>布局：float 输出 <code>o2 : TEXCOORD0</code> 的数据物理落在 uint 类型的 <code>PRIMITIVE_ID.x</code> 列下，于是其 float <code>0.4375</code> 被打印成 uint 位模式 <code>1054867456</code>（=<code>0x3EE00000</code>）。<code>load_vs_golden_from_mesh_csv</code> 已有位重解释（<code>_golden_float</code>），但<b>只对 <code>sv_position</code> 生效</b>。RenderDoc 对真实 float 永远带小数点打印，故 float 列里的"裸整数"必是位模式——应对<b>所有 float 类型输出</b>都走 <code>_golden_float</code>，整型输出（uint/int，如 PRIMITIVE_ID 本身）保持原值。</p>
+<h2>修复（均在 <code>hlsl_interpreter.py</code>）</h2>
+<ol>
+<li><b><code>_infer_4byte_typed_buffer_fmt(data)</code></b>（新）：按上面的判别法返回 <code>'snorm'/'unorm'/'half'</code>，结果缓存在 <code>tb['norm_fmt']</code>（每 buffer 只算一次）。</li>
+<li><b><code>_typed_buffer_load</code></b>：1 字节/分量分支按推断格式解码——<code>half</code>=2×<code>&lt;e</code>；<code>snorm</code>=<code>max(c/127,-1)</code>（0x80→-1.0）；<code>unorm</code>=<code>b/255</code>。其余（8B→2×float32、16B→4×float32）不变。</li>
+<li><b><code>load_vs_golden_from_mesh_csv</code></b>：<code>param_cols</code> 增带 <code>is_float</code>，行解析对所有 float 输出用 <code>_golden_float</code>（对正常带小数/指数的文本是 no-op）。</li>
+</ol>
+<h2>结果</h2>
+<p>对 19 个 D 类 case 跑 <code>vs_only</code>：<b>10 PASS + 9 FAIL</b>（之前 0 PASS）。</p>
+<p><b>10 个通过并删除</b>：event1250、1357、1828、1922、2091、2384、2428、2513、3221、3542。</p>
+<p><b>9 个仍失败 → 属更深的其它子类（超出本次命名范围）</b>：</p>
+<ul>
+<li><code>event2135</code>：sv_position 已对，<code>TEXCOORD10</code>（四元数解码残留）仍错。</li>
+<li><code>event2651/2682/576</code>（各 2.3 万顶点）：sv_position 数值溢出（~1e13），exp2/pow 或索引溢出。</li>
+<li><code>event2912/3012/3601/664</code>：sv_position 结构性错（蒙皮/索引）。</li>
+<li><code>event3502</code>：<code>TEXCOORD12/13</code> 高编号语义列映射（golden=0，我方非 0）。</li>
+</ul>
+<p><code>Dump/</code> 失败集 <b>96 → 86</b>。分类刷新：B16 / C37 / <b>D9</b> / E10 / F1=3 / F2=9 / G2。</p>
+<h2>回归</h2>
+<ul>
+<li>改动均为 VS 侧（typed buffer 解码 + golden 加载），故用 <code>vs_only</code> 跑回归（更快且足以覆盖）：<b>123/123 通过</b>，其中 <code>Octopath-frame746_event1320</code>（UNORM 颜色）仍 6/6——确认 UNORM 推断未被破坏。</li>
+<li>新增两个代表到回归套件（覆盖新格式路径）：<code>Octopath-frame746_event1828</code>（SNORM）、<code>event1357</code>（R16G16_FLOAT），均全管线复跑通过（6/6、696/696）。回归用例 123 → <b>125</b>。</li>
+<li><code>run_regression.py</code> 的临时 <code>vs_only</code> 注入跑完已回退。</li>
+</ul>
+<h2>产物</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code>：<code>_infer_4byte_typed_buffer_fmt</code> + <code>_typed_buffer_load</code> 格式感知解码；golden 加载对所有 float 输出位重解释。</li>
+<li>删除 <code>Dump/</code> 中 10 个通过的 D 类；<code>Cases/dump_failure_categories.csv</code> 刷新为 86。</li>
+<li>回归新增 <code>Octopath-frame746_event1828</code> / <code>event1357</code>（<code>Cases/</code> + <code>regression_test_zip_files.csv</code>）。</li>
+<li><code>Cases/dclass_vsonly_results.csv</code>：19 个 D 类的 vs_only 明细。</li>
+</ul>
+</div></body></html>

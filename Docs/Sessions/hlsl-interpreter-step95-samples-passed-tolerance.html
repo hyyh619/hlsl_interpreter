@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 95 — Configurable tolerance for the SamplesPassed comparison</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step95-samples-passed-tolerance</span></div>
+<div class="wrap">
+<h1>Step 95 — Configurable tolerance for the <code>SamplesPassed</code> comparison</h1>
+<h2>Task</h2>
+<p>For the <code>SamplesPassed</code> (pipeline statistics) comparison, add a tolerance value.<br>It must be configurable via the input JSON; if not configured, default to <b>500</b>.</p>
+<p>Example of the residual mismatch the tolerance should absorb:</p>
+<pre><code>Error [PipelineStats]: SamplesPassed mismatch: output=42906 golden=42726 (mapped from pipeline_stats['depth_passed'])</code></pre>
+<p>Here <code>|42906 − 42726| = 180</code>, well within 500, so this should now report <b>OK</b>.</p>
+<h2>Thinking</h2>
+<p><code>SamplesPassed</code> maps to our <code>pipeline_stats['depth_passed']</code> in<br><code>_PIPELINE_STAT_MAP</code>, and <code>_compare_pipeline_statistics</code> previously required an<br><b>exact</b> match — any difference logged an error-level line. As established in<br>step 94, an exact match is unrealistic: our rasterizer's fragment count and<br>processing order differ slightly from the real GPU, so the depth-passed sample<br>count lands close to golden but not identical. A small tolerance band is the<br>right way to treat "close enough" as a pass while still catching gross errors.</p>
+<p>Design decisions:</p>
+<ul>
+<li><b>Scope:</b> the tolerance applies <b>only</b> to <code>SamplesPassed</code>, per the task. All other counters (<code>VSInvocations</code>, <code>IAPrimitives</code>, …) keep exact-match semantics.</li>
+<li><b>Config key:</b> <code>samples_passed_tolerance</code>, read in <code>_execute_pipeline</code> with <code>config.get('samples_passed_tolerance', 500)</code> so the default is 500 when the JSON omits it.</li>
+<li><b>Plumbing:</b> pass the value into <code>_compare_pipeline_statistics</code> as a keyword argument (default 500 there too, so the function is safe to call standalone).</li>
+<li>The OK line records the diff and the active tolerance for transparency.</li>
+</ul>
+<h2>Implementation</h2>
+<h3><code>render.py</code> — <code>_compare_pipeline_statistics</code></h3>
+<p>New <code>samples_passed_tolerance: int = 500</code> parameter. In the per-counter loop,<br>after the exact-match check, a <code>SamplesPassed</code>-specific branch:</p>
+<pre><code>if counter == 'SamplesPassed' and abs(our_val - golden_val) &lt;= samples_passed_tolerance:
+    log(f"  OK  {counter}: output={our_val} golden={golden_val} "
+        f"(diff={abs(our_val - golden_val)} within tolerance {samples_passed_tolerance})")
+    continue</code></pre>
+<p>Only if the diff exceeds the tolerance does it fall through to the existing<br><code>Error [PipelineStats]:</code> line.</p>
+<h3><code>render.py</code> — <code>_execute_pipeline</code></h3>
+<p>Read the config value alongside the other tolerances:</p>
+<pre><code>samples_passed_tolerance = config.get('samples_passed_tolerance', 500)</code></pre>
+<p>and forward it at the call site:</p>
+<pre><code>_compare_pipeline_statistics(golden_stats, pipeline_stats, vs_interp.log_output,
+                             samples_passed_tolerance=samples_passed_tolerance)</code></pre>
+<h2>Results</h2>
+<h3>Unit check of the branch</h3>
+<pre><code>--- diff=180, default tol=500 (expect OK) ---
+OK  SamplesPassed: output=42906 golden=42726 (diff=180 within tolerance 500)
+All compared pipeline statistics match golden.
+
+--- diff=180, tol=100 from config (expect Error) ---
+Error [PipelineStats]: SamplesPassed mismatch: output=42906 golden=42726 (mapped from pipeline_stats['depth_passed'])
+
+--- exact match ---
+OK  SamplesPassed: output=42726 golden=42726</code></pre>
+<p>The exact example from the task (output=42906, golden=42726) now reports OK<br>under the default tolerance, can be tightened via config to fail, and exact<br>matches are unaffected.</p>
+<h3>Regression suite — 6/6 PASS</h3>
+<pre><code>PASS  ...event28.zip   passed 204/204
+PASS  ...event104.zip  passed 1149/1149
+PASS  ...event351.zip  passed 315/315
+PASS  ...event371.zip  passed 6/6
+PASS  ...event399.zip  passed 696/696
+PASS  ...event516.zip  passed 3/3</code></pre>
+<p>(The <code>[PipelineStats]</code> lines are diagnostics — they do not start with <code>Error:</code><br>and never gated the runner — so the regression result is unchanged; this step<br>only changes whether a near-match is reported as OK vs error in the log.)</p>
+<h2>Config</h2>
+<p>New optional key in the run JSON:</p>
+<pre><code>"samples_passed_tolerance": 500</code></pre>
+<p>Omit it to use the default of 500.</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>render.py</code> — added the <code>samples_passed_tolerance</code> parameter and <code>SamplesPassed</code> tolerance branch in <code>_compare_pipeline_statistics</code>; read the <code>samples_passed_tolerance</code> config key in <code>_execute_pipeline</code> and forward it.</li>
+</ul>
+</div></body></html>

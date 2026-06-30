@@ -51,6 +51,12 @@
   .legend{font-size:12.5px;color:var(--muted);text-align:center;margin-top:6px}
   .mono{font-family:var(--mono)}
   .red{color:var(--red)} .grn{color:var(--green)} .amb{color:var(--amber)} .acc{color:var(--accent)}
+  .part{margin:54px 0 8px;padding:16px 20px;border-radius:12px;border:1px solid var(--line);
+    background:linear-gradient(100deg,rgba(93,176,255,.16),rgba(70,211,154,.10));}
+  .part h1{margin:0;font-size:25px;letter-spacing:.3px}
+  .part p{margin:6px 0 0;color:var(--muted);font-size:14px}
+  nav.toc .grp{font-weight:bold;color:#cdd6e4;display:block;margin:8px 0 2px;font-size:14px;break-after:avoid}
+  nav.toc .grp:first-child{margin-top:0}
   @media(max-width:680px){nav.toc{columns:1}.grid3{grid-template-columns:1fr}}
 </style>
 </head>
@@ -80,7 +86,15 @@
 </div>
 
 <nav class="toc">
+  <span class="grp">第一部分 · 项目总体介绍</span>
   <a href="#q0">0 · 项目概述</a>
+  <span class="grp">第二部分 · OpenCode + minimax-m2.7（奠基期）</span>
+  <a href="#qb1">1 · 如何给 AI 提供提示词</a>
+  <a href="#qb2">2 · 分析需求、生成开发计划</a>
+  <a href="#qb3">3 · 如何按计划执行</a>
+  <a href="#qb4">4 · 如何纠正 AI 的错误</a>
+  <a href="#qb5">5 · 如何进行调试</a>
+  <span class="grp">第三部分 · ClaudeCode（攻坚期）</span>
   <a href="#q1">1 · 如何给 AI 提供提示词</a>
   <a href="#q2">2 · 分析需求、生成开发计划</a>
   <a href="#q3">3 · 如何按计划执行</a>
@@ -90,8 +104,11 @@
   <a href="#q7">7 · TDD 在本项目的应用</a>
   <a href="#q8">8 · 如何纠正 AI 的错误</a>
   <a href="#q9">9 · 记忆系统避免重复开发</a>
-  <a href="#q10">10 · 两个 Agent 周期对比</a>
+  <a href="#q10">10 · b/c 对比和优缺点总结</a>
 </nav>
+
+<!-- ============================ PART A ============================ -->
+<div class="part"><h1>第一部分 · 项目总体介绍</h1><p>这是什么、怎么跑、怎么验证。</p></div>
 
 <!-- Q0 -->
 <h2 id="q0">0 · 项目概述</h2>
@@ -143,6 +160,57 @@
 <b>正确性如何保证</b>：项目没有传统单元测试，靠两条防线。① <b>verify-by-log</b>：跑管线 → grep <code>output.log</code> 里的 <code>Error:</code> 行（VS-vs-golden 分量级不符）→ 迭代到无错；<code>[STMT]</code> / <code>[BINARY OP]</code> 轨迹是调试主面。② <b>数据驱动回归套件</b>：<code>run_regression.py</code> 逐个 headless 跑 <code>regression_test_zip_files.csv</code> 列出的 capture，三条判据（干净退出、无 <code>Error:</code>、<code>Total PASSED rows: X/X</code>）全满足才算过，目前覆盖 <b>123 个真机 case</b>，是每次改动的提交闸门。本手册后续各章即围绕"如何与 AI 协作、在这样一个无单测、靠真机 golden 验证的解释器项目上持续修 bug"展开。
 </div>
 
+<!-- ============================ PART B ============================ -->
+<div class="part"><h1>第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）</h1>
+<p>约 step1–step86（<code>Sessions/hlsl-step*.md</code>）：用一个能力相对有限的模型从零搭出解释器骨架。例子取自 <code>Prompts/hlsl-interpreter-prompt-OpenCode.html</code>。</p></div>
+
+<h2 id="qb1">1 · 如何给 AI 提供提示词</h2>
+<p>这一期能力有限的模型对<b>信息密度</b>格外敏感：给得越具体（样例、字段名、期望值），越不容易跑偏；一旦留白，它就<b>自己脑补</b>。</p>
+<div class="callout green">
+<b>✅ 好例 —— 把"要做什么"说到可运行</b>：项目第一条提示词 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-1">OpenCode #1</a> 没说"写个 HLSL 解释器"这种空话，而是<b>贴出完整样例 HLSL（<code>vs_main</code> 全文）</b>并要求"先实现对下列样例代码的解释执行"——给的是一个具体、可运行的靶子。
+</div>
+<div class="callout amber">
+<b>❌ 反例 —— 留白被脑补</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-97">OpenCode #97</a> 用户事后批注："<i>没有给具体的信息，导致解析 config 文件的字段名错误，AI 自己脑补的字段名</i>"。提示词没给 depth/stencil config 的真实字段名，AI 就臆造字段名 → 解析错误。
+</div>
+<p><b>小结</b>：与第三部分的"可机判成功标准 + 不要做什么"相比，这一期更基础的功课是<b>把输入说全</b>——尤其样例、字段、数据格式这类 AI 无从猜起的事实。</p>
+
+<h2 id="qb2">2 · 分析需求、生成开发计划</h2>
+<p>这一期的"计划"不是 AI 自己 triage，而是<b>用户把大目标切成极小、可独立验证的步骤</b>，喂给 AI 一步步做——"找杠杆点"由人来做。</p>
+<p><b>典型证据</b>：表达式求值器不是一次写成，而是沿一串小步<b>逐步长出来</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12">#12 给求值每分支加可开关打印</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15">#15 修 transpose 只执行一半</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16">#16 打印操作数/操作符/结果</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19">#19 加 float3x3 cast</a>。每步只动一个点。</p>
+<div class="callout"><b>对比</b>：这与第三部分"一步覆盖 triage→修复→回归→提交→文档整条闭环"形成鲜明反差。模型一次只能可靠推进一小步时，把需求切碎、每步可肉眼验证，是对其能力的适配。</div>
+
+<h2 id="qb3">3 · 如何按计划执行</h2>
+<p>执行单元 = "<b>描述一个具体现象 → 让 AI 改一个点 → 看打印验证 → 下一步</b>"。</p>
+<ul>
+<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15">#15</a>：用户指出"<code>execute_statement</code> 执行 <code>transpose(WorldViewProj)</code> 时只执行了一部分"，AI 据此定点修正。</li>
+<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19">#19</a>：用户给出具体语句 <code>normalize(mul(nor, (float3x3)World))</code> 驱动加 float3x3 cast。</li>
+</ul>
+<p><b>验证方式</b>：这一期还没有回归套件、没有成熟的 golden 自动对比，<b>验证靠人看打印</b>——所以每步都很小、便于肉眼判断对错。慢，但可控。</p>
+
+<h2 id="qb4">4 · 如何纠正 AI 的错误</h2>
+<p>这一期纠错以<b>重度人工介入</b>为特征：用户常要直接给出真因，甚至亲自动手。三个真实案例（均为用户原话批注）：</p>
+<div class="callout amber">
+<b>找不到根因</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a>：<i>"MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。"</i> 真因由<b>用户</b>点出。<br>
+<b>修复不彻底</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>：<i>"没有考虑到检测到 <code>&lt;</code> 后，取 <code>[i-1:i+1]</code> 实际取出的是 <code> &lt;</code>，导致错误依旧。"</i> 提交信息记成 <i>"I have to fix it by my hand"</i>（用户手改）。<br>
+<b>误删代码</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>：<i>"MiniMax-M2.7 错误地删除以下语句导致 <code>execute_main_function</code> 没有返回执行结果。"</i>
+</div>
+<div class="callout green"><b>也有亮点</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45">#45</a>：AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。</div>
+<p><b>小结</b>：纠错回路短而频繁，<b>质量把关几乎全在人</b>——AI 更像"快速打字员 + 局部修补匠"，深层根因与最终正确性靠人兜底。</p>
+
+<h2 id="qb5">5 · 如何进行调试</h2>
+<p>这一期最有<b>长远价值</b>的产出，是把解释器改造成"<b>会自述</b>"的——给求值过程加可开关的打印。正是这套打印，后来演化成第三部分赖以"沿数据流回溯根因"的 <code>[STMT]</code>/<code>[BINARY OP]</code> 轨迹（见 <a href="#q5">第三部分 §5</a>）。</p>
+<ul>
+<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12">#12</a> 每个求值分支加可开关打印；
+    <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16">#16</a> 打印操作数/操作符/结果；
+    <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-17">#17</a> 用一个 bool 统一控制开关；
+    <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-31">#31</a> 优化 <code>log_output</code> 写文件。</li>
+</ul>
+<p><b>调试方式</b>：开打印 → 跑 → <b>人工读打印</b>定位哪一步的操作数/结果不对 → 改。没有自动断言，全靠"可读的中间状态 + 人眼"。这一期为整个项目的<b>可观测性打了地基</b>。</p>
+
+<!-- ============================ PART C ============================ -->
+<div class="part"><h1>第三部分 · 基于 ClaudeCode 的开发（攻坚期）</h1>
+<p>约 step87 起（<code>Sessions/hlsl-interpreter-step*.md</code>）：引入真机 capture 工作流、数据驱动回归套件，系统化啃长尾。例子取自 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.html</code> 与 <code>Sessions/</code>。</p></div>
+
 <!-- Q1 -->
 <h2 id="q1">1 · 如何给 AI 提供提示词</h2>
 <p>提示词不是"一句话指令"，而是一个<b>分层的上下文系统</b>。本项目里有效的提示词由四层组成：</p>
@@ -165,7 +233,54 @@
 <div class="legend">提示词四层：越靠上越"常驻"，越靠下越"本轮"</div>
 </div>
 <div class="callout">
-<b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。C1 修复时 AI 直接知道要看 golden 对比日志、改完跑回归——都来自 <code>CLAUDE.md</code>。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>。
+<b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。C1 修复时 AI 直接知道要看 golden 对比日志、改完跑回归——都来自 <code>CLAUDE.md</code>。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>。本轮"可执行循环规范 + 约束清单"的提示词原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42 继续修复</a>。
+</div>
+
+<div class="callout amber">
+<b>反例：缺"不要做什么" → AI 改错了地方</b>
+<p style="margin:6px 0">步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2 修复前序提交引入的 bug</a> 的提示词只说"请修复 Color/WorldPos 的 Error"，<b>没有声明"golden 数据是基准、不要动它"</b>。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的<b>尾部 <code>float3</code> 错位</b>陷阱——golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐。</p>
+<p style="margin:6px 0">由于提示词没禁止改基准，AI 把矛头指向了 <b>golden 比较侧</b>：<code>load_vs_golden_from_mesh_csv</code> 里的 WorldPos 重映射一度被<b>注释掉（禁用）</b>，直到步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 才不得不"<i>恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过</i>"。正因吃过这个亏，紧接着的步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4">#4</a> 才在提示词里补上明确禁令——"<b>不要更改 golden data 的加载函数，golden data 加载数据是正确的</b>"（即下方好例 G1）。</p>
+<b>教训</b>：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"<b>基准是对的，只许改解释器</b>"就堵死了后一条错路；漏掉它，就要付出 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2</a>→<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 这样的来回与返工。
+</div>
+
+<h3>好提示词 vs 差提示词：本项目的真实对照</h3>
+<p>以下例子全部摘自本仓库 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code> 的真实提示词，可逐条核对。</p>
+
+<div class="callout green">
+<b>✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径</b>
+ <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4" style="font-size:12.5px">〔提示词原文：ClaudeCode #4〕</a>
+<pre><code>output.log 打印：
+Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100
+[STMT] o4.xyz = r1.xyz =&gt; o4.xyz = ['-61.6382','11.2829','-88.1203']
+o4.xyz 错了，正确值应该是 ['11.2829','-88.1203','-58.05407']。请修复，注意：
+  1. 问题在解释执行 HLSL 中，请修复；
+  2. 不要更改 golden data 的加载函数，golden 加载是正确的；
+  3. 修复后跑 python render.py ./Cases/Default.json，读 output.log
+     确认还有没有 Error，有就继续修直到 VS 输出正确。</code></pre>
+<b>为什么好</b>：① 贴出实际值<b>和</b>期望值、精确到分量；② 圈定问题域在"解释执行"；③ 预先排除一条诱人但错误的修法（"别改 golden 加载"——否则 AI 可能为凑数字去改基准、制造假绿）；④ 给可机判的验证回路。这条提示词正命中 <code>CLAUDE.md</code> 记载的"3Dmigoto 尾部 float3 错位"陷阱。
+</div>
+
+<div class="callout amber">
+<b>❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工</b>
+<p style="margin:6px 0">第一条提示词（信息不足，<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-12">原文 ClaudeCode #12</a>）：<i>"rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe"</i>。AI 没被告知 <code>pipeline_state.csv</code> 里 FillMode 到底有哪些取值，只能猜，于是写出：</p>
+<pre><code>fill_mode_map = {
+    'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
+    '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
+}</code></pre>
+<p style="margin:6px 0">用户不得不再发<b>一条纠正提示词</b>返工（<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-14">原文 ClaudeCode #14</a>）：<i>"fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid。"</i> <span class="red">代价 = 多一轮往返 + 一次返工。</span></p>
+<p style="margin:6px 0"><b>改进版（一次说清）</b>：<i>"请实现 wireframe 光栅化。注意 D3D11 的 FillMode 只有 <code>Wireframe</code> 和 <code>Solid</code> 两种取值（<code>pipeline_state.csv</code> 里就是这两个字符串），按这两种分派即可。"</i></p>
+<b>要点</b>：差不在"语气"而在"信息密度"。B1 缺的是<b>领域约束</b>（取值集合）——凡是 AI 需要靠猜才能填的空，就该在提示词里直接给死。
+</div>
+
+<p>同一个 bug，两种问法的对照：</p>
+<table>
+  <tr><th>　</th><th>提示词</th><th>结果</th></tr>
+  <tr><td class="red">❌ B2<br>（差版）</td><td>"颜色不对，请修一下 VS。"</td><td>AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。</td></tr>
+  <tr><td class="grn">✅ G2<br>（真实采用，<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">原文 #2</a>）</td><td>贴出 6 行精确报错（<span class="mono">Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054</span> …），并写明"跑 <code>render.py</code> 后读 <code>Cases/output.log</code>，确认还有没有 Error，有就继续修直到 VS 输出正确"。</td><td>AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。</td></tr>
+</table>
+
+<div class="callout">
+<b>一句话总结</b>：好提示词 = <b>精确证据</b>（实际值+期望值/报错原文）+ <b>可机判成功标准</b> + <b>数据/代码位置</b> + 明确的<b>"不要做什么"</b>。差提示词的通病不是"太短"，而是<b>把需要确定性的地方留给 AI 去猜</b>（缺取值集合、缺基准、缺验证方式）——猜错的代价就是额外的返工轮次。
 </div>
 
 <!-- Q2 -->
@@ -271,7 +386,7 @@
         Rasterizer → Depth/Stencil → PixelShader → OutputMerger</code></pre>
 
 <!-- Q5 -->
-<h2 id="q5">5 · 什么样的数据流输出能帮助调试</h2>
+<h2 id="q5">5 · 什么输出能帮助调试</h2>
 <p class="callout"><b>结论</b>：能把"中间状态"暴露成<b>可 grep 的文本</b>，最有价值。本项目刻意把解释器做成"会自述"的。</p>
 <h3>C3 的 smoking gun — 逐语句轨迹</h3>
 <pre><code>[STMT] r0.xy = (int2)v1.zw => r0.xy = <span class="red">[1073741824, 1073741824]</span>   ← 把 2.0 当位型！应为 [2,2]
@@ -288,7 +403,7 @@ Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
 <p><b>设计准则</b>：让被测系统打印"每一步的输入、运算、输出"，且保证可被 <code>grep Error:</code> / <code>grep '[STMT]'</code> 提取。<b>可观测性 = 可调试性。</b></p>
 
 <!-- Q6 -->
-<h2 id="q6">6 · 回归测试如何建立与应用</h2>
+<h2 id="q6">6 · 回归测试的建立与应用</h2>
 <div class="grid3">
   <div class="c"><b>数据驱动</b><br><code>regression_test_zip_files.csv</code> 一行一个必过的 capture zip。</div>
   <div class="c"><b>headless 跑</b><br><code>run_regression.py</code> 逐个跑 <code>render.py</code>，写 per-case 日志，打印 PASS/FAIL，失败则退出码非零。</div>
@@ -334,7 +449,7 @@ Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
 <div class="callout amber"><b>④ 用户直接纠偏</b>：用户在提示词里预标"哪些是 capture 限制、无解"，提前纠正 AI"什么都想修"的倾向，避免在死路上空转。<br><b>纠错的核心</b>：回到数据流、要更细的证据，不要停在第一个看似合理的结论。</div>
 
 <!-- Q9 -->
-<h2 id="q9">9 · 记忆系统如何避免重复开发</h2>
+<h2 id="q9">9 · 记忆系统避免重复开发</h2>
 <p>记忆系统 = <code>memory/</code> 下"<b>一事一文件</b>" + 一个会话开始即载入的索引 <code>MEMORY.md</code>。</p>
 <table>
   <tr><th>记忆</th><th>内容</th><th>避免的重复劳动</th></tr>
@@ -346,7 +461,7 @@ Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
 <div class="callout green">当一个"<b>非显而易见、未来还会用到</b>"的事实被发现，就写成一条记忆（带"为什么/怎么用"），并在索引留一行指针。<b>同一个坑只踩一次</b>。纪律：不记录代码/git 已记录的东西；先查重再写；召回的记忆引用到具体文件/函数时先核实仍存在。</div>
 
 <!-- Q10 -->
-<h2 id="q10">10 · 两个 Agent 开发周期的对比</h2>
+<h2 id="q10">10 · b/c 两个开发部分的对比和优缺点总结</h2>
 <p>本项目历经两个 agent 周期（约 step1→step123，2026-06-05 起）。以下基于 <code>Sessions/</code> 日志与提交历史的可见证据。</p>
 <div class="svgbox">
 <svg viewBox="0 0 900 130" role="img" aria-label="两个开发周期">
@@ -360,15 +475,22 @@ Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
 </svg>
 </div>
 <table>
-  <tr><th>维度</th><th>前期 · minimax-m2.7</th><th>后期 · opus</th></tr>
+  <tr><th>维度</th><th>第二部分 · minimax-m2.7</th><th>第三部分 · opus</th></tr>
   <tr><td>目标</td><td>从无到有搭骨架</td><td>真机数据攻坚长尾</td></tr>
   <tr><td>步幅</td><td>小而多（单功能/单算子）</td><td>大而少（整条闭环 / 整类根因）</td></tr>
   <tr><td>上下文</td><td>短、聚焦单点</td><td>长、可持有整条管线</td></tr>
+  <tr><td>计划</td><td><b>人</b>切碎需求、找杠杆点</td><td><b>AI</b> 自己 triage→聚类→排序</td></tr>
   <tr><td>验证</td><td>加打印、人工看</td><td>verify-by-log + 自动回归 gate</td></tr>
+  <tr><td>纠错</td><td>人手改兜底（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>/<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>）</td><td>AI 自我纠错 + 回归当裁判</td></tr>
   <tr><td>工具用法</td><td>基本编辑 / 运行</td><td>并行 triage、后台任务、记忆、git 闸门</td></tr>
-  <tr><td>典型产物</td><td class="mono">step11 修向量×矩阵</td><td class="mono">step119 一 bug 修 5 case + 扩回归</td></tr>
+  <tr><td>典型产物</td><td class="mono"><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-11">#11 修向量×矩阵</a></td><td class="mono"><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">#42 一 bug 修 5 case + 扩回归</a></td></tr>
 </table>
-<div class="callout"><b>两周期互补</b>：前期的小步与可观测性铺垫（那些 <code>[STMT]/[BINARY OP]</code> 打印），正是后期能"沿数据流快速回溯根因"的前提。没有前期的轨迹输出，后期的 C2/C3 根因不可能被一眼看穿。</div>
+<div class="grid3">
+  <div class="c"><b>第二部分 优点</b><br>步幅小、易回退、每步可肉眼验证、成本低；为整个项目的<b>可观测性</b>（<code>[STMT]/[BINARY OP]</code> 打印）打了地基。</div>
+  <div class="c c3"><b>第二部分 缺点</b><br>找不到深层根因（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a>）、修复不彻底（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>）、会误删代码（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>）；重度依赖人工兜底、无回归网、推进慢。</div>
+  <div class="c c2"><b>第三部分 优缺点</b><br><b>优</b>：长上下文持有整条管线、根因导向、闭环交付（回归 gate+记忆+文档）、能自我纠错。<br><b>缺</b>：成本高；<b>对提示词约束敏感</b>——缺"不要做什么"会改错地方（见 <a href="#q1">§1</a> 反例）；仍可能误判需用户推动。</div>
+</div>
+<div class="callout"><b>两周期互补</b>：前期的小步与可观测性铺垫（那些 <code>[STMT]/[BINARY OP]</code> 打印），正是后期能"沿数据流快速回溯根因"的前提。<b>选型启示</b>：搭骨架/能力有限时，把需求切碎、靠人验证最稳；攻坚/上下文充足时，让 AI 持有全局、用回归+记忆闭环交付最高效。</div>
 
 <p style="color:#9aa4b2;margin-top:40px;font-size:13px">本手册随项目演进更新；Markdown 版见 <code>AI-Development-Handbook.md</code>。生成于 step123。</p>
 

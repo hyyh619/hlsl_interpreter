@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 90 — Compare pipeline statistics &amp; output-merger pixels against golden</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output</span></div>
+<div class="wrap">
+<h1>Step 90 — Compare pipeline statistics &amp; output-merger pixels against golden</h1>
+<h2>Goal</h2>
+<p>The capture zips gained two new golden artifacts. The task:</p>
+<ol>
+<li>Read golden pipeline statistics from <code>pipeline_statistics.csv</code>.</li>
+<li>Compare them against the statistics <code>render.py</code> produces after a run.</li>
+<li>On mismatch, print the offending counter. <code>VSInvocations</code> and <code>SamplesPassed</code> are the focus — mismatch on those is an <b>error</b>, every other counter is a <b>warning</b>.</li>
+<li>Read <code>diff_ps_output_rt0.csv</code> (the DX11 output-merger result — per-pixel color and depth) and compare it against the pixels <code>_execute_pipeline</code> produces. Print any value that doesn't match.</li>
+<li>Color/depth comparison needs a tolerance, configurable from the JSON config, defaulting to <code>0.01</code>.</li>
+<li>Write this summary.</li>
+</ol>
+<h2>Data formats discovered</h2>
+<p><b><code>pipeline_statistics.csv</code></b> — header <code>RawCounter,Description,Value,,</code> then one row<br>per counter:</p>
+<pre><code>InputVerticesRead,Vertices read by the input assembler,204,,
+VSInvocations,Vertex shader invocations,204,,
+IAPrimitives,Primitives read by the input assembler,68,,
+...
+SamplesPassed,Samples that passed the depth/stencil test,0,,</code></pre>
+<p>Note: in these 3Dmigoto captures the rasterizer/PS counters<br>(<code>RasterizerInvocations</code>, <code>RasterizedPrimitives</code>, <code>PSInvocations</code>) are dumped as<br><code>0</code> — they were not captured, not genuinely zero. <code>SamplesPassed</code> is the<br>meaningful depth/stencil survivor count.</p>
+<p><b><code>diff_ps_output_rt0.csv</code></b> — header <code>X,Y,B,G,R,A,Depth,Stencil</code>. **Channel order<br>is B,G,R,A** (not RGB), one row per output pixel:</p>
+<pre><code>312,228,0.196078,0.349020,0.498039,1.000000,0.996887,0</code></pre>
+<p>When a draw is fully occluded the file is just the header (e.g. event28).</p>
+<h2>Design decisions</h2>
+<ul>
+<li><b>Mapping golden counters → our <code>pipeline_stats</code></b> (<code>_PIPELINE_STAT_MAP</code> in <code>render.py</code>): | golden counter | our key | |---|---| | <code>InputVerticesRead</code>, <code>VSInvocations</code> | <code>vertices</code> (len of VS results) | | <code>IAPrimitives</code>, <code>RasterizerInvocations</code> | <code>primitives</code> | | <code>RasterizedPrimitives</code> | <code>not_culled</code> | | <code>PSInvocations</code> | <code>ps_pixels</code> | | <code>SamplesPassed</code> | <code>depth_passed</code> (rasterizer pixels − depth-failed) |</li>
+</ul>
+<p>  Stages we don't emulate (HS/DS/GS/CS) have no mapping and are silently skipped<br>  rather than producing noise.</p>
+<ul>
+<li><b>Error vs warning prefix, and the regression interaction.</b> The spec says print <i>"Error"</i> for <code>VSInvocations</code>/<code>SamplesPassed</code>. But <code>run_regression.py</code> gates a case as FAIL on any log line starting with <code>Error:</code> (the VS-vs-golden per-component channel). The interpreter currently over-produces pixels (no true depth occlusion / frustum culling), so <code>SamplesPassed</code> will not match golden yet — a literal <code>Error:</code> would flip all six regression cases to FAIL.</li>
+</ul>
+<p>  Resolved (confirmed with the user): use a <b>distinct, non-gating prefix</b> —<br>  <code>Error [PipelineStats]:</code> / <code>Error [PixelDiff]:</code> for errors and<br>  <code>Warning [PipelineStats]:</code> for warnings. These are clearly error-level and<br>  greppable, but because they don't start with the bare token <code>Error:</code> the<br>  regression runner stays gated only on the VS-vs-golden channel. The pipeline<br>  inaccuracies are still surfaced loudly in the log.</p>
+<ul>
+<li><b>One winner per (x, y).</b> Golden RT0 is post-output-merger: one value per pixel. The interpreter has no real depth occlusion, so multiple rendered pixels can land on the same (x, y). We collapse them keeping the <b>nearest</b> (smallest depth), which is what a standard <code>LESS</code> depth test would keep.</li>
+</ul>
+<ul>
+<li><b>Tolerance.</b> New config key <code>pixel_tolerance</code> (default <code>0.01</code>) applied to both the max per-channel color diff and the depth diff.</li>
+</ul>
+<ul>
+<li><b>Volume control.</b> Detailed <code>Error [PixelDiff]:</code> lines are capped at 50, then a <code>... (N more ... suppressed)</code> line, followed by a summary tallying matched / mismatched / missing / extra. (event104 has ~40 k golden pixels — we must not dump 40 k lines.)</li>
+</ul>
+<h2>Implementation</h2>
+<p>All in <code>render.py</code>:</p>
+<ul>
+<li><code>_fmt4()</code> — compact 4-decimal list formatter for logs.</li>
+<li><code>_load_golden_pipeline_statistics(path)</code> → <code>{counter: int}</code>.</li>
+<li><code>_compare_pipeline_statistics(golden, pipeline_stats, log)</code> — counter-by-counter, error on the two key counters, warning on the rest.</li>
+<li><code>_load_golden_ps_output(path)</code> → <code>{(x,y): {'color':[r,g,b,a], 'depth':f}}</code> (re-orders the B,G,R,A capture to RGBA).</li>
+<li><code>_compare_ps_output(golden, pixels, tolerance, log, max_report=50)</code> — collapses to one winner per pixel, compares color+depth within tolerance, caps detail lines, prints a summary.</li>
+</ul>
+<p><code>_execute_pipeline</code> reads <code>pixel_tolerance</code> from config and, after the existing<br>"Pipeline Statistics" block, loads each golden CSV (when present) and runs the two<br>comparisons against the final <code>pixels</code> list.</p>
+<h2>Results / verification</h2>
+<p><code>event371</code> (6 verts, golden <code>SamplesPassed=576</code>):</p>
+<pre><code>Pipeline Statistics vs Golden (pipeline_statistics.csv):
+  OK  InputVerticesRead: output=6 golden=6
+  OK  VSInvocations: output=6 golden=6
+  Warning [PipelineStats]: IAPrimitives mismatch: output=4 golden=2 ...
+  Warning [PipelineStats]: PSInvocations mismatch: output=1404 golden=0 ...
+  Error  [PipelineStats]: SamplesPassed mismatch: output=1404 golden=576 ...
+
+Output-Merger Pixels vs Golden (diff_ps_output_rt0.csv, tolerance=0.01):
+  Error [PixelDiff]: (312,228) color out=[0.0065, 0.0078, 0.0039, 1.0000]
+        golden=[0.4980, 0.3490, 0.1961, 1.0000] cdiff=[0.4915, 0.3413, 0.1922, 0.0000]
+        | depth out=0.996572 golden=0.996887 ddiff=0.000315
+  ... (495 more mismatch/missing line(s) suppressed)
+  Golden pixels: 545 | matched: 0 | mismatched: 545 | missing: 0 | extra: 131</code></pre>
+<p>The comparison itself is correct. It surfaces two real, pre-existing pipeline<br>gaps (not regressions from this change):</p>
+<ul>
+<li><b><code>SamplesPassed</code></b>: we keep every rasterized pixel (no depth occlusion / no near-far clipping), so 1404 vs golden 576.</li>
+<li><b>Color</b>: depth lines up to ~3e-4 (perspective-correct interpolation is right), but PS output color is far darker than golden — a VS/PS lighting or texture-sampling discrepancy worth a follow-up.</li>
+</ul>
+<p><code>event28</code> (fully occluded draw): golden <code>SamplesPassed=0</code> and an empty<br><code>diff_ps_output_rt0.csv</code>. The stats comparison reports the <code>SamplesPassed</code><br>mismatch; the pixel comparison is skipped (empty golden → nothing to compare).</p>
+<p><b>Regression suite: 6/6 PASS</b> — confirming the new error-level lines do not trip<br>the <code>Error:</code> gate.</p>
+<h2>Follow-ups (not in scope here)</h2>
+<ul>
+<li>Implement back-face culling / depth occlusion so <code>SamplesPassed</code> converges.</li>
+<li>Investigate the PS color darkness vs golden (lighting / sampler state).</li>
+</ul>
+</div></body></html>

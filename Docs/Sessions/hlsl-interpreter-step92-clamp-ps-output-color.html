@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 92 — Does the PS output color need clamping? (output-merger write clamp)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step92-clamp-ps-output-color</span></div>
+<div class="wrap">
+<h1>Step 92 — Does the PS output color need clamping? (output-merger write clamp)</h1>
+<h2>Prompt</h2>
+<blockquote>PS 执行完毕后的 Pixel color value 是否需要做 clamp？<br>把你思考、执行和结果都写入到一份 md 文件中，放到 Sessions 目录下。</blockquote>
+<h2>1. Question restated</h2>
+<p>After the pixel shader runs, <code>Pixel.ps_output_color</code> holds the raw <code>SV_TARGET</code> value<br>(<code>hlsl_interpreter.py</code> sets it directly, no clamp). Should it be clamped before it<br>becomes the final framebuffer color?</p>
+<h2>2. D3D11 semantics — it's render-target-format dependent</h2>
+<p>The output merger converts the shader's float output to the render-target format **on<br>write**. Clamping happens there, and depends on the format class:</p>
+<table>
+<tr><th>RT format class</th><th>Clamp on write</th></tr>
+<tr><td><b>UNORM</b> (e.g. R8G8B8A8_UNORM)</td><td>clamp to <b>[0, 1]</b></td></tr>
+<tr><td><b>SNORM</b></td><td>clamp to <b>[−1, 1]</b></td></tr>
+<tr><td><b>FLOAT</b> (R16/R32 float)</td><td><b>no clamp</b> (stores &gt;1, negatives, even inf/nan)</td></tr>
+</table>
+<p>For fixed-point targets D3D also clamps the shader output to that range <i>before</i> blending.<br>So "do we clamp?" has a precise answer: **yes for UNORM/SNORM targets, no for float<br>targets.**</p>
+<h2>3. What this capture set actually uses</h2>
+<p>Inspected <code>Collision-…_event371</code>:</p>
+<ul>
+<li><code>diff_ps_output_rt0.csv</code> golden values are quantized to k/255 (e.g. <code>0.498039 = 127/255</code>, <code>0.196078 = 50/255</code>) and all lie in <b>[0, 1]</b> → the render target is <b>R8G8B8A8_UNORM</b>.</li>
+<li><code>pipeline_state.csv</code> shows blending <b>enabled</b> (<code>Target[0]</code> Src=ONE, Dst=INV_SRC_ALPHA, ADD).</li>
+</ul>
+<p>So for these captures the correct OM-write behavior is <b>clamp to [0, 1]</b>.</p>
+<h2>4. Is it observable, or a no-op? — empirical check</h2>
+<p>Ran the regression set with a clamp pass instrumented to count clamped pixels:</p>
+<table>
+<tr><th>Case</th><th>PS shader (essence)</th><th>Pixels clamped to [0,1]</th></tr>
+<tr><td>event371</td><td><code>o0 = v1 * r0</code> (vertex color × diffuse) — both ∈ [0,1]</td><td><b>0</b></td></tr>
+<tr><td>event104</td><td><code>o0 = float4(4,4,4,4) * (lightmap × diffuse)</code></td><td><b>399,126</b></td></tr>
+</table>
+<p>event104 is the proof: the <b>×4 lightmap scale</b> drives the raw PS output well above 1.0<br>on ~400k pixels. A real GPU writing to the UNORM RT clamps every one of those to 1.0;<br>without the clamp the interpreter's stored colors are simply wrong (e.g. 1.8, 2.4 …).</p>
+<p><b>Conclusion: yes, the PS output color needs clamping.</b> It is not a cosmetic no-op — it<br>changes hundreds of thousands of pixels in event104. It is format-dependent, and for every<br>capture in this project (all UNORM) the correct clamp is <b>[0, 1]</b>.</p>
+<h2>5. Implementation</h2>
+<p>Modelled as the <b>output-merger write</b> step (after PS, after the depth test), <code>render.py</code>:</p>
+<ul>
+<li>New helper <code>_clamp_output_colors(pixels, mode, log)</code> — clamps each <code>ps_output_color</code>:<ul>
+<li><code>True</code>/<code>"unorm"</code> → [0, 1] (default), <code>"snorm"</code> → [−1, 1], <code>False</code>/<code>"float"</code>/<code>"none"</code> → no clamp.</li>
+<li>Logs how many pixels had an out-of-range channel.</li>
+</ul></li>
+<li>New config key <b><code>output_color_clamp</code></b> (default <code>True</code>), read in <code>_execute_pipeline</code>.</li>
+<li>Called once, right after the late-Z block, before the golden comparison and mesh view — so the clamped color is what gets compared and displayed.</li>
+</ul>
+<p>The clamp is intentionally placed at the OM-write stage (not inside <code>executePS</code>) so the raw<br>shader output stays available for any future blend stage, matching the D3D order<br>(shader → clamp/blend → write).</p>
+<h2>6. Verification</h2>
+<ul>
+<li><b>Regression suite — 6/6 PASS</b> (<code>python run_regression.py</code>); all golden rows matched. The VS-vs-golden gate is independent of PS color, and event371's in-range output is untouched.</li>
+<li>Logs confirm the stage runs: event371 <code>clamp [0.0,1.0]: 0 pixel(s)</code>, event104 <code>clamp [0.0,1.0]: 399126 pixel(s)</code>.</li>
+</ul>
+<h2>7. Caveat — clamp is necessary but not sufficient to match golden</h2>
+<p>The PS-vs-golden color diff noted in step 90 is <b>not</b> primarily a clamp problem — it is<br><b>alpha blending</b>, which the interpreter does not model. The golden RT0 is<br><code>src·1 + dst·(1−srcA)</code> composited over the pre-existing render target; we currently write<br>the (now-clamped) source color only. Clamping makes the <i>source</i> color correct for a UNORM<br>target; full output-merger correctness still needs a blend stage. That is a separate,<br>larger follow-up.</p>
+</div></body></html>

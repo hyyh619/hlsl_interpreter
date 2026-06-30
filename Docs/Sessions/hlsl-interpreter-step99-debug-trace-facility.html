@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 99 — Keep the event399 debug instrumentation as a config-gated trace</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step99-debug-trace-facility</span></div>
+<div class="wrap">
+<h1>Step 99 — Keep the event399 debug instrumentation as a config-gated trace</h1>
+<h2>Task</h2>
+<p>The temporary instrumentation that cracked the event399 color/LOD bug<br>(step 98) was useful but thrown away. Keep that "dump intermediate data to a<br>file" capability in the source, <b>controlled by a flag</b> so it can be switched<br>on for future debugging without re-adding ad-hoc prints.</p>
+<h2>Thinking</h2>
+<p>Step 98 used three throwaway probes (to stderr):</p>
+<ol>
+<li><b>PS per-pixel</b> — <code>v1</code> (color), <code>v2</code> (texcoord), output, for target pixels.</li>
+<li><b>Texture LOD</b> — <code>u, v, lod, ddx, ddy, result</code> per <code>Texture.Sample</code>.</li>
+<li><b>Quad derivatives</b> — the 2×2 lane UVs and the resulting gradients.</li>
+</ol>
+<p>Those three are exactly the things to inspect when a pixel color is wrong<br>(what the PS received/emitted, what the texture unit sampled, what gradient<br>drove the mip). So the design goal: one unified, always-present facility, OFF by<br>default, with negligible cost when off, writing to a file when on.</p>
+<h3>Design</h3>
+<ul>
+<li>A single process-wide <code>TRACE</code> singleton in a new <code>debug_trace.py</code>.</li>
+<li>Three independent channels (<code>ps_pixels</code>, <code>texture_lod</code>, <code>derivatives</code>) under a master <code>enabled</code> switch, configured from the run JSON <code>debug_trace</code> block.</li>
+<li><b>Pixel attribution / filtering.</b> Texture and derivative traces don't naturally know which screen pixel they belong to, so the PS loop sets <code>TRACE.set_pixel(x, y)</code> each iteration. An optional <code>target_pixels</code> list restricts output to specific <code>"x,y"</code> pixels (empty ⇒ all). This is what makes the trace usable — you focus on the handful of mismatching pixels.</li>
+<li><b>Phase tagging.</b> Quad-derivative LOD re-executes the PS for neighbor lanes (throwaway samples at lod 0). The interpreter sets <code>TRACE.set_phase('deriv')</code> around that re-entry so those lines are tagged <code>phase=deriv</code> and the real sample is <code>phase=main</code> — otherwise the trace is impossible to read.</li>
+<li><b>Zero-cost when off.</b> Every call site guards on a plain boolean attribute (<code>if TRACE.ps_pixels:</code> / <code>TRACE.texture_lod</code> / <code>TRACE.derivatives</code>) before building any strings.</li>
+</ul>
+<h2>Implementation</h2>
+<h3>New <code>debug_trace.py</code></h3>
+<p><code>_DebugTrace</code> with <code>configure(config, base_dir, default_stem)</code>, <code>close()</code>,<br><code>set_pixel</code>/<code>set_phase</code>, and the three channel methods <code>ps_pixel</code>,<br><code>texture_sample</code>, <code>deriv</code>. Compact float/vector formatting. Best-effort file<br>open (never breaks a run). Module-level <code>TRACE</code> singleton.</p>
+<h3>Wiring (all guarded, no-op when disabled)</h3>
+<ul>
+<li><code>render.py</code> <code>_execute_pipeline</code>: <code>TRACE.configure(...)</code> right after the log path is resolved (debug file lands next to the log / config dir), and <code>TRACE.close()</code> after the bitmaps are written, logging the trace path.</li>
+<li><code>hlsl_interpreter.py</code> <code>executePS_with_params</code>: <code>set_pixel</code> + <code>set_phase('main')</code> per pixel; <code>TRACE.ps_pixel(lane, input_data, ps_output_color)</code> after shading.</li>
+<li><code>hlsl_interpreter.py</code> <code>_get_lane_locals</code>: <code>set_phase('deriv')</code>/<code>'main'</code> around the neighbor-lane re-execution.</li>
+<li><code>hlsl_interpreter.py</code> <code>_compute_uv_derivatives</code>: <code>TRACE.deriv(...)</code> with the quad lane UVs.</li>
+<li><code>texture.py</code> <code>sample()</code>: <code>TRACE.texture_sample(u, v, lod, ddx, ddy, result)</code> at both return points.</li>
+</ul>
+<h2>Config</h2>
+<p>Add a <code>debug_trace</code> block to the run JSON (paths resolve next to the log file):</p>
+<pre><code>"debug_trace": {
+    "enabled": true,
+    "file": "pipeline_debug.log",
+    "ps_pixels": true,
+    "texture_lod": true,
+    "derivatives": true,
+    "target_pixels": ["366,354", "408,367"]
+}</code></pre>
+<p>Omit the block (or set <code>enabled: false</code>) to disable — the default.</p>
+<h2>Results</h2>
+<p>Ran event399 with the block above targeting two pixels. Sample trace lines:</p>
+<pre><code>DDX (366,354) tl=(0.44593,0.78456) tr=(0.44442,0.77588) bl=(0.45321,0.75478) ddx=[-0.00151,-0.00868] ddy=[0.00728,-0.02978]
+TEX (366,354) phase=main  uv=(0.44593,0.78456) lod=3.97236 ... result=[0.25457,0.25036,0.24875,1.00000]
+PS  (366,354) lane=0 v1=[0.36471,0.36471,0.36471,1.00000] v2=[0.44593,0.78456] ... out=[0.09284,0.09131,0.09072,1.00000]</code></pre>
+<ul>
+<li>Channels, <code>phase</code> tags, and <code>target_pixels</code> filtering all behave as designed.</li>
+<li>Confirms the kept instrumentation reproduces exactly what was used in step 98 (unclamped HDR <code>v1</code>, per-sample LOD, quad gradients).</li>
+</ul>
+<h3>Regression — 6/6 PASS, tracing off by default</h3>
+<pre><code>PASS event28 204/204   PASS event104 1149/1149  PASS event351 315/315
+PASS event371 6/6      PASS event399 696/696    PASS event516 3/3</code></pre>
+<p>No <code>*_debug.log</code> files are produced by the suite (no <code>debug_trace</code> block in the<br>regression config), confirming the facility is a true no-op when disabled.</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>debug_trace.py</code> — <b>new</b>: config-gated <code>TRACE</code> facility (PS-pixel / texture-LOD / derivative channels, per-pixel filtering, phase tagging, file output).</li>
+<li><code>render.py</code> — configure/close the trace around <code>_execute_pipeline</code>.</li>
+<li><code>hlsl_interpreter.py</code> — set pixel/phase context and emit PS-pixel + derivative traces.</li>
+<li><code>texture.py</code> — emit per-<code>Sample</code> LOD traces.</li>
+</ul>
+</div></body></html>

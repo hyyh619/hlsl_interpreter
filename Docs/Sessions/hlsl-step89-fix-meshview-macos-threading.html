@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 89: Fix MeshView Crash on macOS (tkinter Thread Safety)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-step89-fix-meshview-macos-threading</span></div>
+<div class="wrap">
+<h1>Step 89: Fix MeshView Crash on macOS (tkinter Thread Safety)</h1>
+<h2>Problem</h2>
+<p>启动 MeshView 后程序崩溃，错误信息：</p>
+<pre><code>MeshView enabledmacOS 26 (2603) or later required, have instead 16 (1603) !</code></pre>
+<h2>Root Cause Analysis</h2>
+<h3>根本原因：tkinter 在 macOS 上必须运行在主线程</h3>
+<p><code>MeshView._start_gui_thread()</code> 通过 <code>threading.Thread</code> 启动一个后台线程，在该线程中调用 <code>tk.Tk()</code>：</p>
+<pre><code>def _gui_thread_run(self):
+    self._root = tk.Tk()  # ← 在非主线程调用，macOS 不允许
+    ...
+    self._root.mainloop()</code></pre>
+<p>macOS 的 Cocoa/AppKit 框架（tkinter 的 Aqua 后端底层依赖）要求 <code>NSApplication</code>（即 Tk 的事件循环）必须运行在主线程上。在非主线程调用 <code>tk.Tk()</code> 会触发底层 Cocoa 版本检查失败，输出类似 <code>macOS 26 required, have 16</code> 的内部错误。</p>
+<p>错误信息中 "macOS 26 (2603)" 和 "16 (1603)" 是 Apple Tk 框架内部的 SDK 版本号，并非 macOS 系统版本号。</p>
+<h3>为何 Windows/Linux 没有问题</h3>
+<p>Windows（Win32 GDI）和 Linux（X11）的 Tk 后端不对线程有此强制要求。因此该问题是 macOS 特有的。</p>
+<h2>Solution</h2>
+<p><b>架构思路：主线程跑 GUI，后台线程跑 pipeline</b></p>
+<ol>
+<li><b><code>mesh_view.py</code></b>：新增模块级 <code>_main_thread_root</code> 变量和 <code>set_main_thread_root(root)</code> 函数。<code>MeshView._start_gui_thread()</code> 检查该变量：若已设置（macOS 模式），直接复用主线程的 root，通过 <code>root.after(0, self._setup_ui_macos)</code> 将 UI 初始化调度到主线程执行；否则沿用原有 threading 方式（Windows/Linux 不变）。</li>
+<li><b><code>render.py</code></b>：<code>main()</code> 中检测 <code>mesh_view_enabled and sys.platform == 'darwin'</code>，若满足：<ul>
+<li>在主线程创建 <code>tk.Tk()</code> 并隐藏（<code>withdraw()</code>）</li>
+<li>调用 <code>mv_module.set_main_thread_root(root)</code> 注册</li>
+<li>将 pipeline 放入 daemon 线程运行</li>
+<li>主线程调用 <code>root.mainloop()</code> 阻塞，直到用户关闭窗口或 pipeline 结束</li>
+</ul></li>
+<li><b><code>MeshView.close()</code></b>：在 macOS 模式（<code>self._root is _main_thread_root</code>）下只调用 <code>root.quit()</code> 退出 mainloop，不调用 <code>root.destroy()</code>（root 由 render.py 的 main() 拥有）。</li>
+<li><b><code>MeshView.show()</code></b>：将 <code>if self._root is None: wait()</code> 改为 <code>self._gui_ready_event.wait(timeout=10)</code>，确保在 macOS 模式下也等待 UI setup 通过 after() 完成后再 deiconify。</li>
+</ol>
+<h2>Code Changes</h2>
+<h3><code>mesh_view.py</code></h3>
+<ol>
+<li>新增 <code>import sys</code></li>
+<li>新增模块级变量 <code>_main_thread_root = None</code> 和函数 <code>set_main_thread_root(root)</code></li>
+<li><code>_start_gui_thread()</code> 改为：若 <code>_main_thread_root is not None</code> → 设 <code>self._root</code>，via <code>after(0)</code> 调度 <code>_setup_ui_macos()</code>；否则走原线程路径</li>
+<li>新增 <code>_setup_ui_macos()</code> 方法：调用 <code>_setup_ui()</code> 后设置 <code>_gui_ready_event</code></li>
+<li><code>show()</code> 改为 <code>self._gui_ready_event.wait(timeout=10)</code> 代替原来的 <code>if self._root is None: wait()</code></li>
+<li><code>close()</code> 中新增 macOS 分支：<code>if self._root is _main_thread_root: root.after(0, root.quit)</code>，不再 destroy</li>
+</ol>
+<h3><code>render.py</code></h3>
+<ol>
+<li>新增 <code>import threading</code></li>
+<li><code>main()</code> 新增 macOS 分支：创建 root → 注册 → 起 daemon 线程运行 pipeline → <code>root.mainloop()</code></li>
+</ol>
+<h2>Data Flow (macOS Mode)</h2>
+<pre><code>main thread                     pipeline thread
+-----------                     ---------------
+tk.Tk() → withdraw()
+set_main_thread_root(root)
+Thread(target=_run_pipeline).start()
+                                _run_zip_workflow(...)
+                                  MeshView.__init__()
+                                    _start_gui_thread()
+                                      self._root = _main_thread_root
+                                      root.after(0, _setup_ui_macos)
+                                  ...shader execution...
+                                  show() → _gui_ready_event.wait()
+root.mainloop()
+  ← processes after() queue
+  ← _setup_ui_macos() runs
+  ← _gui_ready_event.set()
+                                  show() unblocks → deiconify()
+  ← user interacts with GUI
+                                  user types 'x'
+                                  close() → root.after(0, root.quit)
+root.quit() → mainloop() exits
+main() returns → program exits</code></pre>
+<h2>Regression</h2>
+<p>运行 <code>python run_regression.py</code> 回归测试，所有 case 均 PASS（mesh_view_enabled=False，走非 macOS 分支，代码路径不变）。</p>
+</div></body></html>

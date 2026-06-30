@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 115 — Decide bitmap dumps from pipeline_state.csv RenderTarget / DepthStencil</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step115-dump-bitmaps-by-rendertarget-depthstencil-binding</span></div>
+<div class="wrap">
+<h1>Step 115 — Decide bitmap dumps from pipeline_state.csv RenderTarget / DepthStencil</h1>
+<h2>Task</h2>
+<p>Use the RenderTarget / DepthStencil bindings in <code>pipeline_state.csv</code> to decide<br>whether the pipeline should dump the pixel-color bitmap and/or the depth-buffer<br>bitmap.</p>
+<h2>1. Investigation</h2>
+<p><code>pipeline_state.csv</code> records the output-merger bindings:</p>
+<table>
+<tr><th>Case</th><th><code>RenderTarget,Target[0]_Format</code></th><th><code>DepthStencil,Format</code></th><th>Meaning</th></tr>
+<tr><td>Collision event28/104/…</td><td><code>R8G8B8A8_UNORM</code></td><td><code>D24_UNORM_S8_UINT</code></td><td>color + depth</td></tr>
+<tr><td>witcher3 event895/1433/…</td><td><i>(absent)</i></td><td><code>D16_UNORM</code></td><td>depth only (Z/shadow-style pass)</td></tr>
+</table>
+<p>So a depth-only pass (no render target bound) should <b>not</b> write a color<br>bitmap, while a normal pass writes both. The old logic dumped the color bitmap<br>whenever the pipeline produced any fragments, regardless of whether a render<br>target was bound — so depth-only passes (most witcher3 cases) wrongly produced a<br><code>*_output.bmp</code>.</p>
+<p>The rasterizer already parsed <code>render_target_format</code> from the <code>RenderTarget</code><br>section (used for the output-merger write clamp). Nothing tracked the<br>depth-stencil binding.</p>
+<h2>2. Implementation</h2>
+<p><code>rasterizer.py</code>:</p>
+<ul>
+<li>Added <code>RasterizerConfig.depth_stencil_format</code>.</li>
+<li><code>load_config_from_pipeline_state_csv</code>: parse the <code>DepthStencil,Format</code> row; also treat a <code>Target[0]_Format</code> / <code>Format</code> value of <code>UNKNOWN</code> as <i>unbound</i> (so both fields are <code>None</code> unless a real format is present).</li>
+</ul>
+<p><code>render.py</code> (output-merger dump block):</p>
+<ul>
+<li><code>has_render_target = render_target_format is not None</code></li>
+<li><code>has_depth_stencil = depth_stencil_format is not None</code></li>
+<li>Dump the <b>color</b> bitmap only when <code>has_render_target</code> (and the PS ran); otherwise log <code>Output color bitmap skipped: no render target bound</code>.</li>
+<li>Dump the <b>depth</b> bitmap only when <code>has_depth_stencil</code>; otherwise log the analogous skip line.</li>
+<li>Both still require surviving fragments; when there are none, the existing "pipeline produced no pixels" message is kept.</li>
+</ul>
+<h2>3. Verification</h2>
+<pre><code>event1433 (DepthStencil only, no RenderTarget):
+  Output color bitmap skipped: no render target bound (...RenderTarget absent).
+  Saved depth bitmap: ..._depth.bmp (4609 pixels)        ✓ depth only
+
+event104 / 351 / 399 / 516 (RenderTarget + DepthStencil):
+  Saved output-merger bitmap: ..._output.bmp             ✓ color
+  Saved depth bitmap:        ..._depth.bmp               ✓ depth
+
+event28 (RenderTarget + DepthStencil, but all fragments depth-fail):
+  Output/depth bitmaps skipped: pipeline produced no pixels.   ✓</code></pre>
+<p>Regression suite: <b>15/15 passed</b> — bitmap-dump gating does not affect the VS<br>comparison or the pixel/depth comparison, so no case regresses.</p>
+<h2>4. Commit</h2>
+<p>Committed <code>rasterizer.py</code> + <code>render.py</code> + this session doc.</p>
+</div></body></html>
