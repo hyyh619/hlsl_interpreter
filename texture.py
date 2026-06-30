@@ -331,6 +331,12 @@ class Sampler:
         return coord
 
     def transform_coordinates(self, u: float, v: float, w: float) -> Tuple[float, float, float]:
+        # A NaN/inf UV (e.g. a divide-by-zero upstream feeding a sample, as in
+        # witcher event16834) would make the address functions throw —
+        # math.floor(inf)/int(inf) raise OverflowError. Clamp non-finite coords
+        # to 0 so the sample degrades to a defined texel instead of crashing the
+        # whole pipeline; the bad value still surfaces as a golden mismatch.
+        u, v, w = (c if math.isfinite(c) else 0.0 for c in (u, v, w))
         address_u_func = self._address_mode_to_func(self.AddressU)
         address_v_func = self._address_mode_to_func(self.AddressV)
         address_w_func = self._address_mode_to_func(self.AddressW)
