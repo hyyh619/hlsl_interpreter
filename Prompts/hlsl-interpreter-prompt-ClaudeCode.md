@@ -2746,17 +2746,46 @@ event576/2651/2682 是地形退化。均与 golden 列无关。
 本步无新用例因「列重映射」翻盘——该功能本就正确，step 156「待修」系误读 loader。D 类下一个真正可推进点是
 event2135/2912 的四元数/骨骼基分量置换（解码顺序 bug，非列重映射）。
 
-# 159
+# 159 重新运行Dump文件夹所有的case
 ## Prompts
+1. 重新运行Dump文件夹所有的case
+2. 如果测试通过的case就删除
+3. 如果测试未通过的case，请调查失败原因并分类
+4. 每个失败分类请详细列出所有相关case
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+fix: guard texture sampling against non-finite UV; re-triage Dump 85 cases (step 159).
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step159-retriage-dump-classify.md`。
+
+`python triage_dump.py --vs-only`，Dump 现存 **85 个 zip**（step 158 把通过的 event3502 移入 Cases/ 回归后
+86→85）。首轮发现并修复一个 **CRASH**：witcher event16834 因上游除零产生 inf UV，流入
+`texture.py::_wrap_address` 的 `math.floor(inf)` 抛 OverflowError；在 `transform_coordinates` 入口把非有限
+UV 钳为 0（采样退化为确定 texel，坏值仍以 mismatch 暴露）。修后 event16834 跑完（0/30）。**回归 126/126，零回归。**
+
+**结果：0/85 通过 → 本步无可删除用例**（唯一翻盘的 event3502 已于 step 158 移出 Dump）。最终桶：MISMATCH 67 /
+NO_GOLDEN 16 / TIMEOUT 2 / CRASH 0。
+
+**7 类分类（共 85，每类完整 case 清单见 session md）**：
+| 类 | 数 | 性质 |
+|----|----|------|
+| A 超时 | 2 | OldWorld 1034/2767，20 万顶点，正确但慢 |
+| B 无 golden | 16 | 无可比网格/0 顶点（ES2、Nobu2894、manhattan×5、sekiro2×4、sekiro4×2、witcher×3）|
+| C TombRaider 主序选择子 | 37 | 反编译丢 WorldParameters[] 矩阵选择子，全 0/Y，超 HLSL 源边界 |
+| D Octopath 解码 | 8 | event3012 升至 30/51；event2135/2912 四元数/骨骼基分量置换；664 蒙皮；3601 foliage 精度；576/2651/2682 地形退化 |
+| E witcher 主序+纹理 | 10 | step157 已采到真实 texel 但 o2/o3 受 R16G16 texel 精确性+矩阵主序双限；含本步修崩溃的 16834 |
+| F1 精度 | 2 | sekiro2 3207/9493，43329/45576，diff 略超 0.005 |
+| F2 其它 | 10 | Nobu586(主序)、OldWorld3338(23550/23814)、ES2×2、sekiro2×4、sekiro4×2 |
+
+**结论**：85 个失败按可修性——A 性能、B/C 结构性不可修（需 DXBC 反汇编重建）、D 部分可修（四元数置换最具体）、
+E 主序+texel 精确性、F1 容差、F2 混合。本步净产出：修复 event16834 崩溃（崩溃→可分类 mismatch）+ 完整 7 类
+85-case 清单。
 
 # 160
 ## Prompts
