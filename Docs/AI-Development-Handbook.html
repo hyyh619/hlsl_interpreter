@@ -85,15 +85,6 @@
 
 <div class="wrap">
 
-<div class="card">
-  <b>贯穿全篇的三个真实案例（step119–120）</b>
-  <div class="grid3">
-    <div class="c"><b>C1 多数组 cbuffer</b><br><span class="mono">texgen[2]</span> 读成 0 → 二进制重载只填首个数组字段的 bug。一修复同时绿了 5 个 case。</div>
-    <div class="c c2"><b>C2 反规格化数 FTZ</b><br>大气散射输出 o0/o1 错 → 常量是整数位型的反规格化数，GPU 按 flush-to-zero 取 0。</div>
-    <div class="c c3"><b>C3 (int) 强转</b><br><span class="mono">(int2)v1.zw</span> 被位重解释成天文数字 → 越界读纹理 → 0/0 = NaN 位置。</div>
-  </div>
-</div>
-
 <nav class="toc">
   <span class="grp">第一部分 · 项目总体介绍</span>
   <a href="#q0">0 · 项目概述</a>
@@ -210,7 +201,28 @@
 </div>
 <p>左两张几乎完全一致——同一柄战锤、同样的金属贴图与高光走向，这正是"correct"的判据：解释器算出的颜色/位置/采样要和 GPU 真机一致（本帧 2548 个 golden 像素里约 2333 个落在容差内，余下是高光/光照边缘的细微差）。右图是同一帧写入的深度缓冲。<b>画面越丰富，要对齐的环节越多</b>：变换矩阵差一列、法线没归一化、贴图 UV 取错、光照衰减算偏，物体就会变形、错色或丢失高光。</p>
 
-<h3>0.2 Vertex Shader：把整套光照模型搬进解释器</h3>
+<h3>0.2 输入顶点数据：数量、格式与样例</h3>
+<p>喂进管线的是一次 <b><code>DrawIndexed</code></b>（图元拓扑 <code>TriangleList</code>）：共 <b>696 个索引 → 232 个三角形</b>，背后是 <b>228 个不重复顶点</b>（索引缓冲为 16-bit）。每个顶点 <b>36 字节</b>、含 4 个属性（来自 <code>ia_input_layouts.csv</code>）：</p>
+<table>
+<thead><tr><th>语义</th><th>格式</th><th>分量</th><th>字节偏移</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>POSITION</code></td><td><code>R32G32B32_FLOAT</code></td><td>3×float</td><td>0</td><td>模型空间位置</td></tr>
+<tr><td><code>NORMAL</code></td><td><code>R32G32B32_FLOAT</code></td><td>3×float</td><td>12</td><td>法线</td></tr>
+<tr><td><code>COLOR</code></td><td><code>R8G8B8A8_UNORM</code></td><td>4×u8→[0,1]</td><td>24</td><td>顶点色（4 字节归一化）</td></tr>
+<tr><td><code>TEXCOORD</code></td><td><code>R32G32_FLOAT</code></td><td>2×float</td><td>28</td><td>UV</td></tr>
+</tbody>
+</table>
+<p>stride = 12 + 12 + 4 + 8 = <b>36 字节</b>；<code>COLOR</code> 以 <code>R8G8B8A8_UNORM</code> 存（4 字节），dump 时已归一化成浮点。</p>
+<p>样例（<code>ia_vertex_data.csv</code> 前几行，已对齐排版）：</p>
+<pre><code>VTX IDX  POSITION(x, y, z)            NORMAL(x, y, z)            COLOR(r,g,b,a)     TEXCOORD(u, v)
+ 0   0   20.0289  21.6879 -23.3845    0.0224  0.0452  0.9987     0.8 0.8 0.8 1.0   0.2256 0.9067
+ 1   1   18.8732  23.9455 -27.7856   -0.5958  0.4614  0.6574     0.8 0.8 0.8 1.0   0.2571 0.7704
+ 2   2   18.8230  23.0896 -31.3426   -0.9792 -0.1951  0.0560     0.8 0.8 0.8 1.0   0.1968 0.6829
+ 3   3   19.9886  19.6074 -29.7759    0.0888 -0.9842  0.1530     0.8 0.8 0.8 1.0   0.1002 0.7539
+ …  (共 696 行 = 按索引展开的绘制顺序；IDX 为原始顶点号，有重复，去重后 228 个)</code></pre>
+<p>注意这柄战锤所有顶点的 <code>COLOR</code> 都是统一的灰色 <code>0.8,0.8,0.8,1.0</code>——它是金属底色，最终颜色靠 PS 把它和漫反射贴图相乘得到（见 0.4）。这份逐顶点数据，正是 0.3 的 VS 要逐条变换、打光的输入。</p>
+
+<h3>0.3 Vertex Shader：把整套光照模型搬进解释器</h3>
 <p>这是该 case 的 <code>VS_shader.hlsl</code>（3Dmigoto 反汇编风格）。与一个只做坐标变换的简单 VS 不同，它在顶点级算完了<b>环境光 + 漫反射 + 镜面高光 + 距离衰减 + 聚光锥</b>，还带 <code>ColorMaterialMode</code> 分支选色：</p>
 <pre><code>cbuffer MatrixBuffer  : register(b0) { float4x4 WorldViewProj; float4x4 World; }
 cbuffer LightBuffer   : register(b1) { float4 Ambient,Diffuse,Specular; float3 LightPos;
@@ -254,7 +266,7 @@ void main(float3 v0:POSITION0, float3 v1:NORMAL0, float4 v2:COLOR0, float2 v3:TE
 }</code></pre>
 <p>仅这一段，解释器就必须正确支持：<b>4 个带 <code>packoffset</code> 的 cbuffer</b>（<code>b0</code>–<code>b3</code>，含 <code>uint</code>/标量混排）、<b>矩阵按列 swizzle</b>（<code>_m01_m11_m21_m31</code>）与<b>任意 swizzle/写掩码</b>、<b>MAD 累加链顺序</b>、<code>dot</code>/<code>rsqrt</code>/<code>log2</code>/<code>exp2</code>/<code>max</code> 等 intrinsic、<b><code>cmp(...)</code> 向量比较 + <code>?:</code> 三元选择</b>、<b><code>int4</code> 比较与位运算</b>、<b>一元负号（<code>-r1.xyz</code>、<code>-r2.xxx</code>）不能误判成减法</b>（CLAUDE.md 陷阱#2），以及<b>多个带语义的 <code>out</code> 参数到寄存器槽位的映射</b>。这套语义，正是本期 §1–§5 里被用户一步步切碎、逐个驱动 AI 实现的（如 §3 的 <code>transpose</code>/<code>float3x3</code> cast）。</p>
 
-<h3>0.3 Pixel Shader：贴图采样 × 顶点色</h3>
+<h3>0.4 Pixel Shader：贴图采样 × 顶点色</h3>
 <p>配套的 <code>PS_shader.hlsl</code> 短，但引入了<b>纹理采样</b>这一新维度——它把 VS 算好的逐顶点光照色，与漫反射贴图的采样结果相乘：</p>
 <pre><code>SamplerState     LinearSampler_s : register(s0);
 Texture2D&lt;float4&gt; DiffuseTexture : register(t0);
