@@ -72,6 +72,7 @@ class TextureBinding:
     variable_name: str   # 变量名，如 DiffuseTexture
     register_id: int     # register(t0) 中的 t0，即纹理单元ID
     texture: Optional['Texture'] = None  # 实际的Texture对象
+    kind: str = 'Texture2D'  # 资源维度: Texture2D / Texture2DArray / TextureCube / ...
 
 
 @dataclass
@@ -423,7 +424,11 @@ class HLSLInterpreter:
             'cbuffer_finditer': re.compile(r'cbuffer\s+\w+[^}]+\}'),
 
             # parse_texture_binding: 纹理绑定，如 "Texture2D DiffuseTexture : register(t0);"
-            'texture_binding': re.compile(r'Texture2D(?:<[^>]+>)?\s+(\w+)\s*:\s*register\(t(\d+)\)\s*;?'),
+            # group(1)=维度种类(Texture2D/Texture2DArray/TextureCube/...), group(2)=变量名,
+            # group(3)=寄存器号。早先只匹配 Texture2D，漏掉了 Texture2DArray/Cube（如 witcher
+            # 的 t4 = Texture2DArray<float4>），导致 SampleLevel 找不到绑定而静默返回 0。
+            'texture_binding': re.compile(
+                r'(Texture(?:1D|2D|3D|Cube)(?:Array)?(?:MS)?)(?:<[^>]+>)?\s+(\w+)\s*:\s*register\(t(\d+)\)\s*;?'),
 
             # parse_sampler_binding: 采样器绑定，如 "SamplerState LinearSampler : register(s0);"
             'sampler_binding': re.compile(r'SamplerState\s+(\w+)(?:_s)?\s*:\s*register\(s(\d+)\)\s*;?'),
@@ -2037,15 +2042,18 @@ class HLSLInterpreter:
                 coords = self.evaluate_syntax_tree(coords_node, local_vars) if coords_node else None
                 if coords and isinstance(coords, list) and len(coords) >= 2:
                     u, v = coords[0], coords[1]
-                    w = coords[2] if len(coords) > 2 else 0.0
                     binding = self._find_texture_binding(texture_name)
+                    # For an array resource the 3rd coord is the slice index, not
+                    # an explicit LOD, so don't feed it in as w.
+                    array_slice = self._array_slice_for(binding, coords)
+                    w = 0.0 if array_slice else (coords[2] if len(coords) > 2 else 0.0)
                     if binding and self._texture_exec and self._texture_desc_list:
                         reg_id = binding.register_id
                         if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                             texture_desc = self._texture_desc_list[reg_id]
                             sampler = self._resolve_sampler(sampler_name, reg_id)
                             ddx_uv, ddy_uv = self._compute_uv_derivatives(coords_node, local_vars)
-                            result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=texture_name)
+                            result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=texture_name, array_slice=array_slice)
                             self.debug_print(f"[FUNC] {texture_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                             return result
             return None
@@ -2076,15 +2084,16 @@ class HLSLInterpreter:
             coords = self.evaluate_syntax_tree(args[1], local_vars)
             if coords and isinstance(coords, list) and len(coords) >= 2:
                 u, v = coords[0], coords[1]
-                w = coords[2] if len(coords) > 2 else 0.0
                 binding = self._find_texture_binding(obj_name)
+                array_slice = self._array_slice_for(binding, coords)
+                w = 0.0 if array_slice else (coords[2] if len(coords) > 2 else 0.0)
                 if binding and self._texture_exec and self._texture_desc_list:
                     reg_id = binding.register_id
                     if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                         texture_desc = self._texture_desc_list[reg_id]
                         sampler = self._resolve_sampler(sampler_name, reg_id)
                         ddx_uv, ddy_uv = self._compute_uv_derivatives(args[1], local_vars)
-                        result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=obj_name)
+                        result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=obj_name, array_slice=array_slice)
                         self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                         return result
             return None
@@ -2119,9 +2128,10 @@ class HLSLInterpreter:
                     if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                         texture_desc = self._texture_desc_list[reg_id]
                         sampler = self._resolve_sampler(sampler_name, reg_id)
+                        array_slice = self._array_slice_for(binding, coords)
                         result = self._texture_exec.sample(
                             u, v, float(lod or 0.0), texture_desc, sampler,
-                            None, None, name=obj_name)
+                            None, None, name=obj_name, array_slice=array_slice)
                         self.debug_print(
                             f"[METHOD] {obj_name}.SampleLevel({sampler_name}, "
                             f"({u:.4f}, {v:.4f}), {lod}) = {self._format_float(result)}")
@@ -3291,9 +3301,11 @@ class HLSLInterpreter:
             return
 
         for match in self.patterns['texture_binding'].finditer(code):
-            var_name = match.group(1)
-            reg_id = int(match.group(2))
-            binding = TextureBinding(variable_name=var_name, register_id=reg_id)
+            kind = match.group(1)
+            var_name = match.group(2)
+            reg_id = int(match.group(3))
+            binding = TextureBinding(variable_name=var_name, register_id=reg_id,
+                                     kind=kind)
             self.texture_bindings.append(binding)
 
         for match in self.patterns['sampler_binding'].finditer(code):
@@ -3888,6 +3900,30 @@ class HLSLInterpreter:
         返回: 输出颜色列表
         """
         return [p.ps_output_color if p.ps_output_color else p.color for p in pixels]
+
+    @staticmethod
+    def _array_slice_for(binding, coords) -> int:
+        """The array-slice index a Sample/SampleLevel addresses, from the coord
+        that follows the spatial ones: Texture1DArray -> coords[1],
+        Texture2DArray -> coords[2], TextureCubeArray -> coords[3]. Non-array
+        kinds (and a missing/short coord list) -> slice 0, so ordinary textures
+        are unaffected. Witcher3's t4 (Texture2DArray) selects its detail-normal
+        slice via coords.z this way."""
+        kind = getattr(binding, 'kind', 'Texture2D') if binding else 'Texture2D'
+        if 'Array' not in kind:
+            return 0
+        if kind.startswith('Texture1D'):
+            i = 1
+        elif kind.startswith('TextureCube'):
+            i = 3
+        else:                       # Texture2DArray (incl. MS)
+            i = 2
+        if isinstance(coords, list) and len(coords) > i:
+            try:
+                return max(0, int(round(float(coords[i]))))
+            except (TypeError, ValueError):
+                return 0
+        return 0
 
     def _find_texture_binding(self, texture_name: str) -> Optional[TextureBinding]:
         """

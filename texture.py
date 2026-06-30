@@ -353,7 +353,8 @@ class TextureDesc:
         MiscFlags: int = 0,
         DataPath: str = "",
         MipDataPaths: Optional[List[str]] = None,
-        FormatStr: str = ""
+        FormatStr: str = "",
+        ArrayMipDataPaths: Optional[List[List[str]]] = None
     ):
         # Raw DXGI format name (e.g. 'R8G8B8A8_UNORM', 'R32G32B32A32_FLOAT')
         # used to decode raw .img texel data. Empty → rely on BMP / default.
@@ -381,6 +382,14 @@ class TextureDesc:
             self.MipDataPaths = [DataPath]
         else:
             self.MipDataPaths = []
+        # Per-array-slice mip chains for a Texture2DArray / TextureCube[Array]:
+        # ArrayMipDataPaths[slice] = [mip0_path, mip1_path, ...]. Slice 0 is the
+        # same chain as MipDataPaths, so a non-array texture leaves this as a
+        # single-slice list and the existing slice-0 path is unchanged.
+        if ArrayMipDataPaths:
+            self.ArrayMipDataPaths = [list(s) for s in ArrayMipDataPaths]
+        else:
+            self.ArrayMipDataPaths = [self.MipDataPaths] if self.MipDataPaths else []
 
     @classmethod
     def from_config(cls, config_path: str, texture_id: int) -> 'TextureDesc':
@@ -407,9 +416,15 @@ class Texture:
     def __init__(self):
         self._mip_levels_cache: Dict[Tuple[str, ...], List[List[List[List[float]]]]] = {}
 
-    def _get_mip_levels(self, texture_desc: TextureDesc) -> List[List[List[List[float]]]]:
-        mip_paths = texture_desc.MipDataPaths or (
-            [texture_desc.DataPath] if texture_desc.DataPath else [])
+    def _get_mip_levels(self, texture_desc: TextureDesc,
+                        array_slice: int = 0) -> List[List[List[List[float]]]]:
+        arr = getattr(texture_desc, 'ArrayMipDataPaths', None)
+        if arr:
+            idx = array_slice if 0 <= array_slice < len(arr) else 0
+            mip_paths = arr[idx]
+        else:
+            mip_paths = texture_desc.MipDataPaths or (
+                [texture_desc.DataPath] if texture_desc.DataPath else [])
         cache_key = tuple(mip_paths)
         if cache_key in self._mip_levels_cache:
             return self._mip_levels_cache[cache_key]
@@ -753,12 +768,12 @@ class Texture:
 
     def sample(self, u: float, v: float, w: float, texture_desc: TextureDesc, sampler: Sampler,
                 ddx_uv: Optional[List[float]] = None, ddy_uv: Optional[List[float]] = None,
-                name: str = '') -> List[float]:
+                name: str = '', array_slice: int = 0) -> List[float]:
         tu, tv, tw = sampler.transform_coordinates(u, v, w)
 
         min_filter, mag_filter, mip_filter = sampler._get_filter_mode()
 
-        mip_levels = self._get_mip_levels(texture_desc)
+        mip_levels = self._get_mip_levels(texture_desc, array_slice)
         level_count = len(mip_levels)
 
         # LOD selection. When screen-space UV derivatives are supplied (the PS

@@ -691,6 +691,36 @@ def _collect_mip_paths(data_folder, stage, slot, resource_id, first_mip, num_mip
     return paths
 
 
+def _collect_array_mip_paths(data_folder, stage, slot, resource_id, first_mip,
+                             num_mips, array_size):
+    """Per-array-slice mip-path lists for a Texture2DArray / TextureCube[Array]
+    view: result[slice] = [mip0, mip1, ...] for that slice. Slices are scanned
+    arr0, arr1, ... until one with no dumped mip0 (capped at `array_size` when
+    known). A plain (non-array) texture yields a single-slice list identical to
+    _collect_mip_paths. The earlier loaders hard-skipped arr!=0, so every array
+    slice but 0 was invisible and an array sample fell back to slice 0."""
+    slices = []
+    s = 0
+    cap = array_size if array_size and array_size > 0 else 4096
+    while s < cap:
+        paths = []
+        for m in range(first_mip, first_mip + max(1, num_mips)):
+            stem = f"{stage}_slot_{slot}_res_{resource_id}_mip{m}_arr{s}"
+            img = os.path.join(data_folder, stem + '.img')
+            bmp = os.path.join(data_folder, stem + '.bmp')
+            if os.path.exists(img):
+                paths.append(img)
+            elif os.path.exists(bmp):
+                paths.append(bmp)
+            else:
+                break
+        if not paths:
+            break
+        slices.append(paths)
+        s += 1
+    return slices
+
+
 def _discover_stage_textures_from_bmp(data_folder, stage, log=None):
     """Fallback texture discovery: scan dumped texture files directly when
     texture_params.csv is absent. Prefers .img (raw DXGI data) over .bmp
@@ -702,8 +732,8 @@ def _discover_stage_textures_from_bmp(data_folder, stage, log=None):
         return None, [], []
 
     pattern = _texture_file_re(stage)
-    slot_mips = {}   # slot -> {mip: path}
-    slot_res = {}    # slot -> resource id
+    slot_arr_mips = {}   # slot -> {arr: {mip: path}}
+    slot_res = {}        # slot -> resource id
     for name in os.listdir(data_folder):
         m = pattern.match(name)
         if not m:
@@ -711,29 +741,33 @@ def _discover_stage_textures_from_bmp(data_folder, stage, log=None):
         slot, resid, mip, arr = (int(m.group(1)), int(m.group(2)),
                                  int(m.group(3)), int(m.group(4)))
         ext = m.group(5).lower()
-        if arr != 0:
-            continue
         path = os.path.join(data_folder, name)
         # Prefer .img over .bmp — only replace an existing entry when .img wins.
-        existing = slot_mips.get(slot, {}).get(mip)
+        existing = slot_arr_mips.get(slot, {}).get(arr, {}).get(mip)
         if existing is None or ext == 'img':
-            slot_mips.setdefault(slot, {})[mip] = path
+            slot_arr_mips.setdefault(slot, {}).setdefault(arr, {})[mip] = path
         slot_res[slot] = resid
 
-    if not slot_mips:
+    if not slot_arr_mips:
         return None, [], []
 
-    max_slot = max(slot_mips)
+    max_slot = max(slot_arr_mips)
     texture_desc_list = [None] * (max_slot + 1)
     sampler_list = [None] * (max_slot + 1)
-    for slot, mips in sorted(slot_mips.items()):
-        mip_paths = [mips[m] for m in sorted(mips)]
+    for slot, arr_mips in sorted(slot_arr_mips.items()):
+        # Per-slice mip chains, ordered by array index then mip level.
+        array_slices = [[arr_mips[a][mp] for mp in sorted(arr_mips[a])]
+                        for a in sorted(arr_mips)]
+        mip_paths = array_slices[0]
         texture_desc_list[slot] = TextureDesc(
-            MipLevels=len(mip_paths), DataPath=mip_paths[0], MipDataPaths=mip_paths)
+            MipLevels=len(mip_paths), ArraySize=len(array_slices),
+            DataPath=mip_paths[0], MipDataPaths=mip_paths,
+            ArrayMipDataPaths=array_slices)
         sampler_list[slot] = Sampler()  # default linear/wrap sampler
         if log:
             log(f"  {stage} texture t{slot}: res {slot_res[slot]}, "
-                f"{len(mip_paths)} mip level(s) ({os.path.basename(mip_paths[0])})")
+                f"{len(mip_paths)} mip level(s), {len(array_slices)} "
+                f"array slice(s) ({os.path.basename(mip_paths[0])})")
 
     return Texture(), texture_desc_list, sampler_list
 
@@ -778,7 +812,11 @@ def _load_stage_textures(data_folder, stage, log=None):
         mips_num = _as_int(row.get('MipsNum'), 1)
         first_mip = _as_int(row.get('ViewFirstMip'), 0)
         view_mips = _as_int(row.get('ViewNumMips'), mips_num) or mips_num
-        mip_paths = _collect_mip_paths(
+        array_size = _as_int(row.get('ArraySize'), 1) or 1
+        array_slices = _collect_array_mip_paths(
+            data_folder, stage, slot, resource_id, first_mip, view_mips,
+            array_size)
+        mip_paths = array_slices[0] if array_slices else _collect_mip_paths(
             data_folder, stage, slot, resource_id, first_mip, view_mips)
         if not mip_paths:
             # SRV bound but no BMP dumped (e.g. injected 3Dmigoto resource) —
@@ -788,14 +826,16 @@ def _load_stage_textures(data_folder, stage, log=None):
             Width=_as_int(row.get('Width'), 512) or 512,
             Height=_as_int(row.get('Height'), 512) or 512,
             MipLevels=len(mip_paths),
-            ArraySize=_as_int(row.get('ArraySize'), 1) or 1,
+            ArraySize=array_size,
             DataPath=mip_paths[0],
             MipDataPaths=mip_paths,
             FormatStr=(row.get('Format') or '').strip(),
+            ArrayMipDataPaths=array_slices or None,
         )
         if log:
             log(f"  {stage} texture t{slot}: res {resource_id}, "
-                f"{len(mip_paths)} mip level(s) ({os.path.basename(mip_paths[0])})")
+                f"{len(mip_paths)} mip level(s), {len(array_slices) or 1} "
+                f"array slice(s) ({os.path.basename(mip_paths[0])})")
 
     # No texture_params.csv usable — fall back to scanning dumped BMPs.
     if not texture_by_slot:
