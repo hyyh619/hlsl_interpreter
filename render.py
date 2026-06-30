@@ -1008,6 +1008,18 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         cb_def = vs_interp.parse_cbuffer(cb_block)
         if cb_def:
             vs_interp.cbuffers[cb_def.name] = cb_def
+    # Recover matrix-member selectors that 3Dmigoto drops from struct-array
+    # cbuffer accesses (e.g. TombRaider's WorldParameters[i]._m10... -> which of
+    # WorldViewProject/World/ViewProject?), using the exact disasm. Must run
+    # after cbuffer parsing (needs the struct layout) and before the body is
+    # parsed, since it rewrites the source.
+    vs_disasm_path = os.path.join(data_folder, 'VS_shader_disasm.txt')
+    vs_disasm = ''
+    if os.path.exists(vs_disasm_path):
+        with open(vs_disasm_path, 'r', encoding='utf-8', errors='replace') as f:
+            vs_disasm = f.read()
+    vs_code = vs_interp.recover_struct_array_matrix_selectors(vs_code, vs_disasm)
+    vs_interp.hlsl_code = vs_code
     vs_interp.parse_all_functions(vs_code)
 
     # Load cbuffer data

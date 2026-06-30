@@ -2787,17 +2787,39 @@ NO_GOLDEN 16 / TIMEOUT 2 / CRASH 0。
 E 主序+texel 精确性、F1 容差、F2 混合。本步净产出：修复 event16834 崩溃（崩溃→可分类 mismatch）+ 完整 7 类
 85-case 清单。
 
-# 160
+# 160 C TombRaider 主序选择子 反编译有损，超 HLSL 源边界
 ## Prompts
+修复C类问题
+C TombRaider 主序选择子 反编译有损，超 HLSL 源边界
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+feat: recover decompile-dropped struct-array matrix selectors from disasm (C-class TombRaider 0→29/37).
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step160-fix-cclass-tombraider-matrix-selector.md`。
+
+**证明 C 类「超 HLSL 源边界」可破**：信息确实从反编译 HLSL 丢了，但能从权威反汇编恢复。
+两种丢失模式：①**multi**：`struct{float4x4 A,B,C;}WorldParameters[12]` → 反编译 `WorldParameters[i]._m10..`
+丢成员名（A/B/C），disasm 的 `cb0[reg+N]` 给出寄存器偏移 → 成员基址=`N-R`；②**flat**：
+`struct{float4x4 SkinMatrices[42];}SkinningParameters[12]` → 反编译把 `.SkinMatrices[j]` 折叠成扁平下标
+`SkinningParameters[flat]._m10..`，矩阵连续故 `Arr[flat]==Arr[flat/K].M[flat%K]`。
+
+**实现**：①`recover_struct_array_matrix_selectors`（render.py 在 cbuffer 解析后调用，读 disasm）——把 HLSL
+member-less `Arr[i]._mR..` 与 disasm `cb[reg+N]` 按程序序 1:1 对齐（event2848 验证 17↔17），重写注入成员名
+`Arr[i].World._mR..`，带数量不匹配 guard；②flat 改在 get_value 运行期分解（源重写 `Arr[i].M[k]._mRC` 会触发
+解析器在 `.M` 断开），用字面下标 `elem=flat//K, inner=flat%K` 直接调 `_struct_member_access`。
+
+**结果：TombRaider 0 → 29/37 PASS，回归 128/128（零回归）**。新增 2 代表用例入回归（event1018 multi、event2129
+flat 蒙皮 0→4407/4407）；从 Dump 删 29 个转通过 zip（Dump 85→56）。
+
+**剩 8 个非选择子问题**：7 个是 `WorldToPSSM0`（TEXCOORD6）——SceneBuffer 里**普通 float4x4 的矩阵主序**问题
+（与 step-158 Nobu586 `mul(world,M)` vs `mul(M,world)` 同墙，且与现通过的 ScreenMatrix 同加载路径，改之危及
+128 回归 + 刚修的 29，故不动）；1 个 event1802 是 4 顶点 identity 边缘。这些是**独立的主序墙**，非选择子。
 
 # 161
 ## Prompts

@@ -2245,6 +2245,77 @@ class HLSLInterpreter:
             return self.apply_swizzle(val, mswz)
         return val
 
+    def recover_struct_array_matrix_selectors(self, code: str, disasm_text: str) -> str:
+        """Re-inject the matrix-member selector that 3Dmigoto drops for a
+        struct-array cbuffer.
+
+        For `cbuffer B { struct { row_major float4x4 A, Bm, C; } Arr[N]; }` the
+        decompile emits `Arr[i]._m10_m11_m12_m13` with the member (.A/.Bm/.C)
+        MISSING — ambiguous, because the GPU may read any of the three. The
+        exact instruction stream (VS_shader_disasm.txt) is unambiguous: each such
+        access reads one register row via `cb<slot>[<reg> + N]`, so the member's
+        element-relative base register is `N - R` (R = the `_mR.` row). We pair
+        the member-less HLSL accesses with the disasm reads positionally (both in
+        program order, verified 1:1 on TombRaider) and rewrite `Arr[i]._mR...`
+        into `Arr[i].<member>._mR...`, after which the normal named-member path
+        resolves it correctly. This is the only way to recover the selector — it
+        is genuinely absent from the decompiled HLSL.
+
+        No-op when: there is no disasm, no struct-array with >=2 matrix members,
+        or the HLSL-access vs disasm-read counts do not reconcile 1:1 (so we
+        never corrupt a shader we cannot align)."""
+        # struct { float4x4 A, B, C; } Arr[N] -> the decompile emits Arr[i]._mR..
+        # with the member (.A/.B/.C) dropped; recovered per-access from the
+        # disasm. (The other loss pattern — struct { float4x4 M[K]; } Arr[N]
+        # flattened to Arr[flat]._mR.. — is handled at runtime in get_value,
+        # because injecting `.M[inner]` here hits an expression-parser limit on
+        # `Arr[i].Member[k]._mRC`.)
+        if not disasm_text:
+            return code
+        multi = {}   # name -> (cb_slot, {elem_reg_off: member_name})
+        for cb_def in self.cbuffers.values():
+            if not isinstance(cb_def, CbufferDefinition):
+                continue
+            for f in cb_def.fields:
+                if getattr(f, 'field_type', '') != '__struct__':
+                    continue
+                members = getattr(f, 'struct_members', None) or []
+                mat = {ro: nm for (nm, mt, ro, co, ar) in members
+                       if self._CB_TYPE_BYTES.get(mt, 0) > 16}
+                if len(mat) >= 2:
+                    multi[f.name] = (cb_def.register, mat)
+        if not multi:
+            return code
+        for name, (slot, mat) in multi.items():
+            offs = [int(x) for x in re.findall(
+                r'cb%d\[\w+(?:\.\w+)?\s*\+\s*(\d+)\]' % slot, disasm_text)]
+            if not offs:
+                continue
+            pat = re.compile(
+                re.escape(name) + r'\s*\[[^\]]*\]\s*\.(_m(\d)\d(?:_m\d\d)*)')
+            occ = list(pat.finditer(code))
+            if len(occ) != len(offs):
+                self.log_output(
+                    f"Warning: cannot recover '{name}' matrix selectors "
+                    f"({len(occ)} HLSL accesses vs {len(offs)} disasm cb{slot} "
+                    f"reads do not align) — leaving source unchanged.")
+                continue
+            out, last = [], 0
+            for m, n in zip(occ, offs):
+                member = mat.get(n - int(m.group(2)))
+                if member is None:
+                    continue
+                dot = m.start(1) - 1            # the '.' before `_mR...`
+                out.append(code[last:dot])
+                out.append('.' + member)
+                last = dot
+            out.append(code[last:])
+            code = ''.join(out)
+            self.log_output(
+                f"Recovered {len(occ)} dropped matrix-member selector(s) for "
+                f"struct-array '{name}' from disasm.")
+        return code
+
     def apply_swizzle(self, obj: Any, swizzle: str) -> Any:
         """
         对向量应用swizzle操作
@@ -2389,6 +2460,25 @@ class HLSLInterpreter:
                 # index by the element stride (cb4[idx*17]); map an out-of-range
                 # index back through the stride so element 0 still resolves.
                 if struct_field is not None:
+                    # Flat single-matrix-array struct-array (TombRaider skinning):
+                    # `struct { float4x4 M[K]; } Arr[N]` is decompiled as
+                    # `Arr[flat]._mR..` with both `.M` and the inner index folded
+                    # into one flat matrix index. Since the K*N matrices are
+                    # contiguous, recover element = flat//K, inner = flat%K and
+                    # resolve M[inner] directly (passing literal indices avoids
+                    # the parser limit on `Arr[i].M[k]._mRC`).
+                    if rest.startswith('._m'):
+                        members = getattr(struct_field, 'struct_members', None) or []
+                        mats = [m for m in members
+                                if self._CB_TYPE_BYTES.get(m[1], 0) > 16]
+                        if len(mats) == 1 and mats[0][4] > 0:
+                            mname, K = mats[0][0], mats[0][4]
+                            elem_i, inner = idx // K, idx % K
+                            if 0 <= elem_i < len(arr):
+                                res = self._struct_member_access(
+                                    struct_field, elem_i, f'.{mname}[{inner}]{rest}')
+                                if res is not None:
+                                    return res
                     er = getattr(struct_field, 'struct_elem_regs', 1) or 1
                     eidx = idx
                     if eidx >= len(arr) and er > 0:
