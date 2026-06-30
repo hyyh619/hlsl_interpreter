@@ -6,8 +6,8 @@
 <title>AI 辅助开发手册 — HLSL 解释器项目</title>
 <style>
   :root{
-    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e6e9ef; --muted:#9aa4b2;
-    --accent:#5db0ff; --green:#46d39a; --amber:#ffcb6b; --red:#ff6b6b; --line:#2a2f3a;
+    --bg:#f6f7f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2733; --muted:#5a6573;
+    --accent:#2563eb; --green:#0f9d58; --amber:#b8770a; --red:#d64545; --line:#dde2e9;
     --mono:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
   }
   *{box-sizing:border-box}
@@ -16,46 +16,55 @@
     line-height:1.7;font-size:16px}
   .wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
   header.hero{padding:54px 22px 30px;background:
-    radial-gradient(1200px 400px at 20% -10%,rgba(93,176,255,.18),transparent),
-    radial-gradient(900px 360px at 90% 0%,rgba(70,211,154,.12),transparent);
+    radial-gradient(1200px 400px at 20% -10%,rgba(37,99,235,.12),transparent),
+    radial-gradient(900px 360px at 90% 0%,rgba(15,157,88,.10),transparent);
     border-bottom:1px solid var(--line)}
   .hero h1{margin:0 0 8px;font-size:30px;letter-spacing:.3px}
   .hero p{margin:6px 0;color:var(--muted);max-width:760px}
   .tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent);
     border:1px solid var(--line);border-radius:20px;padding:3px 11px;margin:8px 6px 0 0;background:var(--panel)}
   h2{margin:46px 0 14px;font-size:23px;border-left:4px solid var(--accent);padding-left:12px}
-  h3{margin:26px 0 10px;font-size:18px;color:#cdd6e4}
-  p,li{color:#d4dae4}
-  code{font-family:var(--mono);font-size:13.5px;background:#11151c;border:1px solid var(--line);
-    border-radius:5px;padding:1px 6px;color:#bfe1ff}
-  pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
-  pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:13px;line-height:1.55}
+  h3{margin:26px 0 10px;font-size:18px;color:#2a3340}
+  p,li{color:#2f3a47}
+  code{font-family:var(--mono);font-size:13.5px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;color:#0a52c0}
+  pre{background:#f3f5f8;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
+  pre code{background:none;border:none;padding:0;color:#2f3a47;font-size:13px;line-height:1.55}
   table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
   th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
-  th{background:var(--panel2);color:#cdd6e4}
-  tr:nth-child(even) td{background:#13161d}
+  th{background:var(--panel2);color:#2a3340}
+  tr:nth-child(even) td{background:#f3f5f8}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
-  .callout{border-left:4px solid var(--accent);background:#12202e;border-radius:8px;padding:12px 16px;margin:16px 0}
-  .callout.green{border-color:var(--green);background:#102420}
-  .callout.amber{border-color:var(--amber);background:#241f12}
+  .callout{border-left:4px solid var(--accent);background:#eaf2ff;border-radius:8px;padding:12px 16px;margin:16px 0}
+  .callout.green{border-color:var(--green);background:#e7f6ee}
+  .callout.amber{border-color:var(--amber);background:#fcf3df}
   .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
   .grid3 .c{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:13px 14px}
   .grid3 .c b{color:var(--accent)}
   .c2 b{color:var(--green)} .c3 b{color:var(--amber)}
   nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:24px 0;
     columns:2;column-gap:30px}
-  nav.toc a{color:#bcd3ea;text-decoration:none;display:block;padding:3px 0;font-size:14.5px}
+  nav.toc a{color:#2f4d7a;text-decoration:none;display:block;padding:3px 0;font-size:14.5px}
   nav.toc a:hover{color:var(--accent)}
-  .svgbox{background:#0c0f14;border:1px solid var(--line);border-radius:12px;padding:10px;margin:18px 0;overflow:auto}
+  .imgrow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
+  .imgrow figure{margin:0;background:#f3f5f8;border:1px solid var(--line);border-radius:10px;padding:8px}
+  .imgrow img{display:block;width:100%;height:auto;background:#000;border-radius:6px;image-rendering:pixelated}
+  .imgrow figcaption{font-size:12.5px;color:var(--muted);text-align:center;margin-top:6px}
+  @media(max-width:680px){.imgrow{grid-template-columns:1fr}}
+  figure.video{margin:16px 0;background:#000;border:1px solid var(--line);border-radius:12px;padding:8px;max-width:860px}
+  figure.video video{display:block;width:100%;height:auto;border-radius:8px;background:#000}
+  figure.video figcaption{font-size:12.5px;color:var(--muted);text-align:center;margin-top:8px}
+  /* SVG 图为自带深色底的图示卡片，保留深色容器以维持内部对比度 */
+  .svgbox{background:#0f1320;border:1px solid var(--line);border-radius:12px;padding:10px;margin:18px 0;overflow:auto}
   svg{display:block;max-width:100%;height:auto}
   .legend{font-size:12.5px;color:var(--muted);text-align:center;margin-top:6px}
   .mono{font-family:var(--mono)}
   .red{color:var(--red)} .grn{color:var(--green)} .amb{color:var(--amber)} .acc{color:var(--accent)}
   .part{margin:54px 0 8px;padding:16px 20px;border-radius:12px;border:1px solid var(--line);
-    background:linear-gradient(100deg,rgba(93,176,255,.16),rgba(70,211,154,.10));}
+    background:linear-gradient(100deg,rgba(37,99,235,.12),rgba(15,157,88,.10));}
   .part h1{margin:0;font-size:25px;letter-spacing:.3px}
   .part p{margin:6px 0 0;color:var(--muted);font-size:14px}
-  nav.toc .grp{font-weight:bold;color:#cdd6e4;display:block;margin:8px 0 2px;font-size:14px;break-after:avoid}
+  nav.toc .grp{font-weight:bold;color:#2a3340;display:block;margin:8px 0 2px;font-size:14px;break-after:avoid}
   nav.toc .grp:first-child{margin-top:0}
   @media(max-width:680px){nav.toc{columns:1}.grid3{grid-template-columns:1fr}}
 </style>
@@ -89,6 +98,8 @@
   <span class="grp">第一部分 · 项目总体介绍</span>
   <a href="#q0">0 · 项目概述</a>
   <span class="grp">第二部分 · OpenCode + minimax-m2.7（奠基期）</span>
+  <a href="#qb0">0 · 本期开发载体：Collision case</a>
+  <a href="#qbflow">⟳ 人与 Agent 的开发流程闭环</a>
   <a href="#qb1">1 · 如何给 AI 提供提示词</a>
   <a href="#qb2">2 · 分析需求、生成开发计划</a>
   <a href="#qb3">3 · 如何按计划执行</a>
@@ -112,6 +123,18 @@
 
 <!-- Q0 -->
 <h2 id="q0">0 · 项目概述</h2>
+
+<h3>项目的目的</h3>
+<p>本项目的初衷并不是"做一个 D3D11 仿真器"，而是<b>一次关于 AI coding 的研究</b>——它的目标随开发推进逐步演化：</p>
+<div class="grid3">
+  <div class="c"><b>① 为研究 AI coding 而生</b><br>项目最早是为了探索"用 AI 写代码"这件事本身能走多远而立项的。</div>
+  <div class="c c2"><b>② 验证纯 AI coding 的边界</b><br>核心问题：在几乎不动手写代码、<b>全程由 AI 编程</b>的前提下，到底能做到什么程度？整个仓库正是这个实验的产物。</div>
+  <div class="c c3"><b>③ 长成完整 D3D 管线</b><br>从"解释一段样例 HLSL"逐步演化成一个<b>完整的 Direct3D 可编程图形管线</b>（VS→光栅化→深度/模板→PS→输出合并 + 纹理/cbuffer/回归体系）。</div>
+</div>
+<div class="callout"><b>④ 最终：draw dump 的验证与分析工具。</b> 项目最后落到一个实用目标上——<b>验证 draw dump 的正确性</b>，并能<b>逐语句、逐像素地分析某一个具体 Draw 的渲染过程</b>（哪一步的变换/光照/采样与真机 golden 对不上）。</div>
+<p>换句话说，这份手册既是"如何实现一个 HLSL 解释器"的记录，也是"<b>纯 AI coding 能做到什么样</b>"的一份真实答卷——后续各章的方法论，都是在这个前提下总结出来的。</p>
+
+<h3>这是什么</h3>
 <p>本项目是一个<b>纯 Python 实现的 Direct3D 11 图形管线软件仿真器</b>，核心特点是<b>直接解释执行 HLSL 着色器源码</b>——不编译、不调用 <code>eval</code>，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段，再把顶点着色器输出与真机捕获的 <b>golden 参考数据</b>逐分量对比，以此验证解释器的正确性。</p>
 <div class="svgbox">
 <svg viewBox="0 0 900 150" role="img" aria-label="D3D11 管线阶段与验证">
@@ -132,6 +155,17 @@
 </svg>
 <div class="legend">蓝实线 = 管线数据流；绿虚线 = VS 输出与 golden 的验证对比</div>
 </div>
+
+<h3>演示视频</h3>
+<p>下面这段录屏展示了解释器跑完管线后、光栅化器把三角形逐像素填充并与 golden 对比的过程：</p>
+<figure class="video">
+  <video controls preload="metadata" playsinline>
+    <source src="videos/hlsl_interpreter_rasterizer_show_20260524.mp4" type="video/mp4">
+    您的浏览器不支持内嵌视频播放。
+  </video>
+  <figcaption>若浏览器无法播放，可直接打开 <code>Docs/videos/hlsl_interpreter_rasterizer_show_20260524.mp4</code>。</figcaption>
+</figure>
+
 <h3>输入从哪来</h3>
 <p>输入是 <b>RenderDoc / 3Dmigoto 抓帧 dump</b>，打包成 <code>Cases/*.zip</code>。每个 zip 解压后是一组松散文件：</p>
 <table>
@@ -162,7 +196,123 @@
 
 <!-- ============================ PART B ============================ -->
 <div class="part"><h1>第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）</h1>
-<p>约 step1–step86（<code>Sessions/hlsl-step*.md</code>）：用一个能力相对有限的模型从零搭出解释器骨架。例子取自 <code>Prompts/hlsl-interpreter-prompt-OpenCode.html</code>。</p></div>
+<p>约 step1–step86（<code>Sessions/hlsl-step*.md</code>）：用一个能力相对有限的模型从零搭出解释器骨架。先勾勒<b>人与 Agent 的开发流程闭环</b>，再从 5 个方面展开。例子取自 <code>Prompts/hlsl-interpreter-prompt-OpenCode.html</code>。</p></div>
+
+<h2 id="qb0">0 · 本期的开发载体：<code>Collision-…-RdotV-zero</code> case</h2>
+<p>这一期的解释器骨架，是围绕 <code>Cases/Collision-fix-constant-buffer-and-RdotV-zero_event*.zip</code> 这组真机 capture 来打磨的。下面以 <code>event399</code> 为例——它在屏幕上画出一件<b>带贴图、受光照的 3D 物体</b>（一柄战锤）：要让纯 Python 解释器<b>逐语句重算出这件物体的每个像素</b>，需要把一整套 D3D11 顶点光照 + 像素贴图采样语义都实现对。下面用它的渲染结果和 HLSL 源码，说明项目目标与复杂度。</p>
+
+<h3>0.1 渲染结果：解释器输出 vs golden</h3>
+<p>项目目标是<b>不编译、不 <code>eval</code>，直接解释 HLSL 源码跑完整管线</b>，再把结果与真机 golden 逐像素/逐分量对比。下面是 <code>event399</code> 的三张图（取自 zip 内 capture，已转 PNG）：</p>
+<div class="imgrow">
+  <figure><img src="images/collision_event399_golden.png" alt="golden"><figcaption>Golden（真机参考）</figcaption></figure>
+  <figure><img src="images/collision_event399_output.png" alt="output"><figcaption>解释器输出</figcaption></figure>
+  <figure><img src="images/collision_event399_depth.png" alt="depth"><figcaption>深度缓冲</figcaption></figure>
+</div>
+<p>左两张几乎完全一致——同一柄战锤、同样的金属贴图与高光走向，这正是"correct"的判据：解释器算出的颜色/位置/采样要和 GPU 真机一致（本帧 2548 个 golden 像素里约 2333 个落在容差内，余下是高光/光照边缘的细微差）。右图是同一帧写入的深度缓冲。<b>画面越丰富，要对齐的环节越多</b>：变换矩阵差一列、法线没归一化、贴图 UV 取错、光照衰减算偏，物体就会变形、错色或丢失高光。</p>
+
+<h3>0.2 Vertex Shader：把整套光照模型搬进解释器</h3>
+<p>这是该 case 的 <code>VS_shader.hlsl</code>（3Dmigoto 反汇编风格）。与一个只做坐标变换的简单 VS 不同，它在顶点级算完了<b>环境光 + 漫反射 + 镜面高光 + 距离衰减 + 聚光锥</b>，还带 <code>ColorMaterialMode</code> 分支选色：</p>
+<pre><code>cbuffer MatrixBuffer  : register(b0) { float4x4 WorldViewProj; float4x4 World; }
+cbuffer LightBuffer   : register(b1) { float4 Ambient,Diffuse,Specular; float3 LightPos;
+                                       float LightRadius; float3 LightDir; /*…*/ float3 Attenuation; /*…*/ }
+cbuffer MaterialBuffer: register(b2) { float4 MatDiffuse,MatAmbient,MatSpecular,MatEmissive;
+                                       float Shininess; uint ColorMaterialMode; /*…*/ }
+cbuffer CameraBuffer  : register(b3) { float3 cameraPos; }
+
+void main(float3 v0:POSITION0, float3 v1:NORMAL0, float4 v2:COLOR0, float2 v3:TEXCOORD0,
+          out float4 o0:SV_POSITION0, out float4 o1:COLOR0, out float2 o2:TEXCOORD0,
+          out float2 p2:TEXCOORD1,   out float3 o3:NORMAL0, out float3 o4:WORLDPOS0)
+{
+  float4 r0,r1,r2;
+  // —— 裁剪空间位置：手工展开的 mul(v0, WorldViewProj)，按列 swizzle + MAD 链 ——
+  r0 = WorldViewProj._m01_m11_m21_m31 * v0.yyyy;
+  r0 = v0.xxxx * WorldViewProj._m00_m10_m20_m30 + r0;
+  r0 = v0.zzzz * WorldViewProj._m02_m12_m22_m32 + r0;
+  o0 = WorldViewProj._m03_m13_m23_m33 + r0;
+  // —— 归一化法线 → 变换到世界空间 → 再归一化（dot/rsqrt 自展开）——
+  r0.x = rsqrt(dot(v1.xyz, v1.xyz));  r0.xyz = v1.xyz * r0.xxx;
+  r1.x = dot(r0.xyz, World._m00_m10_m20);
+  r1.y = dot(r0.xyz, World._m01_m11_m21);
+  r1.z = dot(r0.xyz, World._m02_m12_m22);
+  r0.x = rsqrt(dot(r1.xyz, r1.xyz));  r0.xyz = r1.xyz * r0.xxx;  o3.xyz = r0.xyz;
+  // —— 世界坐标、光向量、反射向量（R·V 高光的核心）——
+  r1.xyz = World._m01_m11_m21*v0.yyy; r1.xyz = v0.xxx*World._m00_m10_m20+r1.xyz;
+  r1.xyz = v0.zzz*World._m02_m12_m22+r1.xyz; r1.xyz = World._m03_m13_m23+r1.xyz; o4.xyz = r1.xyz;
+  r2.xyz = LightPos.xyz + -r1.xyz;           // 一元负号：不能当成减法（见陷阱#2）
+  r1.x = rsqrt(dot(r2.xyz,r2.xyz)); r1.xyz = r2.xyz*r1.xxx;
+  r1.w = dot(r0.xyz, r1.xyz); r2.x = r1.w+r1.w; r1.w = max(0, r1.w);
+  r1.xyz = r0.xyz * -r2.xxx + r1.xyz;        // reflect()
+  // —— 高光：pow 用 log2/exp2 展开 + ColorMaterialMode 选色分支 ——
+  r0.x = max(0, dot(r1.xyz, cameraPos.xyz)); r0.y = exp2(Shininess*log2(r0.x));
+  r2 = cmp(ColorMaterialMode == int4(1,5,2,3));
+  r1.xyz = r2.www ? v2.xyz : MatSpecular.xyz;
+  r1.xyz = Specular.xyz*r1.xyz*r0.yyy;  r0.xyz = (0&lt;r0.x) ? r1.xyz : 0;
+  // —— 漫反射 + 距离衰减 + LightRadius 截断 + 环境光 + 自发光，最后 ×顶点alpha ——
+  /* …Attenuation/1-over-d²、AmbientColor、MaterialEmissive 累加… */
+  o1.xyz = (/*累加结果*/) * r1.www;  o1.w = 1;
+  o2 = v3.xyxy;  return;
+}</code></pre>
+<p>仅这一段，解释器就必须正确支持：<b>4 个带 <code>packoffset</code> 的 cbuffer</b>（<code>b0</code>–<code>b3</code>，含 <code>uint</code>/标量混排）、<b>矩阵按列 swizzle</b>（<code>_m01_m11_m21_m31</code>）与<b>任意 swizzle/写掩码</b>、<b>MAD 累加链顺序</b>、<code>dot</code>/<code>rsqrt</code>/<code>log2</code>/<code>exp2</code>/<code>max</code> 等 intrinsic、<b><code>cmp(...)</code> 向量比较 + <code>?:</code> 三元选择</b>、<b><code>int4</code> 比较与位运算</b>、<b>一元负号（<code>-r1.xyz</code>、<code>-r2.xxx</code>）不能误判成减法</b>（CLAUDE.md 陷阱#2），以及<b>多个带语义的 <code>out</code> 参数到寄存器槽位的映射</b>。这套语义，正是本期 §1–§5 里被用户一步步切碎、逐个驱动 AI 实现的（如 §3 的 <code>transpose</code>/<code>float3x3</code> cast）。</p>
+
+<h3>0.3 Pixel Shader：贴图采样 × 顶点色</h3>
+<p>配套的 <code>PS_shader.hlsl</code> 短，但引入了<b>纹理采样</b>这一新维度——它把 VS 算好的逐顶点光照色，与漫反射贴图的采样结果相乘：</p>
+<pre><code>SamplerState     LinearSampler_s : register(s0);
+Texture2D&lt;float4&gt; DiffuseTexture : register(t0);
+
+void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … */
+          out float4 o0:SV_TARGET0)
+{
+  float4 r0 = DiffuseTexture.Sample(LinearSampler_s, v2.xy);  // 线性采样漫反射贴图
+  o0 = v1 * r0;                                               // 顶点光照色 × 贴图
+}</code></pre>
+<p>这意味着最终颜色由 <b>VS 的光照</b> 和 <b>PS 的贴图采样</b> 共同决定——解释器不仅要把上面那串矩阵/swizzle/光照算对，还要正确实现 <code>Texture2D.Sample</code>（绑定解析、线性过滤、UV 寻址）。任何一环算偏，战锤的高光、底色或纹理走向就会和真机对不上——这也是这一期把它当作"标尺 case"的原因：它把验证压力同时压在 VS 光照与 PS 采样上。</p>
+
+<h2 id="qbflow">⟳ 开发流程：人与 Agent 的交互闭环</h2>
+<p>这一期没有自动回归、没有成熟的 golden 自动对比，开发推进靠的是<b>人与 Agent 之间一圈圈的小步对话循环</b>。每一圈都很短、只动一个点，由<b>人主导节奏</b>、<b>Agent 负责执行</b>。整条闭环如下：</p>
+
+<div class="svgbox">
+<svg viewBox="0 0 900 230" role="img" aria-label="人与 Agent 开发流程闭环">
+  <defs>
+    <marker id="arf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
+    <style>
+      .h{fill:#15261c;stroke:#3a6b4d}.a{fill:#152a40;stroke:#2f5e8f}
+      .t{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}
+      .ts{fill:#9aa4b2;font:11px sans-serif;text-anchor:middle}
+      .f{stroke:#5db0ff;stroke-width:1.7;fill:none;marker-end:url(#arf)}
+      .lg{fill:#9aa4b2;font:11.5px sans-serif}
+    </style>
+  </defs>
+  <!-- top row: ①→②→③→④ -->
+  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="t" x="105" y="44">① 需求发起</text><text class="ts" x="105" y="61">人 · 切小步/给样例</text>
+  <rect class="a" x="240" y="24" width="190" height="48" rx="9"/><text class="t" x="335" y="44">② coding</text><text class="ts" x="335" y="61">Agent · 只改一个点</text>
+  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="t" x="565" y="44">③ 调试</text><text class="ts" x="565" y="61">人 · 跑 + 读打印</text>
+  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="t" x="795" y="44">④ 反馈</text><text class="ts" x="795" y="61">人 · 指出现象/根因</text>
+  <path class="f" d="M200,48 L238,48"/><path class="f" d="M430,48 L468,48"/><path class="f" d="M660,48 L698,48"/>
+  <!-- ④ down to bottom row -->
+  <path class="f" d="M795,72 L795,128"/>
+  <!-- bottom row: ⑤←④ , ⑥←⑤ -->
+  <rect class="a" x="470" y="130" width="190" height="48" rx="9"/><text class="t" x="565" y="150">⑤ bug 修复</text><text class="ts" x="565" y="167">Agent / 人手改兜底</text>
+  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="t" x="335" y="150">⑥ 再调试验证</text><text class="ts" x="335" y="167">人 · 再跑 + 再读</text>
+  <path class="f" d="M698,154 L662,154"/><path class="f" d="M470,154 L432,154"/>
+  <!-- ⑥ loop back up to ① -->
+  <path class="f" d="M240,154 L60,154 L60,74"/>
+  <!-- loop label -->
+  <text class="lg" x="240" y="205">↻ 现象未消失则带着新观察回到 ④ 继续这一圈，直到这一小步通过</text>
+</svg>
+<div class="legend"><span style="color:#7fd0a0">绿框 = 人主导的环节</span> ｜ <span style="color:#7fb6ee">蓝框 = Agent 执行的环节</span></div>
+</div>
+
+<p><b>每一环具体是谁、做什么：</b></p>
+<ol>
+<li><b>① 需求发起（人）</b>：用户把目标切成一个<b>极小、可独立验证的步骤</b>，并尽量说全——贴样例 HLSL、给具体语句、写清期望值（见 <a href="#qb1">§1</a>）。模型对信息密度敏感，留白就会被脑补，所以"发起"本身就是质量关口。</li>
+<li><b>② coding（Agent）</b>：Agent 针对这一个点写/改代码——通常是加一个 intrinsic、补一种 cast、修一处解析（如 <a href="#qb3">§3</a> 里 <code>transpose</code>、<code>float3x3</code> cast）。一次只动一个点，便于下一步定位。</li>
+<li><b>③ 调试（人）</b>：跑 <code>render.py</code>，<b>人工读打印</b>——<code>[STMT]</code> / 求值分支打印里每一步的操作数、操作符、结果（这套"会自述"的打印正是本期最有长远价值的产出，见 <a href="#qb5">§5</a>）。没有自动断言，对错靠人眼。</li>
+<li><b>④ 反馈（人）</b>：用户根据打印<b>描述现象、甚至直接点出根因</b>。这一期 Agent 常找不到深层根因（如 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a> 的"去括弧"问题由用户点破），反馈往往不是"这里错了"而是"<b>错在哪、为什么错</b>"。</li>
+<li><b>⑤ bug 修复（Agent / 人手改）</b>：Agent 据反馈定点修正；当 Agent 修不彻底或误删代码时（如 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a> "I have to fix it by my hand"、<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a> 误删 <code>return</code>），用户会<b>亲自动手兜底</b>。</li>
+<li><b>⑥ 再调试（人）</b>：改完重新跑、再读打印——现象消失就推进到下一个需求，否则带着新观察<b>回到 ④</b> 继续这一圈，直到这一小步绿掉。</li>
+</ol>
+<div class="callout amber"><b>这一期闭环的特征</b>：环短、频繁、<b>质量把关几乎全在人</b>——Agent 更像"快速打字员 + 局部修补匠"，需求拆分、根因判断、最终正确性都靠人兜底。这正是第三部分要解决的痛点：把"③调试 + ④反馈 + ⑥再调试"从人眼读打印，升级为 <b>回归套件当裁判、AI 自我纠错</b> 的自动闭环（见 <a href="#q6">第三部分 §6</a>）。</div>
+<p>下面 §1–§5，就是把这条闭环的关键环节——提示词、需求拆分、执行、纠错、调试——逐个展开。</p>
 
 <h2 id="qb1">1 · 如何给 AI 提供提示词</h2>
 <p>这一期能力有限的模型对<b>信息密度</b>格外敏感：给得越具体（样例、字段名、期望值），越不容易跑偏；一旦留白，它就<b>自己脑补</b>。</p>
@@ -492,7 +642,7 @@ Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
 </div>
 <div class="callout"><b>两周期互补</b>：前期的小步与可观测性铺垫（那些 <code>[STMT]/[BINARY OP]</code> 打印），正是后期能"沿数据流快速回溯根因"的前提。<b>选型启示</b>：搭骨架/能力有限时，把需求切碎、靠人验证最稳；攻坚/上下文充足时，让 AI 持有全局、用回归+记忆闭环交付最高效。</div>
 
-<p style="color:#9aa4b2;margin-top:40px;font-size:13px">本手册随项目演进更新；Markdown 版见 <code>AI-Development-Handbook.md</code>。生成于 step123。</p>
+<p style="color:var(--muted);margin-top:40px;font-size:13px">本手册随项目演进更新；Markdown 版见 <code>AI-Development-Handbook.md</code>。生成于 step123。</p>
 
 </div>
 </body>

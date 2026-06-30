@@ -47,6 +47,17 @@
 
 ## 项目概述
 
+### 0.0 项目的目的
+
+本项目的初衷并不是"做一个 D3D11 仿真器"，而是**一次关于 AI coding 的研究**——它的目标随开发推进逐步演化：
+
+1. **最初为研究 AI coding 而创建**：项目最早是为了探索"用 AI 写代码"这件事本身能走多远而立项的。
+2. **验证纯 AI coding 的能力边界**：核心问题是——**在几乎不动手写代码、全程由 AI 编程的前提下，到底能做到什么程度？** 整个仓库正是这个实验的产物。
+3. **逐渐长成完整的 D3D 可编程图形管线**：在一步步推进中，它从最初的"解释一段样例 HLSL"逐渐演化成一个**完整的 Direct3D 可编程图形管线实现**（VS → 光栅化 → 深度/模板 → PS → 输出合并，外加纹理采样、cbuffer、回归体系）。
+4. **最终成为 draw dump 的验证与分析工具**：项目最后落到一个实用目标上——**验证 draw dump 的正确性**，并能**逐语句、逐像素地分析某一个具体 Draw 的渲染过程**（哪一步的变换/光照/采样与真机 golden 对不上）。
+
+> 换句话说，这份手册既是"如何实现一个 HLSL 解释器"的记录，也是"**纯 AI coding 能做到什么样**"的一份真实答卷——后续各章的方法论，都是在这个前提下总结出来的。
+
 ### 0.1 这是什么
 本项目是一个**纯 Python 实现的 Direct3D 11 图形管线软件仿真器**，核心特点是**直接解释执行 HLSL 着色器源码**——不编译、不调用 `eval`，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段：
 
@@ -55,6 +66,14 @@ Vertex Shader → Rasterizer → Depth/Stencil → Pixel Shader → Output Merge
 ```
 
 然后把顶点着色器（VS）的输出与真机捕获的 **golden 参考数据**逐分量对比，以此验证解释器的正确性。
+
+#### 演示视频
+
+下面这段录屏展示了解释器跑完管线后、光栅化器把三角形逐像素填充并与 golden 对比的过程：
+
+<video src="videos/hlsl_interpreter_rasterizer_show_20260524.mp4" controls width="100%" style="max-width:860px;border-radius:10px"></video>
+
+> 若上方视频无法播放，可直接打开 [`Docs/videos/hlsl_interpreter_rasterizer_show_20260524.mp4`](videos/hlsl_interpreter_rasterizer_show_20260524.mp4)。
 
 ### 0.2 输入从哪来
 输入是 **RenderDoc / 3Dmigoto 抓帧 dump**，打包成 `Cases/*.zip`。每个 zip 解压后是一组松散文件：
@@ -100,7 +119,111 @@ python render.py ./Cases/Default.json
 
 # 第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）
 
-> 这一期（约 step1–step86，`Sessions/hlsl-step*.md`）用一个能力相对有限的模型，**从零搭出解释器骨架**：HLSL 词法/递归下降解析、语句解释、cbuffer/struct/函数解析、定点管线（rasterizer/depth/OM/texture）、golden 对比雏形。它的协作方式与第三部分截然不同——下面 5 个方面，每个都给 `Prompts/hlsl-interpreter-prompt-OpenCode.html` 里的真实步骤与超链接。
+> 这一期（约 step1–step86，`Sessions/hlsl-step*.md`）用一个能力相对有限的模型，**从零搭出解释器骨架**：HLSL 词法/递归下降解析、语句解释、cbuffer/struct/函数解析、定点管线（rasterizer/depth/OM/texture）、golden 对比雏形。它的协作方式与第三部分截然不同——先用一节勾勒**人与 Agent 的开发流程闭环**，再从 5 个方面展开，每个都给 `Prompts/hlsl-interpreter-prompt-OpenCode.html` 里的真实步骤与超链接。
+
+## 0 · 本期的开发载体：`Collision-…-RdotV-zero` case
+
+这一期的解释器骨架，是围绕 `Cases/Collision-fix-constant-buffer-and-RdotV-zero_event*.zip` 这组真机 capture 来打磨的。下面以 `event399` 为例——它在屏幕上画出一件**带贴图、受光照的 3D 物体**（一柄战锤），要让纯 Python 解释器**逐语句重算出这件物体的每个像素**，需要把一整套 D3D11 顶点光照 + 像素贴图采样语义都实现对。下面用它的渲染结果和 HLSL 源码，说明项目目标与复杂度。
+
+### 0.1 渲染结果：解释器输出 vs golden
+
+项目目标是**不编译、不 `eval`，直接解释 HLSL 源码跑完整管线**，再把结果与真机 golden 逐像素/逐分量对比。下面是 `event399` 的三张图（取自 zip 内 capture，已转 PNG）：
+
+| Golden（真机参考） | 解释器输出 | 深度缓冲 |
+|---|---|---|
+| ![golden](images/collision_event399_golden.png) | ![output](images/collision_event399_output.png) | ![depth](images/collision_event399_depth.png) |
+
+左两张几乎完全一致——同一柄战锤、同样的金属贴图与高光走向，这正是"correct"的判据：解释器算出的颜色/位置/采样要和 GPU 真机一致（本帧 2548 个 golden 像素里约 2333 个落在容差内，余下是高光/光照边缘的细微差）。右图是同一帧写入的深度缓冲。**画面越丰富，要对齐的环节越多**：变换矩阵差一列、法线没归一化、贴图 UV 取错、光照衰减算偏，物体就会变形、错色或丢失高光。
+
+### 0.2 Vertex Shader：把整套光照模型搬进解释器
+
+这是该 case 的 `VS_shader.hlsl`（3Dmigoto 反汇编风格）。与一个只做坐标变换的简单 VS 不同，它在顶点级算完了**环境光 + 漫反射 + 镜面高光 + 距离衰减 + 聚光锥**，还带 `ColorMaterialMode` 分支选色：
+
+```hlsl
+cbuffer MatrixBuffer  : register(b0) { float4x4 WorldViewProj; float4x4 World; }
+cbuffer LightBuffer   : register(b1) { float4 Ambient,Diffuse,Specular; float3 LightPos;
+                                       float LightRadius; float3 LightDir; /*…*/ float3 Attenuation; /*…*/ }
+cbuffer MaterialBuffer: register(b2) { float4 MatDiffuse,MatAmbient,MatSpecular,MatEmissive;
+                                       float Shininess; uint ColorMaterialMode; /*…*/ }
+cbuffer CameraBuffer  : register(b3) { float3 cameraPos; }
+
+void main(float3 v0:POSITION0, float3 v1:NORMAL0, float4 v2:COLOR0, float2 v3:TEXCOORD0,
+          out float4 o0:SV_POSITION0, out float4 o1:COLOR0, out float2 o2:TEXCOORD0,
+          out float2 p2:TEXCOORD1,   out float3 o3:NORMAL0, out float3 o4:WORLDPOS0)
+{
+  float4 r0,r1,r2;
+  // —— 裁剪空间位置：手工展开的 mul(v0, WorldViewProj)，按列 swizzle + MAD 链 ——
+  r0 = WorldViewProj._m01_m11_m21_m31 * v0.yyyy;
+  r0 = v0.xxxx * WorldViewProj._m00_m10_m20_m30 + r0;
+  r0 = v0.zzzz * WorldViewProj._m02_m12_m22_m32 + r0;
+  o0 = WorldViewProj._m03_m13_m23_m33 + r0;
+  // —— 归一化法线 → 变换到世界空间 → 再归一化（dot/rsqrt 自展开）——
+  r0.x = rsqrt(dot(v1.xyz, v1.xyz));  r0.xyz = v1.xyz * r0.xxx;
+  r1.x = dot(r0.xyz, World._m00_m10_m20);
+  r1.y = dot(r0.xyz, World._m01_m11_m21);
+  r1.z = dot(r0.xyz, World._m02_m12_m22);
+  r0.x = rsqrt(dot(r1.xyz, r1.xyz));  r0.xyz = r1.xyz * r0.xxx;  o3.xyz = r0.xyz;
+  // —— 世界坐标、光向量、反射向量（R·V 高光的核心）——
+  r1.xyz = World._m01_m11_m21*v0.yyy; r1.xyz = v0.xxx*World._m00_m10_m20+r1.xyz;
+  r1.xyz = v0.zzz*World._m02_m12_m22+r1.xyz; r1.xyz = World._m03_m13_m23+r1.xyz; o4.xyz = r1.xyz;
+  r2.xyz = LightPos.xyz + -r1.xyz;           // 一元负号：不能当成减法（见陷阱#2）
+  r1.x = rsqrt(dot(r2.xyz,r2.xyz)); r1.xyz = r2.xyz*r1.xxx;
+  r1.w = dot(r0.xyz, r1.xyz); r2.x = r1.w+r1.w; r1.w = max(0, r1.w);
+  r1.xyz = r0.xyz * -r2.xxx + r1.xyz;        // reflect()
+  // —— 高光：pow 用 log2/exp2 展开 + ColorMaterialMode 选色分支 ——
+  r0.x = max(0, dot(r1.xyz, cameraPos.xyz)); r0.y = exp2(Shininess*log2(r0.x));
+  r2 = cmp(ColorMaterialMode == int4(1,5,2,3));
+  r1.xyz = r2.www ? v2.xyz : MatSpecular.xyz;
+  r1.xyz = Specular.xyz*r1.xyz*r0.yyy;  r0.xyz = (0<r0.x) ? r1.xyz : 0;
+  // —— 漫反射 + 距离衰减 + LightRadius 截断 + 环境光 + 自发光，最后 ×顶点alpha ——
+  /* …Attenuation/1-over-d²、AmbientColor、MaterialEmissive 累加… */
+  o1.xyz = (/*累加结果*/) * r1.www;  o1.w = 1;
+  o2 = v3.xyxy;  return;
+}
+```
+
+仅这一段，解释器就必须正确支持：**4 个带 `packoffset` 的 cbuffer**（`b0`–`b3`，含 `uint`/标量混排）、**矩阵按列 swizzle**（`_m01_m11_m21_m31`）与**任意 swizzle/写掩码**、**MAD 累加链顺序**、`dot`/`rsqrt`/`log2`/`exp2`/`max` 等 intrinsic、**`cmp(...)` 向量比较 + `?:` 三元选择**、**`int4` 比较与位运算**、**一元负号（`-r1.xyz`、`-r2.xxx`）不能误判成减法**（CLAUDE.md 陷阱#2），以及**多个带语义的 `out` 参数到寄存器槽位的映射**。这套语义，正是本期 §1–§5 里被用户一步步切碎、逐个驱动 AI 实现的（如 §3 的 `transpose`/`float3x3` cast）。
+
+### 0.3 Pixel Shader：贴图采样 × 顶点色
+
+配套的 `PS_shader.hlsl` 短，但引入了**纹理采样**这一新维度——它把 VS 算好的逐顶点光照色，与漫反射贴图的采样结果相乘：
+
+```hlsl
+SamplerState     LinearSampler_s : register(s0);
+Texture2D<float4> DiffuseTexture : register(t0);
+
+void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … */
+          out float4 o0:SV_TARGET0)
+{
+  float4 r0 = DiffuseTexture.Sample(LinearSampler_s, v2.xy);  // 线性采样漫反射贴图
+  o0 = v1 * r0;                                               // 顶点光照色 × 贴图
+}
+```
+
+这意味着最终颜色由 **VS 的光照** 和 **PS 的贴图采样** 共同决定——解释器不仅要把上面那串矩阵/swizzle/光照算对，还要正确实现 `Texture2D.Sample`（绑定解析、线性过滤、UV 寻址）。任何一环算偏，战锤的高光、底色或纹理走向就会和真机对不上——这也是这一期把它当作"标尺 case"的原因：它把验证压力同时压在 VS 光照与 PS 采样上。
+
+## ⟳ 开发流程：人与 Agent 的交互闭环
+
+这一期没有自动回归、没有成熟的 golden 自动对比，开发推进靠的是**人与 Agent 之间一圈圈的小步对话循环**。每一圈都很短、只动一个点，由人主导节奏、Agent 负责执行。整个流程可以概括成下面这条闭环：
+
+```
+①需求发起(人) → ②coding(Agent) → ③调试·跑+看打印(人) → ④反馈·指出现象/根因(人)
+       ↑                                                                  │
+       └──────────────  ⑥再调试验证(人)  ←  ⑤bug 修复(Agent/人手改)  ←──┘
+```
+
+**每一环具体是谁、做什么：**
+
+1. **①需求发起（人）**：用户把目标切成一个**极小、可独立验证的步骤**，并尽量说全——贴样例 HLSL、给具体语句、写清期望值（见 §1）。这一期模型对信息密度敏感，留白就会被脑补，所以"发起"本身就是质量关口。
+2. **②coding（Agent）**：Agent 针对这一个点写/改代码——通常是加一个 intrinsic、补一种 cast、修一处解析（如 §3 里 `transpose`、`float3x3` cast）。一次只动一个点，便于下一步定位。
+3. **③调试（人）**：跑 `render.py`，**人工读打印**——`[STMT]` / 求值分支打印里每一步的操作数、操作符、结果（这套"会自述"的打印正是本期最有长远价值的产出，见 §5）。没有自动断言，对错靠人眼。
+4. **④反馈（人）**：用户根据打印**描述现象、甚至直接点出根因**。这一期 Agent 常找不到深层根因（如 [#35](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35) 的"去括弧"问题由用户点破），所以反馈往往不是"这里错了"而是"**错在哪、为什么错**"。
+5. **⑤bug 修复（Agent / 人手改）**：Agent 据反馈定点修正；当 Agent 修不彻底或误删代码时（如 [#37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37) "I have to fix it by my hand"、[#42](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42) 误删 `return`），用户会**亲自动手兜底**。
+6. **⑥再调试（人）**：改完重新跑、再读打印——若现象消失就推进到下一个需求，否则带着新的观察**回到 ④** 继续这一圈，直到这一小步绿掉。
+
+> **这一期闭环的特征**：环短、频繁、**质量把关几乎全在人**——Agent 更像"快速打字员 + 局部修补匠"，需求拆分、根因判断、最终正确性都靠人兜底。这也正是第三部分要解决的痛点：把"③调试 + ④反馈 + ⑥再调试"从人眼读打印，升级为**回归套件当裁判、AI 自我纠错**的自动闭环（见第三部分 §6）。
+
+下面 §1–§5，就是把这条闭环的关键环节——提示词、需求拆分、执行、纠错、调试——逐个展开。
 
 ## 1 · 如何给 AI 提供提示词
 
