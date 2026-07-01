@@ -9,6 +9,10 @@ from typing import Any, Dict, List, Union, Optional
 
 from hlsl_syntax_tree import SyntaxTreeNode, SyntaxTreeParser, _COMPILED_PATTERNS
 
+# Sentinel: "this node is not a fusable multiply-add" (distinct from a real
+# None/0 result), returned by _try_fma/_fma so the caller falls back cleanly.
+_NO_FMA = object()
+
 try:
     from texture import Texture, Sampler, TextureDesc, Sampler as SamplerClass
     TEXTURE_AVAILABLE = True
@@ -1483,6 +1487,50 @@ class HLSLInterpreter:
         result = self.evaluate_syntax_tree(tree, local_vars)
         return result
 
+    def _try_fma(self, node, local_vars):
+        """If `node` is `(a*b) ± c` or `c + (a*b)`, evaluate it as a fused
+        multiply-add — the product is NOT rounded to float32 before the add, so
+        only the final result is rounded (one rounding, like the GPU's `mad`).
+        Returns _NO_FMA when the shape isn't a fusable numeric multiply-add, so
+        the caller falls back to the ordinary two-rounding path."""
+        op, left, right = node.value, node.left, node.right
+        mul, other, c_sign, c_on_left = None, None, 1.0, False
+        if left is not None and left.node_type == 'binary_op' and left.value == '*':
+            mul, other = left, right          # (a*b) ± c
+            c_sign = 1.0 if op == '+' else -1.0
+        elif (op == '+' and right is not None
+              and right.node_type == 'binary_op' and right.value == '*'):
+            mul, other = right, left           # c + (a*b)
+        else:
+            return _NO_FMA
+        a = self.evaluate_syntax_tree(mul.left, local_vars)
+        b = self.evaluate_syntax_tree(mul.right, local_vars)
+        c = self.evaluate_syntax_tree(other, local_vars)
+        return self._fma(a, b, c, c_sign)
+
+    @staticmethod
+    def _is_num(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+    def _fma(self, a, b, c, c_sign):
+        """Component-wise `a*b + c_sign*c` with a single float32 rounding.
+        Scalars broadcast against vectors (as HLSL `*`/`+` do). Any non-numeric
+        operand (matrix, None, unresolved value) → _NO_FMA fallback."""
+        lens = {len(x) for x in (a, b, c) if isinstance(x, list)}
+        if len(lens) > 1:
+            return _NO_FMA
+        if not lens:                                   # all scalar
+            if not (self._is_num(a) and self._is_num(b) and self._is_num(c)):
+                return _NO_FMA
+            return self._to_f32(a * b + c_sign * c)
+        n = lens.pop()
+        av = a if isinstance(a, list) else [a] * n
+        bv = b if isinstance(b, list) else [b] * n
+        cv = c if isinstance(c, list) else [c] * n
+        if not all(self._is_num(e) for e in (*av, *bv, *cv)):
+            return _NO_FMA
+        return [self._to_f32(av[i] * bv[i] + c_sign * cv[i]) for i in range(n)]
+
     def evaluate_syntax_tree(self, node: SyntaxTreeNode, local_vars: Dict[str, Any]) -> Any:
         """
         对语法树节点求值
@@ -1509,6 +1557,15 @@ class HLSLInterpreter:
                 left = self._eval_bitwise_operand(node.left, local_vars)
                 right = self._eval_bitwise_operand(node.right, local_vars)
             else:
+                # Fused multiply-add: the GPU runs `a*b + c` as one `mad` with a
+                # SINGLE float32 rounding. Under float32 emulation, evaluating
+                # `a*b` then `+ c` rounds twice and drifts from the GPU on
+                # precision-sensitive chains (e.g. TombRaider's animated skinning
+                # transform). Detect `(a*b) ± c` / `c + (a*b)` and fuse it.
+                if self.f32_emulation and node.value in ('+', '-'):
+                    fused = self._try_fma(node, local_vars)
+                    if fused is not _NO_FMA:
+                        return fused
                 left = self.evaluate_syntax_tree(node.left, local_vars)
                 right = self.evaluate_syntax_tree(node.right, local_vars)
             return self.execute_binary_op(node.value, left, right)

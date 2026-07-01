@@ -2888,17 +2888,39 @@ fix: treat NaN==NaN (and matching ±inf) as agreement in VS-golden compare (Tomb
 **结果**：TombRaider **34→35/37**，回归 130/130 零回归（event2867 入回归守护 NaN 一致 + 蒙皮扁平索引），Dump
 TombRaider 3→2。剩 event2848/7308 为病态程序化动画精度受限，非可修 bug。
 
-# 163
+# 163 Only event2848/7308 remain (precision-limited procedural animation)
 ## Prompts
+继续修复
+Only event2848/7308 remain (precision-limited procedural animation)
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+feat: FMA fusion for float32 a*b±c (single rounding, GPU mad semantics); event2848/7308 confirmed GPU-transcendental-limited.
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step163-fma-fusion-and-transcendental-limit.md`。
+
+**重审 step 162 判定**：golden 是 GPU 的 **float32** 结果，正确目标是贴合 GPU 的 float32 路径（FMA+超越函数），
+非双精度。于是先补真实的 float32 仿真缺陷 **FMA**。
+
+**FMA 融合（落地）**：`dxbc_interp` 的 `mad` 是 `a*b+c` 单次舍入（=GPU FMA），而我方 f32 仿真每个 op 都舍入
+→ `a*b+c` 两次舍入，与 GPU mad 不符。实现 `_try_fma`/`_fma`：`evaluate_syntax_tree` 识别 `(a*b)±c`/`c+(a*b)`，
+乘积不预舍入、只对最终结果单次 f32 舍入（分量级广播；非数值操作数回退）。in-process 单测确认正确
+（`1.0000001*16777216-16777216`：非融合 2.0，融合 1.6777…=真值）。**回归 130/130 零回归**（更贴 GPU、安全）。
+
+**event2848/7308 确证 GPU 超越函数精度受限**：补 FMA 后 **仍 1418/1548、max diff 0.026 完全不变**。失败输出
+（sv_position/TEXCOORD5）源于程序化动画（`rsqrt`/`sincos`/`frac`），FMA 只改矩阵 mad 舍入、而分歧在动画超越函数
+**上游**——我方 `math.sin`/`rsqrt` 近精确，GPU 用硬件 float32 近似，二者本身差 ~1e-4 经变换放大到 0.026。要匹配需
+位精确复刻 GPU 的 sincos/rsqrt，不现实；**不放宽全局容差**。这坐实 step 162：非我方算术缺陷（FMA 已补、双精度也
+不符），而是 GPU 专有超越函数舍入。
+
+**结果**：落地 FMA 融合（float32 仿真真实正确性改进，130/130 零回归）；event2848/7308 确证超越函数精度墙、非可修
+bug（留 Dump，TombRaider 保持 35/37）。本步无新 PASS——目标 case 属精度墙，但补齐 FMA 对未来精度边缘 case（如
+F1 sekiro）有益。
 
 # 164
 ## Prompts
