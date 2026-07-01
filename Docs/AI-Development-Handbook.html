@@ -350,12 +350,53 @@ void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … 
 <p><b>验证方式</b>：这一期还没有回归套件、没有成熟的 golden 自动对比，<b>验证靠人看打印</b>——所以每步都很小、便于肉眼判断对错。慢，但可控。</p>
 
 <h2 id="qb4">4 · 如何纠正 AI 的错误</h2>
-<p>这一期纠错以<b>重度人工介入</b>为特征：用户常要直接给出真因，甚至亲自动手。三个真实案例（均为用户原话批注）：</p>
-<div class="callout amber">
-<b>找不到根因</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a>：<i>"MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。"</i> 真因由<b>用户</b>点出。<br>
-<b>修复不彻底</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>：<i>"没有考虑到检测到 <code>&lt;</code> 后，取 <code>[i-1:i+1]</code> 实际取出的是 <code> &lt;</code>，导致错误依旧。"</i> 提交信息记成 <i>"I have to fix it by my hand"</i>（用户手改）。<br>
-<b>误删代码</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>：<i>"MiniMax-M2.7 错误地删除以下语句导致 <code>execute_main_function</code> 没有返回执行结果。"</i>
-</div>
+<p>这一期纠错以<b>重度人工介入</b>为特征：用户常要直接给出真因，甚至亲自动手。下面三个真实案例，每个都拆成 <b>AI 的错误判断 → 用户点出的真因 → 对应代码改动</b> 三段——正好说明"为什么这一期离不开人"。</p>
+
+<h3>案例一 · 找不到根因 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a></h3>
+<div class="callout amber"><i>用户原话："MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。"</i></div>
+<ul>
+<li><b>现象</b>：整段 HLSL 函数体被当成<b>一条语句</b>执行 → 执行失败。</li>
+<li><b>AI 的错误判断</b>：MiniMax 认定是 <code>execute_main_function</code> 里那段<b>按 <code>;</code> 切分语句的字符循环写错了</b>（<code>brace_count</code> / <code>;</code> 判断有 bug），围着这个循环反复改，始终找不到根因。</li>
+<li><b>用户点出的真因</b>：喂给循环的 <code>body</code> 字符串<b>没有去掉最外层的一对 <code>{ }</code></b>。<code>body</code> 以 <code>{</code> 开头——循环第一个字符就让 <code>brace_count = 1</code>，直到末尾的 <code>}</code> 才归 0，中间所有顶层 <code>;</code> 都处在 <code>brace_count ≥ 1</code>，永远不触发切分，于是整段被并成一条语句。循环逻辑本身没错，<b>错在喂进去的数据</b>。</li>
+</ul>
+<pre><code>body = body.strip()
+if body.startswith('{') and body.endswith('}'):
+    body = body[1:-1]        # 去掉最外层 { }，再按 ; 切分
+# 之后才是原来的 for char in body: ... 切分循环</code></pre>
+
+<h3>案例二 · 修复不彻底 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a></h3>
+<div class="callout amber"><i>用户原话："MiniMax-M2.7 并不能完全修复……没有考虑到检测到 <code>&lt;</code> 后，取 <code>[i-1:i+1]</code> 实际取出的是 <code> &lt;</code>，导致错误依旧。"</i> 提交信息直接记成 <i>"I have to fix it by my hand"</i>（用户手改）。</div>
+<ul>
+<li><b>现象</b>：<code>float cond = dist &lt;= LightRadius ? 1.0 : 0.0</code> 里的 <code>&lt;=</code> 被识别成 <code>&lt;</code>，右操作数被切成 <code>= LightRadius</code>（语法树里成了 <code>Value(= LightRadius)</code>）→ 取不到常量、条件恒错。</li>
+<li><b>AI 的错误判断（修了但没修对）</b>：MiniMax 加了"两字符运算符"判断，但<b>取的切片窗口错了</b>——用 <code>expr[i-1:i+1]</code>。当 <code>i</code> 指向 <code>&lt;</code> 时，<code>[i-1:i+1]</code> 取出的是 <code>" &lt;"</code>（空格 + <code>&lt;</code>），不在运算符表里，于是仍退回把单字符 <code>&lt;</code> 当运算符 → <code>&lt;=</code> 没被识别，错误照旧。</li>
+<li><b>用户点出的真因 + 手改</b>：两字符匹配必须<b>向前看</b> <code>expr[i:i+2]</code>（=<code>"&lt;="</code>），而不是向后取 <code>[i-1:i+1]</code>；同时给单字符判断加护栏——<b>当 <code>expr[i:i+2]</code> 已是二字符运算符时，就不把单字符 <code>&lt;</code> 计入候选</b>。修正后的 <code>_find_top_level_operator</code> 逻辑（见 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-39">#39</a> 的加注版）：</li>
+</ul>
+<pre><code>if depth == 0:
+    if i >= 1:
+        two_char = expr[i-1:i+1]          # 以 i 结尾的两字符，如 "&lt;="
+        if two_char in self.operators:
+            candidates.append((i-1, two_char, self.operators[two_char]))
+            i += 1
+            continue
+    two_char = expr[i:i+2]                 # 向前看：i 处若是 "&lt;=" 的开头
+    if char in self.operators and not (i >= 1 and two_char in self.operators):
+        candidates.append((i, char, self.operators[char]))   # 单字符，但 &lt;= 时不计 &lt;</code></pre>
+
+<h3>案例三 · 误删代码 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a></h3>
+<div class="callout amber"><i>用户原话："MiniMax-M2.7 错误地删除以下语句导致 <code>execute_main_function</code> 没有返回执行结果。"</i></div>
+<ul>
+<li><b>任务</b>：把 if/else 的执行改成"执行 <code>if</code> 前先检查有无 <code>else</code>，有就先合并成完整 if-else 再执行一次"。</li>
+<li><b>AI 的错误判断</b>：MiniMax 在重构 if-else 合并逻辑时，<b>顺手误删了 <code>execute_main_function</code> 里处理 <code>return</code> 的那段</b>——它以为那段与本次重构无关，实则是取返回值的关键：</li>
+</ul>
+<pre><code># 被 AI 误删的语句：
+if 'return' in stmt and 'output' in stmt:
+    ret_val = local_vars.get('output')   # 把 output 取作返回值
+    i += 1
+    continue</code></pre>
+<ul>
+<li><b>后果 + 修复</b>：删掉后 <code>execute_main_function</code> 再不把 <code>output</code> 取作返回值 → <b>函数没有返回执行结果</b>。修复就是把这段 <code>return</code> 处理<b>原样恢复</b>回去。这类"改 A 却顺手删了不相关的 B"，是这一期必须由人逐行 review 兜底的典型。</li>
+</ul>
+
 <div class="callout green"><b>也有亮点</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45">#45</a>：AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。</div>
 <p><b>小结</b>：纠错回路短而频繁，<b>质量把关几乎全在人</b>——AI 更像"快速打字员 + 局部修补匠"，深层根因与最终正确性靠人兜底。</p>
 

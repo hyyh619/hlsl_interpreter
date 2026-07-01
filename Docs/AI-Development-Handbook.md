@@ -270,12 +270,65 @@ void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … 
 
 ## 4 · 如何纠正 AI 的错误
 
-这一期纠错以**重度人工介入**为特征：用户常常要直接给出真因，甚至亲自动手。三个真实案例（均为用户原话批注）：
+这一期纠错以**重度人工介入**为特征：用户常常要直接给出真因，甚至亲自动手。下面三个真实案例，每个都拆成 **AI 的错误判断 → 用户点出的真因 → 对应代码改动** 三段——正好说明"为什么这一期离不开人"。
 
-- **找不到根因**：[#35](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35) —— "MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。" 真因由**用户**点出。
-- **修复不彻底**：[#37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37) —— "MiniMax-M2.7 并不能完全修复……没有考虑到检测到 `<` 后，取 `[i-1:i+1]` 实际取出的是 ` <`，导致错误依旧。" 提交信息直接记成 *"I have to fix it by my hand"*（用户手改）。
-- **误删代码**：[#42](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42) —— "MiniMax-M2.7 **错误地删除**以下语句导致 `execute_main_function` 没有返回执行结果。" AI 在重构 if-else 合并时把 `return` 处理删掉了。
-- **也有亮点**：[#45](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45) —— AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。
+#### 案例一 · 找不到根因 · [#35](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35)
+
+> 用户原话："MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。"
+
+- **现象**：整段 HLSL 函数体被当成**一条语句**执行 → 执行失败。
+- **AI 的错误判断**：MiniMax 认定是 `execute_main_function` 里那段**按 `;` 切分语句的字符循环写错了**（`brace_count` / `;` 判断有 bug），围着这个循环反复改，始终找不到根因。
+- **用户点出的真因**：喂给循环的 `body` 字符串**没有去掉最外层的一对 `{ }`**。`body` 以 `{` 开头——循环第一个字符就让 `brace_count = 1`，直到末尾的 `}` 才归 0，中间所有顶层 `;` 都处在 `brace_count ≥ 1`，永远不触发切分，于是整段被并成一条语句。循环逻辑本身没错，**错在喂进去的数据**。
+- **代码改动**：在进入切分循环**之前，先剥掉 `body` 首尾的花括号**：
+
+```python
+body = body.strip()
+if body.startswith('{') and body.endswith('}'):
+    body = body[1:-1]        # 去掉最外层 { }，再按 ; 切分
+# 之后才是原来的 for char in body: ... 切分循环
+```
+
+#### 案例二 · 修复不彻底 · [#37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37)
+
+> 用户原话："MiniMax-M2.7 并不能完全修复……没有考虑到检测到 `<` 后，取 `[i-1:i+1]` 实际取出的是 ` <`，导致错误依旧。" 提交信息直接记成 *"I have to fix it by my hand"*（用户手改）。
+
+- **现象**：`float cond = dist <= LightRadius ? 1.0 : 0.0` 里的 `<=` 被识别成 `<`，右操作数被切成 `= LightRadius`（见语法树 `Value(= LightRadius)`）→ 取不到常量、条件恒错。
+- **AI 的错误判断（修了但没修对）**：MiniMax 加了"两字符运算符"判断，但**取的切片窗口错了**——用 `expr[i-1:i+1]`。当 `i` 指向 `<` 时，`[i-1:i+1]` 取出的是 `" <"`（空格 + `<`），不在运算符表里，于是仍退回把单字符 `<` 当运算符 → `<=` 没被识别，错误照旧。
+- **用户点出的真因 + 手改**：两字符匹配必须**向前看** `expr[i:i+2]`（=`"<="`），而不是向后取 `[i-1:i+1]`；同时给单字符判断加护栏——**当 `expr[i:i+2]` 已是二字符运算符时，就不把单字符 `<` 计入候选**。修正后的 `_find_top_level_operator` 逻辑（见 [#39](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-39) 的加注版）：
+
+```python
+if depth == 0:
+    if i >= 1:
+        two_char = expr[i-1:i+1]          # 以 i 结尾的两字符，如 "<="
+        if two_char in self.operators:
+            candidates.append((i-1, two_char, self.operators[two_char]))
+            i += 1
+            continue
+    two_char = expr[i:i+2]                 # 向前看：i 处若是 "<=" 的开头
+    if char in self.operators and not (i >= 1 and two_char in self.operators):
+        candidates.append((i, char, self.operators[char]))   # 单字符，但 <= 时不计 <
+```
+
+#### 案例三 · 误删代码 · [#42](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42)
+
+> 用户原话："MiniMax-M2.7 **错误地删除**以下语句导致 `execute_main_function` 没有返回执行结果。"
+
+- **任务**：把 if/else 的执行改成"执行 `if` 前先检查有无 `else`，有就先合并成完整 if-else 再执行一次"。
+- **AI 的错误判断**：MiniMax 在重构 if-else 合并逻辑时，**顺手误删了 `execute_main_function` 里处理 `return` 的那段**——它以为那段与本次重构无关，实则是取返回值的关键：
+
+```python
+# 被 AI 误删的语句：
+if 'return' in stmt and 'output' in stmt:
+    ret_val = local_vars.get('output')   # 把 output 取作返回值
+    i += 1
+    continue
+```
+
+- **后果 + 修复**：删掉后 `execute_main_function` 再不把 `output` 取作返回值 → **函数没有返回执行结果**。修复就是把这段 `return` 处理**原样恢复**回去。这类"改 A 却顺手删了不相关的 B"，是这一期必须由人逐行 review 兜底的典型。
+
+#### 也有亮点
+
+- [#45](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45) —— AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。
 - **小结**：纠错回路短而频繁，**质量把关几乎全在人**——AI 更像"快速打字员 + 局部修补匠"，深层根因与最终正确性靠人兜底。
 
 ## 5 · 如何进行调试
