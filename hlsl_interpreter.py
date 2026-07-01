@@ -5617,6 +5617,91 @@ class HLSLInterpreter:
             'SV_TARGET0': 'Color',
         }
 
+    def load_mesh_output_golden(self, bin_path: str, layout_path: str) -> list:
+        """Load a RenderDoc stage mesh-output dump — `<name>_<stage>_mesh.bin`
+        plus `<name>_<stage>_mesh_layout.csv` — into golden rows keyed by the
+        canonical output key (the same keys the VS/DS/GS results use), for any
+        of VS / DS / GS.
+
+        layout.csv:
+            Stage,<vs|ds|gs>
+            Stride,<bytes-per-vertex>
+            NumVerts,<n>
+            SemanticName,SemanticIndex,ComponentCount,VarType   (header)
+            <name>,<idx>,<comp>,<Float|UInt|SInt>               (one row per attr)
+
+        The .bin is `NumVerts * Stride` bytes; attributes are packed in declared
+        order, each occupying `ComponentCount * 4` bytes. This is exact and
+        unambiguous — no SV-Position-first reorder, no uint-column bit
+        reinterpret, no trailing-float3 gotcha — so it is preferred over the
+        `_vs_mesh.csv` golden. Returns [] if the files are absent/malformed."""
+        if not (os.path.exists(bin_path) and os.path.exists(layout_path)):
+            return []
+        sem_to_key = self._get_output_semantic_to_key_map()
+        stride = num_verts = 0
+        attrs = []           # (key, comp, fmt_char, byte_off)
+        off = 0
+        in_attrs = False
+        _FMT = {'FLOAT': 'f', 'UINT': 'I', 'SINT': 'i', 'INT': 'i', 'UNORM': 'f'}
+        for row in self.load_csv(layout_path):
+            if not row or not row[0].strip():
+                continue
+            tag = row[0].strip()
+            if tag == 'Stride' and len(row) > 1:
+                stride = int(row[1])
+            elif tag == 'NumVerts' and len(row) > 1:
+                num_verts = int(row[1])
+            elif tag == 'SemanticName':
+                in_attrs = True           # column header; attribute rows follow
+            elif in_attrs and len(row) >= 4:
+                name = row[0].strip()
+                idx = int(row[1]) if row[1].strip().lstrip('-').isdigit() else 0
+                comp = int(row[2]) if row[2].strip().isdigit() else 1
+                vtype = row[3].strip()
+                sem_full = f'{name.upper()}{idx}' if idx > 0 else name.upper()
+                key = sem_to_key.get(sem_full, sem_full)
+                attrs.append((key, comp, _FMT.get(vtype.upper(), 'f'), off))
+                off += comp * 4
+        if stride <= 0 or num_verts <= 0 or not attrs:
+            return []
+        with open(bin_path, 'rb') as f:
+            data = f.read()
+        golden = []
+        for v in range(num_verts):
+            base = v * stride
+            if base + stride > len(data):
+                break
+            entry = {}
+            for key, comp, fmt, aoff in attrs:
+                try:
+                    vals = list(struct.unpack_from('<%d%s' % (comp, fmt),
+                                                   data, base + aoff))
+                except struct.error:
+                    continue
+                entry[key] = vals[0] if len(vals) == 1 else vals
+            golden.append(entry)
+        return golden
+
+    @staticmethod
+    def find_stage_mesh_dump(data_folder: str, stage: str):
+        """Return (bin_path, layout_path) for a stage's mesh-output dump
+        (`*_<stage>_mesh.bin` + `*_<stage>_mesh_layout.csv`), or (None, None).
+        `stage` is 'vs' / 'ds' / 'gs'."""
+        binf = layf = None
+        suffix_bin = f'_{stage}_mesh.bin'
+        suffix_lay = f'_{stage}_mesh_layout.csv'
+        try:
+            names = os.listdir(data_folder)
+        except OSError:
+            return None, None
+        for n in sorted(names):
+            low = n.lower()
+            if low.endswith(suffix_bin) and binf is None:
+                binf = os.path.join(data_folder, n)
+            elif low.endswith(suffix_lay) and layf is None:
+                layf = os.path.join(data_folder, n)
+        return (binf, layf) if (binf and layf) else (None, None)
+
     def load_all_cbuffers_from_combined_csv(self, csv_path: str):
         """Load all cbuffer data from a combined VS/PS cbuffer CSV file."""
         for cb_name in list(self.cbuffers.keys()):
@@ -5644,10 +5729,17 @@ class HLSLInterpreter:
             pname = param['name']
             local_vars[pname] = input_data.get(pname, self._default_value_for_type(param['type']))
 
-        # Initialize output params
+        # Initialize output params. RenderDoc's mesh-output dump initialises each
+        # 4-component output register to (0,0,0,1) and lets the shader overwrite
+        # only the components it actually writes — so an unwritten float4 (or an
+        # unwritten .w of a partially-written float4) reads back as w=1, not 0.
+        # Match that so the exact bin/layout golden agrees on unwritten lanes.
         for param in output_params:
             pname = param['name']
-            local_vars[pname] = self._default_value_for_type(param['type'])
+            if param.get('type') == 'float4':
+                local_vars[pname] = [0.0, 0.0, 0.0, 1.0]
+            else:
+                local_vars[pname] = self._default_value_for_type(param['type'])
 
         self._eval_counter += 1
         self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)

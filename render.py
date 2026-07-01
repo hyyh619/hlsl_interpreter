@@ -1132,11 +1132,20 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             for pname in sv_vid_params:
                 vtx[pname] = vid
 
-    # Load golden VS output (optional)
+    # Load golden VS output (optional). Prefer the exact bin+layout mesh dump
+    # (`*_vs_mesh.bin` + `*_vs_mesh_layout.csv`) when present — it is unambiguous
+    # (explicit stride/type/order, no SV-Position-first reorder, no uint-column
+    # bit reinterpret, no trailing-float3 gotcha) — and fall back to the CSV.
     golden_vs_rows = []
-    if os.path.exists(golden_vs_csv):
+    vs_bin, vs_layout = vs_interp.find_stage_mesh_dump(data_folder, 'vs')
+    if vs_bin and vs_layout:
+        golden_vs_rows = vs_interp.load_mesh_output_golden(vs_bin, vs_layout)
+        vs_interp.log_output(
+            f"Loaded {len(golden_vs_rows)} golden VS rows from mesh bin+layout "
+            f"({os.path.basename(vs_bin)})")
+    if not golden_vs_rows and os.path.exists(golden_vs_csv):
         golden_vs_rows = vs_interp.load_vs_golden_from_mesh_csv(golden_vs_csv, vs_output_params)
-        vs_interp.log_output(f"Loaded {len(golden_vs_rows)} golden VS output rows")
+        vs_interp.log_output(f"Loaded {len(golden_vs_rows)} golden VS output rows (csv)")
 
     # Execute VS
     vs_interp.log_output("=" * 50)

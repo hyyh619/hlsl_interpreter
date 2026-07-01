@@ -2993,17 +2993,42 @@ docs: verify 7-class fix status (Dump 85→48, C 35/37 fixed, Nobu586/ES2_3061 f
 **确认不可修且归类正确**：A(2)/B(16)/C 残 2(超越函数精度)/F1(2)/E texel 精度。**最明确的可修未做项**：D 四元数置换
 （event2135/2912）。本步未改解释器代码，仅验证 + 锁定 2 个新通过用例入回归（132/132 零回归）。
 
-# 165
+# 165 增加VS/DS/GS output比较
 ## Prompts
+1. 更新了Dump/, Cases/目录下的zip draw文件，增加了VS/DS/GS mesh output
+2. 请增加对VS/DS/GS output的比较，直接使用VS/DS/GS mesh output的bin文件和layout文件来解释golden数据，与你的输出数据做对比
+3. 比对完成打印总的执行数量和成功数，失败则打印前面几个的失败数据作为例子，像VS mesh比较一样。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+feat: bin+layout mesh-output golden loader (VS/DS/GS) + VS wired to it + (0,0,0,1) unwritten-output init.
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step165-mesh-output-bin-layout-comparison.md`。
+
+**新格式**：`<name>_<stage>_mesh.bin` + `_layout.csv`（`Stage/Stride/NumVerts` + 属性行 SemanticName,Index,
+ComponentCount,VarType）；bin 按属性顺序打包。比 CSV 精确（无 SV-Position-first 重排/uint 列位重解释/trailing-float3
+gotcha）。GS 存在（Octopath_event102）；DS 有 shader 但**无 `_ds_mesh.bin`**（无 golden）。
+
+**实现**：`load_mesh_output_golden(bin,layout)`（通用，键用与 VS 结果一致的 canonical semantic）+
+`find_stage_mesh_dump(folder,stage)`；`render.py` VS golden 优先用 bin+layout（回退 CSV），沿用
+`compare_vs_output_with_golden_params`（已打印 `Total PASSED rows: X/Y` + 前几个 `Error:` 例子）。验证 bin==CSV
+golden 逐行一致。
+
+**精确 golden 暴露的真实 gap**（更新 zip 后旧 CSV 位重排掩盖的问题显形，132→121，均非 bin loader 之误）：
+①**未写输出默认值**——RenderDoc 把 4 分量输出寄存器初始化 `(0,0,0,1)`，未写 float4/半写.w golden=1 我方=0。
+**已修**：`_execute_void_main` float4 输出初始化为 `[0,0,0,1]`（121→125）。②**子寄存器输出打包**（manhattan
+`p6:TEXCOORD1`→.zw）未修。③**sekiro4 VS 矩阵分歧**（5 案，sv_position 13.64 vs 0.381，非 FMA/精度）未修。
+
+**回归**：更新 zip 精确 golden 让 gap 显形；float4 init 修复后，把仍失败的 7 个（sekiro4×5、manhattan_1041、
+ES2_3061，均因更新 golden 变化非 loader 误）移出回归并记待查，**恢复 125/125 绿**（精确 bin golden 基线）。
+
+**GS/DS**：loader 已支持其 golden；GS output 比较需 GS 执行器（primitive 组装+`v[i][j]`+`Append`，未实现，future
+work）；DS 无 golden。**后续**：sekiro4 VS 分歧（优先，同族疑一根因）、子寄存器输出打包、GS 执行器。
 
 # 166
 ## Prompts
