@@ -363,6 +363,35 @@ if 'return' in stmt and 'output' in stmt:
 > 一个 case **通过**当且仅当三条同时成立：① `render.py` 干净退出；② 日志里**没有以 `Error:` 开头的行**（VS-vs-golden 的分量级不符）；③ 日志的 `Total PASSED rows: X/Y` 汇总满足 **X == Y**（每一行 golden 都匹配）。
 > 若某个 case 失败，打开 `Cases/regression_logs/<zip-stem>.log`、grep `Error:` 找到不符分量，**先修解释器再往下走**。
 
+**`Total PASSED rows: X/Y` 到底是什么？用实际日志说清 X == Y**。它由 `compare_vs_output_with_golden` 在跑完 VS 后打印（`hlsl_interpreter.py`）：
+
+- **Y = golden 的总行数**，即这次 Draw 的**顶点数**（golden VS 输出每个顶点一行）。
+- **X = "整行都对"的行数**：某一行里，**每个语义字段（`SV_POSITION`/`COLOR`/`WORLDPOS`…）的每个分量**都与 golden 在 `float_tolerance` 内相等，这一行才计入 X。**任何一个分量超差，整行判失败**（并打一条 `Error:` 行），X 不加一。
+
+一个**全通过**的真实 case（`event371`，6 个顶点）日志尾部长这样：
+
+```
+VS executed 6 vertices in 0.0028s
+Comparing VS output with golden data...
+Total PASSED rows: 6/6
+Comparison PASSED: All output data matches golden data within tolerance
+```
+
+`6/6` → **X == Y**，6 行 golden 全部逐分量匹配 = 这个 case 绿。
+
+反过来，一个**没修好**的真实 case（`event399` 某次修复前，696 个顶点）日志是：
+
+```
+Error: Row 0 Color[0]: output=0.000000 golden=0.364710 diff=0.364710
+Error: Row 0 Color[1]: output=0.000000 golden=0.364710 diff=0.364710
+Error: Row 1 Color[0]: output=0.000000 golden=1.121450 diff=1.121450
+   … (每个出错分量一条 Error 行) …
+Total PASSED rows: 0/696
+Comparison FAILED: Some output data does not match golden data
+```
+
+`0/696` → **X ≠ Y**（这里 X=0，一行都没对上，Color 全算成 0）= 这个 case 红。回归判据要的就是 **X == Y**：**Y 是应对上的行数、X 是真正对上的行数，两者相等才说明"每一个顶点、每一个分量都和真机一致"**——差一行、甚至一行里差一个分量，`X < Y`，回归立即判红。这也和判据②（无 `Error:` 行）互为印证：只要 `X < Y`，日志里必然有对应的 `Error:` 行指出是哪一行、哪个字段、哪个分量、差多少。
+
 这段约束把"完成"变成了**机器可判、不可赖账**的三条硬指标——AI 不能自称"修好了"，必须让 `run_regression.py` 亮绿。它还顺带堵死了两条捷径：**不许改 runner 硬编码绕过**、**失败必须回到解释器侧修**（而不是去动 golden 或放宽判据）。
 
 > **为什么要"机器判绿"，看第二部分一个反面教训**：那一期还没有回归套件，AI 完全靠"自称"。步骤 [OpenCode #37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37) 里，MiniMax-M2.7 **把两字符运算符的修复当成"已修好"提交了**——提交信息记的是修复 `<=` 识别问题。但它其实**没修对**：检测到 `<` 时取 `expr[i-1:i+1]` 得到的是 `" <"`（空格+`<`），`<=` 依旧被切成 `<`，`dist <= LightRadius` 照错不误。因为**没有任何机器判据拦住这次"假修复"**，错误一路溜过，直到用户亲自复跑、读打印才发现，最后提交信息只能如实记成 *"MiniMax-M2.7 fixes two char operator issue failed. I have to fix it by my hand."*（详见第二部分 §4 案例二）。
