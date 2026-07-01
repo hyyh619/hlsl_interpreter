@@ -2922,17 +2922,76 @@ feat: FMA fusion for float32 a*b±c (single rounding, GPU mad semantics); event2
 bug（留 Dump，TombRaider 保持 35/37）。本步无新 PASS——目标 case 属精度墙，但补齐 FMA 对未来精度边缘 case（如
 F1 sekiro）有益。
 
-# 164
+# 164 再次验证问题是否修复完成
 ## Prompts
+验证下列问题是不是都已经修复完成（除了不能修复的问题）
+A. 超时（2）— 纯 Python 太慢，非正确性
+20 万顶点级，被 240s 杀前 0 个 Error:（step 155 已核「正确但慢」）。
+
+OldWorld_event1034.zip
+OldWorld_event2767.zip
+B. 无 golden（16）— 结构性不可验证
+无可比 VS 网格 / 0 顶点执行（日志无 VS-vs-golden 比较段）。
+
+EndlessSpace2_event3093.zip
+Nobu15-frame3456_event2894.zip
+manhattan_frame_274_event50.zip / event87 / event124 / event161 / event198
+sekiro2_event13554.zip / event13931 / event14130 / event14388
+sekiro4_event19857.zip / event20244
+witcher3_countryside_event16803.zip / event16817 / event21346
+C. TombRaider 矩阵选择子丢失（37）— 反编译有损，超出 HLSL 源解释边界
+3Dmigoto 丢弃 WorldParameters[] 矩阵成员选择子 → 位置/法线取错矩阵；全部 passed 0/Y。需 DXBC 反汇编 寄存器级 golden（dxbc_diff）才能定位。
+
+event67, 103, 225, 380, 396, 419, 429, 435, 447, 521, 626, 678, 692, 817, 832, 871, 931, 954, 1002, 1018, 1802, 2113, 2129, 2153, 2164, 2171, 2201, 2252, 2527, 2605, 2848, 2867, 2880, 2892, 2899, 7308, 7376（均 TombRaider-frame25229_event*.zip，共 37）。
+D. Octopath 解码（8）— 四元数/骨骼基置换 + sv_position + 地形退化
+event3012.zip（passed 30/51，step 156 half4 修复后大幅改善，残 sv_position）
+event2135.zip（0/6）/ event2912.zip（0/504）：TEXCOORD10/11 四元数/骨骼基分量置换 （x↔y 交换 / 3-cycle，解码顺序 bug，非列错位——step 158 已澄清）
+event664.zip（0/51）：sv_position 蒙皮
+event3601.zip（0/96）：procedural foliage 纹理采样精度
+event576.zip / event2651.zip / event2682.zip（各 8/23064）：地形 heightmap 退化（cb 全 0 → LOD/索引塌缩）
+E. witcher 切线/矩阵主序/纹理（10）— 主序反编译 + texel 精确性
+step 157 已补 Texture2DArray 切片采样（采到真实 texel、值向 golden 收敛），但 o2/o3 受 texel 精确性 （R16G16_FLOAT 细节法线）+ 矩阵主序（反编译 mul(world,M) vs GPU mul(M,world)）双重限制未入容差。
+
+event16215.zip（0/30）/ event16834.zip（0/30，本步修崩溃）
+event21719.zip（0/1728）/ event21895.zip（0/6360）/ event22049.zip（0/840）
+event22092.zip（0/414）/ event22201.zip（0/18）/ event22229.zip（0/12）/ event22260.zip（0/108）
+event21979.zip（132/840）：sv_position ~1.6e-4 相对精度边界（近 F1）
+F1. 精度边界（2）— 失败行 diff 略超 0.005 容差
+sekiro2_event3207.zip（43329/45576）
+sekiro2_event9493.zip（43329/45576）
+F2. 其它（10）— 混合
+Nobu15-frame3456_event586.zip（0/2174）：矩阵主序（step 156 修了 cbuffer 矩阵限定符解析使其加载， 但反编译 mul(world,M)=转置，与 C/E 同墙）
+OldWorld_event3338.zip（23550/23814，绝大多数过，少量行错，近 A 但可比对）
+EndlessSpace2_event2991.zip（1464/1536）/ event3061.zip（1188/1536）：部分行错
+sekiro2_event14998.zip（0/4867）/ event15481.zip（0/3）/ event16052.zip（0/3）/ event4833.zip（12/24）
+sekiro4_event20560.zip（0/179）/ event7844.zip（162/324）
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+docs: verify 7-class fix status (Dump 85→48, C 35/37 fixed, Nobu586/ES2_3061 fixed) — step 164.
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step164-verify-fix-status.md`。全量复跑 Dump（现 48 zip），逐类核对。回归
+**132/132**（本步新增 Nobu586、ES2_3061）。
+
+**逐类结论**：
+| 类 | 清单 | 现状 |
+|----|------|------|
+| A 超时 | 2 | 2 不可修（20万顶点性能，0 Error）✓ 维持 |
+| B 无 golden | 16 | 16 不可验证（无网格/0 顶点）✓ 维持 |
+| C 选择子 | 37 | **35 已修**（step160-162 反汇编选择子恢复+按主序加载+NaN 一致；回归守护 event1018/2129/1802/2867）+ 2 不可修（event2848/7308 GPU 超越函数精度，step163 确证）→ **完成** |
+| D Octopath | 8 | **0 修，含可修未做**：event2135/2912 四元数/骨骼基分量置换（解码顺序 bug）；event664 蒙皮；event3601 foliage 精度；event576/2651/2682 地形退化(cb 全 0) |
+| E witcher | 10 | 0 修；o2/o3 受 R16G16 细节法线 **texel 精度**墙（step157 已补切片采样但精度不达），16834 崩溃已修 |
+| F1 精度 | 2 | 2 不可修（sekiro 3207/9493 diff 略超容差，FMA 未翻盘）✓ 维持 |
+| F2 其它 | 10 | **2 已修**：Nobu586（step161 row_major 主序，清单误判为墙，实为可修）、ES2_3061（step163 FMA）；残 8 混合 |
+
+**答「除不可修外是否都已修复」：否——尚有可修项未做**，但推进显著：**C 从「超边界」变为 35/37 已修**；F2 两个转通过。
+**确认不可修且归类正确**：A(2)/B(16)/C 残 2(超越函数精度)/F1(2)/E texel 精度。**最明确的可修未做项**：D 四元数置换
+（event2135/2912）。本步未改解释器代码，仅验证 + 锁定 2 个新通过用例入回归（132/132 零回归）。
 
 # 165
 ## Prompts
