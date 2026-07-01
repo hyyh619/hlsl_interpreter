@@ -697,7 +697,7 @@ Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
 <!-- Q6 -->
 <h2 id="q6">6 · 回归测试的建立与应用</h2>
 <div class="grid3">
-  <div class="c"><b>数据驱动</b><br><code>regression_test_zip_files.csv</code> 一行一个必过的 capture zip。</div>
+  <div class="c"><b>数据驱动</b><br><a href="../Cases/regression_test_zip_files.csv"><code>regression_test_zip_files.csv</code></a> 一行一个必过的 capture zip。</div>
   <div class="c"><b>headless 跑</b><br><code>run_regression.py</code> 逐个跑 <code>render.py</code>，写 per-case 日志，打印 PASS/FAIL，失败则退出码非零。</div>
   <div class="c"><b>三条通过判据</b><br>① 干净退出 ② 无 <code>Error:</code> 行 ③ <code>Total PASSED rows: X/X</code></div>
 </div>

@@ -669,7 +669,7 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 
 ### 6.1 建立
 本项目**没有单元测试**，回归套件就是安全网。它是**数据驱动**的：
-- `Cases/regression_test_zip_files.csv` 列出必须保持通过的 capture zip（一行一个）。
+- [`Cases/regression_test_zip_files.csv`](../Cases/regression_test_zip_files.csv) 列出必须保持通过的 capture zip（一行一个）。
 - `run_regression.py` 读这个 CSV，逐个 headless 跑 `render.py`，每个写一份 `Cases/regression_logs/<name>.log`，最后打印 PASS/FAIL 汇总，任一失败则退出码非零（可 gate CI）。
 - **通过判据**（三条全满足）：① `render.py` 干净退出；② 日志无 `Error:` 行；③ `Total PASSED rows: X/X`（X==Y）。
 
