@@ -435,8 +435,64 @@ if 'return' in stmt and 'output' in stmt:
 </svg>
 <div class="legend">提示词四层：越靠上越"常驻"，越靠下越"本轮"</div>
 </div>
+
+<h3>① 常驻说明里，关于回归测试的约束</h3>
+<p>四层里最关键的一条纪律，是 <code>CLAUDE.md</code> 对回归测试写得<b>非常死、一字不让</b>（原文节译）：</p>
 <div class="callout">
-<b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。C1 修复时 AI 直接知道要看 golden 对比日志、改完跑回归——都来自 <code>CLAUDE.md</code>。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>。本轮"可执行循环规范 + 约束清单"的提示词原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42 继续修复</a>。
+<b>每次代码改动后，都必须在"认为完成"之前跑回归套件。</b> 本项目没有单元测试，回归套件就是防止解释器/管线被改坏的安全网。套件数据驱动：<code>Cases/regression_test_zip_files.csv</code> 逐行列出必须持续通过的 capture；增删覆盖面就改这个 CSV，<b>不要在 runner 里硬编码 case 名</b>。<br>
+一个 case <b>通过</b>当且仅当三条同时成立：① <code>render.py</code> 干净退出；② 日志里<b>没有以 <code>Error:</code> 开头的行</b>；③ 日志的 <code>Total PASSED rows: X/Y</code> 满足 <b>X == Y</b>。失败就打开 <code>Cases/regression_logs/&lt;stem&gt;.log</code> grep <code>Error:</code>，<b>先修解释器再往下走</b>。
+</div>
+<p>这段约束把"完成"变成<b>机器可判、不可赖账</b>的三条硬指标，还顺带堵死两条捷径：<b>不许改 runner 硬编码绕过</b>、<b>失败必须回解释器侧修</b>（而非动 golden 或放宽判据）——AI 不能自称"修好了"，必须让 <code>run_regression.py</code> 亮绿。</p>
+
+<h3>② 任务指令：一条落到真实 case 的可执行循环</h3>
+<p>把 ② 的循环规范落到 C1（多数组 cbuffer）上，一轮是这样跑完的——<b>每一步都有机器可判的出口</b>：</p>
+<pre><code>[挑 case] 取 Dump 里下一个 zip → 跑 render.py
+   ↓
+[找 Error] output.log 出现:
+   Error: Row0 texgen[2].x output=0.0000 golden=0.3125 diff=0.3125   ← texgen[2] 读成 0
+   ↓
+[定位] 沿数据流回溯:texgen[] 只有 [0] 有值,[1]/[2] 全 0
+        → cbuffer 数组字段的二进制重载只填了首个元素
+   ↓
+[修]     load_all_cbuffers_from_combined_csv:按数组步长逐元素填充
+   ↓
+[验证]   重跑该 case → 无 Error、Total PASSED rows: N/N
+   ↓
+[回归]   python run_regression.py → 全绿(一次修复顺带绿了 5 个同类 case)
+   ↓
+[提交]   git commit 该 fix
+   ↓
+[加回归] 从 5 个同类 zip 挑一个,加进 regression_test_zip_files.csv
+   ↓
+[写文档] Sessions/hlsl-interpreter-stepN-*.md 记现象/根因/改动/回归
+   ↓
+[下一轮] 回到 [挑 case]</code></pre>
+<p>找 Error 靠 grep、验证靠 <code>X==Y</code>、回归靠退出码——AI 能自己判断这一轮是否<b>真的</b>完成，而不是"感觉修好了"。原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42</a>。</p>
+
+<h3>③ 现状 / 约束清单：给 AI 一个合法的"放弃"理由</h3>
+<p>用户把"已知未修长尾"列在提示词前面，并<b>逐条标注哪些是 capture 限制、无解</b>，让 AI <b>不在死路上空转</b>（摘录，原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">#42</a>）：</p>
+<table>
+<thead><tr><th>长尾项</th><th>状态</th><th>是否可解</th></tr></thead>
+<tbody>
+<tr><td>打包 uint 八面体法线（event16215/16834）</td><td>sv_position 已修，残余是更深的八面体解码</td><td>⏳ 未解，暂缓</td></tr>
+<tr><td>四元数 typed-buffer（event2135/3542…）</td><td>位运算已修；t3 是 <code>SNORM</code>、t2 是 <code>UNORM</code></td><td>❌ <b>capture 未记录 view 格式，无法区分 → 无解</b></td></tr>
+<tr><td>raw structured buffer（event22201）</td><td>capture 根本没 dump 该 raw buffer</td><td>❌ <b>能力/capture 限制 → 无解</b></td></tr>
+<tr><td>Tank 18 个超时</td><td>纯 Python 光栅化 ~62k 像素慢</td><td>⚠️ <b>非 bug，暂缓</b></td></tr>
+</tbody>
+</table>
+<p>没有这份清单，AI 会对着 <code>SNORM/UNORM</code> 这种 capture 里根本无从区分的信息反复试探、来回改代码却永远绿不了；有了它，AI 直接记一句"capture 限制、跳过"，把预算投到真正能修的地方。</p>
+
+<h3>④ 留痕要求：既是交付物，也是下一轮的记忆</h3>
+<p>任务指令最后一条永远是"<b>把思考/执行/结果写入 <code>Sessions/hlsl-interpreter-stepN-*.md</code></b>"。留痕同时扮演三个角色：</p>
+<ul>
+<li><b>交付物</b>：每轮修复留一份可核对记录，Session 文档有固定骨架，AI 按它填——<code>Goal / Results summary / Fix 1…k（现象→根因→改动→验证）/ Blocked classes（honest assessment）/ Regression</code>。</li>
+<li><b>下一轮的记忆（闭环关键）</b>：本轮文档的 <b><code>Blocked classes</code></b> 一节，下一轮会<b>原样变成 ③ 的现状/约束清单</b>——上一轮判定"四元数 SNORM/UNORM 无解"，下一轮 AI 读到就直接跳过。留痕把"这条路走不通"沉淀成<b>跨会话的长期记忆</b>，否则每开一个新会话又从零撞一遍南墙。</li>
+<li><b>提示词历史</b>：每轮提示词原文按编号填进 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code>（本手册通篇 <code>#N</code> 超链接指向它），让"当初为什么这么改"可回溯——§4/§8 那条 <code>#2→#3→#4</code> 证据链就靠它还原。</li>
+</ul>
+<div class="callout green"><b>一句话</b>：留痕文档既是这一轮的<b>收尾</b>，也是下一轮的<b>开局输入</b>——<code>Blocked classes</code> → 下轮 <code>现状/约束</code>，<code>Fix 根因</code> → 下轮遇同类现象的先验。写文档不是负担，而是让 AI <b>越修越聪明</b>的记忆机制。</div>
+
+<div class="callout">
+<b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>，<b>要求留痕</b>。
 </div>
 
 <div class="callout amber">
