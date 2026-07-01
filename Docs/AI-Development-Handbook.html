@@ -443,6 +443,11 @@ if 'return' in stmt and 'output' in stmt:
 一个 case <b>通过</b>当且仅当三条同时成立：① <code>render.py</code> 干净退出；② 日志里<b>没有以 <code>Error:</code> 开头的行</b>；③ 日志的 <code>Total PASSED rows: X/Y</code> 满足 <b>X == Y</b>。失败就打开 <code>Cases/regression_logs/&lt;stem&gt;.log</code> grep <code>Error:</code>，<b>先修解释器再往下走</b>。
 </div>
 <p>这段约束把"完成"变成<b>机器可判、不可赖账</b>的三条硬指标，还顺带堵死两条捷径：<b>不许改 runner 硬编码绕过</b>、<b>失败必须回解释器侧修</b>（而非动 golden 或放宽判据）——AI 不能自称"修好了"，必须让 <code>run_regression.py</code> 亮绿。</p>
+<div class="callout amber">
+<b>为什么要"机器判绿"——看第二部分一个反面教训</b>
+<p style="margin:6px 0">那一期还没有回归套件，AI 完全靠"自称"。步骤 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">OpenCode #37</a> 里，MiniMax-M2.7 <b>把两字符运算符的修复当成"已修好"提交了</b>（提交信息说修复 <code>&lt;=</code> 识别问题）。但它其实<b>没修对</b>：检测到 <code>&lt;</code> 时取 <code>expr[i-1:i+1]</code> 得到的是 <code>" &lt;"</code>（空格+<code>&lt;</code>），<code>&lt;=</code> 依旧被切成 <code>&lt;</code>，<code>dist &lt;= LightRadius</code> 照错不误。因为<b>没有任何机器判据拦住这次"假修复"</b>，错误一路溜过，直到用户亲自复跑、读打印才发现，最后提交信息只能如实记成 <i>"MiniMax-M2.7 fixes two char operator issue failed. I have to fix it by my hand."</i>（详见 <a href="#qb4">第二部分 §4 案例二</a>）。</p>
+<b>这正是第三部分立下回归铁律的原因</b>：把"修好了"从 <b>AI 的一句话</b>，变成 <code>run_regression.py</code> 的<b>退出码 + <code>X==Y</code></b>。同样一次"我觉得修好了"，在第二部分能蒙混过关、在第三部分会被回归<b>当场判红</b>——"假绿"再也过不了闸门。
+</div>
 
 <h3>② 任务指令：一条落到真实 case 的可执行循环</h3>
 <p>把 ② 的循环规范落到 C1（多数组 cbuffer）上，一轮是这样跑完的——<b>每一步都有机器可判的出口</b>：</p>
