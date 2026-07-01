@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 辅助开发手册 · 幻灯片</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2733; --muted:#5a6573;
+  --accent:#2563eb; --green:#0f9d58; --amber:#b8770a; --red:#d64545; --line:#dde2e9;
+  --mono:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);
+  font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;}
+.slide{display:none;position:fixed;inset:0;padding:40px 60px 52px;overflow:auto;
+  flex-direction:column;animation:fade .25s ease}
+.slide.active{display:flex}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.kicker{font-family:var(--mono);font-size:14px;color:var(--accent);margin-bottom:6px;letter-spacing:.3px}
+h1.stitle{margin:0 0 14px;font-size:32px;border-left:5px solid var(--accent);padding-left:16px;line-height:1.25}
+.body{flex:1;font-size:20px;line-height:1.55}
+.body ul{margin:6px 0 0;padding-left:26px}
+.body li{margin:9px 0;color:#2f3a47}
+.body p{color:#2f3a47;margin:10px 0}
+b{color:#17324f}
+.muted{color:var(--muted);font-size:.92em}
+code{font-family:var(--mono);font-size:.82em;background:var(--panel2);border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0a52c0}
+pre{background:#f3f5f8;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;margin:12px 0}
+pre code{background:none;border:none;padding:0;color:#2f3a47;font-size:15px;line-height:1.5;white-space:pre}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:17px}
+th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#2a3340}
+tr:nth-child(even) td{background:#f3f5f8}
+.grn-cell{color:var(--green);font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:12px 0}
+.grid2 .c,.grid3 .c{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:17px}
+.grid3.big .c,.grid2.big .c{padding:22px;font-size:20px}
+.grid2 .c b,.grid3 .c b{color:var(--accent)}
+.c2 b{color:var(--green)!important} .c3 b{color:var(--amber)!important}
+.callout{border-left:5px solid var(--accent);background:#eaf2ff;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:18px}
+.callout.green{border-color:var(--green);background:#e7f6ee}
+.note{background:var(--panel2);border-radius:8px;padding:11px 15px;margin:12px 0 0;font-size:17px;color:#33455c}
+.red{color:var(--red)} .grn{color:var(--green)}
+.big-stat{text-align:center;font-size:26px;margin:26px 0}
+.big-stat b{color:var(--accent);font-size:1.5em}
+.svgbox{background:#0f1320;border:1px solid var(--line);border-radius:12px;padding:12px;margin:4px 0 10px}
+svg{display:block;max-width:100%;height:auto;max-height:42vh;margin:0 auto}
+.legend{font-size:13px;color:#9aa4b2;text-align:center;margin-top:8px}
+.imgrow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:6px 0}
+.imgrow figure{margin:0;background:#f3f5f8;border:1px solid var(--line);border-radius:12px;padding:10px}
+.imgrow img{display:block;width:100%;height:auto;background:#000;border-radius:8px;image-rendering:pixelated}
+.imgrow figcaption{font-size:14px;color:var(--muted);text-align:center;margin-top:8px}
+.tag{display:inline-block;font-family:var(--mono);font-size:14px;color:var(--accent);
+  border:1px solid var(--line);border-radius:20px;padding:5px 14px;margin:6px 6px 0 0;background:var(--panel)}
+.pageno{position:absolute;right:26px;bottom:16px;font-family:var(--mono);font-size:13px;color:var(--muted)}
+.cover-slide,.divider{align-items:center;justify-content:center;text-align:center}
+.cover{max-width:960px}
+.cover-tag{font-family:var(--mono);color:var(--accent);font-size:16px;letter-spacing:1px;margin-bottom:14px}
+.cover-h1{font-size:44px;margin:0 0 18px;line-height:1.2}
+.cover-sub{font-size:22px;color:#33455c;line-height:1.6}
+.cover-chips{margin:24px 0 10px}
+.cover-foot{margin-top:24px;color:var(--muted);font-size:16px}
+.part-num{font-size:118px;font-weight:800;line-height:1;color:var(--accent);opacity:.9}
+.part-num.b{color:var(--green)} .part-num.c{color:var(--amber)}
+.part-big h2{font-size:38px;margin:10px 0 6px}
+.part-big p{font-size:20px}
+.divA{background:linear-gradient(160deg,#eef4ff,#f6f7f9)}
+.divB{background:linear-gradient(160deg,#eafaf2,#f6f7f9)}
+.divC{background:linear-gradient(160deg,#fdf5e6,#f6f7f9)}
+#bar{position:fixed;top:0;left:0;height:3px;background:var(--accent);z-index:10;transition:width .2s}
+#hint{position:fixed;left:26px;bottom:14px;font-size:12px;color:var(--muted);z-index:10}
+@media(max-width:820px){.grid2,.grid3,.imgrow{grid-template-columns:1fr}.slide{padding:26px 20px 44px}h1.stitle{font-size:24px}.body{font-size:17px}}
+</style>
+</head><body>
+<div id="bar"></div>
+<section class="slide cover-slide" data-i="0"><div class="body">
+<div class="cover">
+  <div class="cover-tag">AI 辅助开发手册 · 幻灯片版</div>
+  <h1 class="cover-h1">纯 AI Coding 能做到什么样？</h1>
+  <p class="cover-sub">以一个<b>纯 Python 的 D3D11 管线 / HLSL 解释器</b>项目的真实开发记录为例，<br>系统说明如何与 AI 协作完成一个工程。</p>
+  <div class="cover-chips">
+    <span class="tag">第一部分 · 项目介绍</span>
+    <span class="tag">第二部分 · OpenCode+minimax（奠基期）</span>
+    <span class="tag">第三部分 · ClaudeCode（攻坚期）</span>
+  </div>
+  <p class="cover-foot">所有例子取自本仓库的提交、<code>Sessions/</code> 步骤日志与 <code>Prompts/</code> 提示词历史，可逐条核对。</p>
+</div>
+</div></section>
+<section class="slide " data-i="1"><h1 class="stitle">目录 · 三大部分</h1><div class="body">
+<div class="grid3 big">
+  <div class="c"><b>第一部分 · 项目总体介绍</b><br><span class="muted">这是什么 · 怎么跑 · 怎么验证</span></div>
+  <div class="c c2"><b>第二部分 · OpenCode + minimax-m2.7</b><br><span class="muted">奠基期 — 能力有限的模型从零搭骨架，人重度兜底</span></div>
+  <div class="c c3"><b>第三部分 · ClaudeCode + Opus</b><br><span class="muted">攻坚期 — 真机数据驱动、回归当裁判、AI 自我纠错</span></div>
+</div>
+<p class="note">主线：从"人一步步喂、AI 打字修补"，演化到"AI 一步跑完 triage→修复→回归→提交→文档"的闭环。</p>
+</div><div class="pageno">2 / 44</div></section>
+<section class="slide divider divA" data-i="2"><h1 class="stitle">第一部分</h1><div class="body"><div class="part-big"><div class="part-num">A</div><h2>项目总体介绍</h2><p class="muted">这是什么 · 怎么跑 · 怎么验证</p></div></div><div class="pageno">3 / 44</div></section>
+<section class="slide " data-i="3"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">项目的目的</h1><div class="body">
+<div class="grid2">
+  <div class="c"><b>① 为研究 AI coding 而生</b><br><span class="muted">最早是为了探索"用 AI 写代码"能走多远而立项。</span></div>
+  <div class="c c2"><b>② 验证纯 AI coding 的边界</b><br><span class="muted">几乎不动手写代码、全程由 AI 编程，到底能做到什么程度？</span></div>
+  <div class="c c3"><b>③ 长成完整 D3D 可编程管线</b><br><span class="muted">从"解释一段样例 HLSL"演化到 VS→光栅化→深度→PS→输出合并。</span></div>
+  <div class="c"><b>④ 落地为 draw dump 工具</b><br><span class="muted">验证 draw dump 正确性，逐语句/逐像素分析某个具体 Draw。</span></div>
+</div>
+<p class="note">这份手册既是"如何实现 HLSL 解释器"的记录，也是"<b>纯 AI coding 能做到什么样</b>"的一份真实答卷。</p>
+</div><div class="pageno">4 / 44</div></section>
+<section class="slide " data-i="4"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">这是什么</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 900 150" role="img" aria-label="D3D11 管线阶段与验证">
+  <defs>
+    <marker id="ar0" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
+    <style>.p{fill:#1e222b;stroke:#2a2f3a}.pt{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}.pf{stroke:#5db0ff;stroke-width:1.6;fill:none;marker-end:url(#ar0)}.gold{fill:#1e2620;stroke:#3a4a32}.gt{fill:#cfe6b0;font:12px sans-serif;text-anchor:middle}.gf{stroke:#46d39a;stroke-width:1.6;fill:none;stroke-dasharray:5 4;marker-end:url(#ar0)}</style>
+  </defs>
+  <rect class="p" x="10"  y="30" width="120" height="44" rx="8"/><text class="pt" x="70"  y="57">Vertex Shader</text>
+  <rect class="p" x="160" y="30" width="120" height="44" rx="8"/><text class="pt" x="220" y="57">Rasterizer</text>
+  <rect class="p" x="310" y="30" width="130" height="44" rx="8"/><text class="pt" x="375" y="50">Depth /</text><text class="pt" x="375" y="65">Stencil</text>
+  <rect class="p" x="470" y="30" width="120" height="44" rx="8"/><text class="pt" x="530" y="57">Pixel Shader</text>
+  <rect class="p" x="620" y="30" width="130" height="44" rx="8"/><text class="pt" x="685" y="50">Output</text><text class="pt" x="685" y="65">Merger</text>
+  <path class="pf" d="M130,52 L158,52"/><path class="pf" d="M280,52 L308,52"/>
+  <path class="pf" d="M440,52 L468,52"/><path class="pf" d="M590,52 L618,52"/>
+  <rect class="gold" x="10" y="110" width="200" height="34" rx="8"/><text class="gt" x="110" y="132">golden MeshOut_*_mesh.csv</text>
+  <path class="gf" d="M70,74 L70,108"/>
+  <text class="gt" x="300" y="132" style="text-anchor:start">↑ VS 输出逐分量对比，不符则记 Error:</text>
+</svg><div class="legend">蓝实线 = 管线数据流；绿虚线 = VS 输出与 golden 的验证对比</div></div>
+<ul>
+  <li><b>纯 Python 实现的 D3D11 图形管线软件仿真器</b>——不编译、不 <code>eval</code>，自己做词法/语法分析并逐语句<b>解释执行 HLSL</b>。</li>
+  <li>把一帧真机 GPU 数据喂进管线，跑完整固定功能 + 可编程阶段，再把 VS 输出与真机 <b>golden</b> 逐分量对比。</li>
+</ul>
+</div><div class="pageno">5 / 44</div></section>
+<section class="slide " data-i="5"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">输入从哪来</h1><div class="body">
+<p>输入是 <b>RenderDoc / 3Dmigoto 抓帧 dump</b>，打包成 <code>Cases/*.zip</code>。解压后是一组松散文件：</p>
+<table>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>VS_shader.hlsl / PS_shader.hlsl</code></td><td>着色器源码（<code>main()</code> 用带语义的参数声明 I/O）</td></tr>
+<tr><td><code>*_input_output_signature.csv</code></td><td>参数 ↔ 寄存器槽位映射</td></tr>
+<tr><td><code>ia_vertex_data.csv</code> + 二进制 VB/IB</td><td>输入装配阶段的顶点 / 索引数据</td></tr>
+<tr><td><code>*_constant_buffers.csv</code> + <code>constant_*.bin</code></td><td>常量缓冲区（文本布局 + 二进制精确值）</td></tr>
+<tr><td><code>pipeline_state.csv</code></td><td>光栅化 / 混合 / 深度模板状态 + 图元拓扑</td></tr>
+<tr><td><code>MeshOut_*_mesh.csv</code></td><td>golden VS 输出（验证基准）</td></tr>
+<tr><td>.img / BMP 纹理</td><td><code>Texture2D.Sample(...)</code> 的后备数据</td></tr>
+</table>
+</div><div class="pageno">6 / 44</div></section>
+<section class="slide " data-i="6"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">怎么运行 · 模块构成</h1><div class="body">
+<p>唯一入口是一个 JSON 配置：<code>python render.py ./Cases/Default.json</code>。<b>零第三方依赖</b>——只用标准库 + 可选 <code>tkinter</code>。</p>
+<table>
+<tr><th>模块</th><th>职责</th></tr>
+<tr><td><code>hlsl_interpreter.py</code>（~3300 行，核心）</td><td>解析 HLSL（cbuffer/struct/函数/纹理绑定），遍历语句、求值表达式</td></tr>
+<tr><td><code>hlsl_syntax_tree.py</code></td><td>手写递归下降表达式解析器；<b>运算符优先级表在此</b></td></tr>
+<tr><td><code>rasterizer.py</code></td><td>按拓扑光栅化；边函数 + 透视正确重心插值；视口变换/剔除</td></tr>
+<tr><td><code>output_merger.py</code></td><td>深度 / 模板测试，支持 early-Z / late-Z</td></tr>
+<tr><td><code>texture.py</code></td><td>纹理解析、mipmap、采样与寻址模式</td></tr>
+</table>
+</div><div class="pageno">7 / 44</div></section>
+<section class="slide " data-i="7"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">输入顶点数据：数量 · 格式 · 样例</h1><div class="body">
+<p>一次 <b><code>DrawIndexed</code></b>（<code>TriangleList</code>）：<b>696 索引 → 232 三角形</b>，<b>228 个不重复顶点</b>（16-bit 索引）。每顶点 <b>36 字节</b>：</p>
+<div class="grid2" style="align-items:start">
+<table style="margin:0">
+<tr><th>语义</th><th>格式</th><th>偏移</th></tr>
+<tr><td><code>POSITION</code></td><td>R32G32B32_FLOAT</td><td>0</td></tr>
+<tr><td><code>NORMAL</code></td><td>R32G32B32_FLOAT</td><td>12</td></tr>
+<tr><td><code>COLOR</code></td><td>R8G8B8A8_UNORM</td><td>24</td></tr>
+<tr><td><code>TEXCOORD</code></td><td>R32G32_FLOAT</td><td>28</td></tr>
+</table>
+<pre style="margin:0"><code>VTX POSITION(x,y,z)      NORMAL          COLOR    UV
+ 0  20.03 21.69 -23.38   0.02 0.05 0.99  .8 .8 .8 .226 .907
+ 1  18.87 23.95 -27.79  -0.60 0.46 0.66  .8 .8 .8 .257 .770</code></pre>
+</div>
+</div><div class="pageno">8 / 44</div></section>
+<section class="slide " data-i="8"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">Vertex Shader：把整套光照模型搬进解释器</h1><div class="body">
+<p>event399 的 VS 在顶点级算完了<b>环境光 + 漫反射 + 镜面高光 + 距离衰减 + 聚光锥</b>，还带 <code>ColorMaterialMode</code> 分支选色：</p>
+<pre><code>// 裁剪空间位置：手工展开的 mul(v0, WorldViewProj)，按列 swizzle + MAD 链
+r0 = WorldViewProj._m01_m11_m21_m31 * v0.yyyy;
+r0 = v0.xxxx * WorldViewProj._m00_m10_m20_m30 + r0;   ...   o0 = ..._m03... + r0;
+// 法线归一化 → 变换到世界空间 → 再归一化（dot/rsqrt 自展开）
+r0.x = rsqrt(dot(v1.xyz, v1.xyz)); r0.xyz = v1.xyz * r0.xxx; ...
+r2.xyz = LightPos.xyz + -r1.xyz;        // 一元负号：不能当成减法（陷阱#2）
+r1.xyz = r0.xyz * -r2.xxx + r1.xyz;     // reflect()
+r0.y = exp2(Shininess * log2(r0.x));    // pow 用 log2/exp2 展开
+r2 = cmp(ColorMaterialMode == int4(1,5,2,3)); r1.xyz = r2.www ? v2.xyz : MatSpecular.xyz;</code></pre>
+</div><div class="pageno">9 / 44</div></section>
+<section class="slide " data-i="9"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">解释器必须正确支持的一整套语义</h1><div class="body">
+<div class="grid2">
+  <div class="c"><b>结构与寻址</b><br><span class="muted">4 个带 <code>packoffset</code> 的 cbuffer（含 <code>uint</code>/标量混排）· 矩阵按列 swizzle <code>_m01_m11_m21_m31</code> · 任意 swizzle/写掩码 · 带语义 <code>out</code> 参数 → 寄存器槽位映射</span></div>
+  <div class="c c2"><b>运算与 intrinsic</b><br><span class="muted">MAD 累加链顺序 · <code>dot/rsqrt/log2/exp2/max</code> · <code>cmp(...)</code> 向量比较 + <code>?:</code> 三元 · <code>int4</code> 比较与位运算 · <b>一元负号不能误判成减法</b>（陷阱#2）</span></div>
+</div>
+<div class="grid2">
+  <div class="c c3"><b>PS — 贴图采样 × 顶点色</b><br><span class="muted"><code>DiffuseTexture.Sample(...)</code>：绑定解析、线性过滤、UV 寻址；再 <code>o0 = v1 * r0</code>（顶点光照色 × 贴图）。</span></div>
+  <div class="c"><b>标尺 case</b><br><span class="muted">任一环算偏，战锤的高光/底色/纹理走向就与真机对不上——它把验证压力同时压在 VS 光照与 PS 采样上。</span></div>
+</div>
+</div><div class="pageno">10 / 44</div></section>
+<section class="slide " data-i="10"><div class="kicker">第一部分 · 项目介绍</div><h1 class="stitle">正确性如何保证</h1><div class="body">
+<div class="grid2">
+  <div class="c"><b>verify-by-log</b><br><span class="muted">跑管线 → grep <code>output.log</code> 里 <code>Error:</code> 行 → 迭代到无错。<code>[STMT]</code>/<code>[BINARY OP]</code> 轨迹是调试主面。</span></div>
+  <div class="c c2"><b>数据驱动回归套件</b><br><span class="muted"><code>run_regression.py</code> 逐个 headless 跑；三判据：干净退出、无 <code>Error:</code>、<code>Total PASSED rows: X==Y</code>。</span></div>
+</div>
+<p class="big-stat"><b>123</b> 个真机 case · 每次改动的<b>提交闸门</b></p>
+</div><div class="pageno">11 / 44</div></section>
+<section class="slide divider divB" data-i="11"><h1 class="stitle">第二部分</h1><div class="body"><div class="part-big"><div class="part-num b">B</div><h2>OpenCode + minimax-m2.7</h2><p class="muted">奠基期 · 从零搭出解释器骨架（step1–86）</p></div></div><div class="pageno">12 / 44</div></section>
+<section class="slide " data-i="12"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">本期开发载体：event399（一柄战锤）</h1><div class="body">
+<div class="imgrow">
+  <figure><img src="images/collision_event399_golden.png" alt="golden"><figcaption>Golden（真机参考）</figcaption></figure>
+  <figure><img src="images/collision_event399_output.png" alt="output"><figcaption>解释器输出</figcaption></figure>
+  <figure><img src="images/collision_event399_depth.png" alt="depth"><figcaption>深度缓冲</figcaption></figure>
+</div>
+<p class="note">带贴图、受光照的 3D 物体——要让纯 Python 解释器逐语句重算出<b>每一个像素</b>，并与真机 golden 对齐。</p>
+</div><div class="pageno">13 / 44</div></section>
+<section class="slide " data-i="13"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">人与 Agent 的开发流程闭环</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 900 230" role="img" aria-label="人与 Agent 开发流程闭环">
+  <defs>
+    <marker id="arf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
+    <style>
+      .h{fill:#15261c;stroke:#3a6b4d}.a{fill:#152a40;stroke:#2f5e8f}
+      .t{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}
+      .ts{fill:#9aa4b2;font:11px sans-serif;text-anchor:middle}
+      .f{stroke:#5db0ff;stroke-width:1.7;fill:none;marker-end:url(#arf)}
+      .lg{fill:#9aa4b2;font:11.5px sans-serif}
+    </style>
+  </defs>
+  <!-- top row: ①→②→③→④ -->
+  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="t" x="105" y="44">① 需求发起</text><text class="ts" x="105" y="61">人 · 切小步/给样例</text>
+  <rect class="a" x="240" y="24" width="190" height="48" rx="9"/><text class="t" x="335" y="44">② coding</text><text class="ts" x="335" y="61">Agent · 只改一个点</text>
+  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="t" x="565" y="44">③ 调试</text><text class="ts" x="565" y="61">人 · 跑 + 读打印</text>
+  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="t" x="795" y="44">④ 反馈</text><text class="ts" x="795" y="61">人 · 指出现象/根因</text>
+  <path class="f" d="M200,48 L238,48"/><path class="f" d="M430,48 L468,48"/><path class="f" d="M660,48 L698,48"/>
+  <!-- ④ down to bottom row -->
+  <path class="f" d="M795,72 L795,128"/>
+  <!-- bottom row: ⑤←④ , ⑥←⑤ -->
+  <rect class="a" x="470" y="130" width="190" height="48" rx="9"/><text class="t" x="565" y="150">⑤ bug 修复</text><text class="ts" x="565" y="167">Agent / 人手改兜底</text>
+  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="t" x="335" y="150">⑥ 再调试验证</text><text class="ts" x="335" y="167">人 · 再跑 + 再读</text>
+  <path class="f" d="M698,154 L662,154"/><path class="f" d="M470,154 L432,154"/>
+  <!-- ⑥ loop back up to ① -->
+  <path class="f" d="M240,154 L60,154 L60,74"/>
+  <!-- loop label -->
+  <text class="lg" x="240" y="205">↻ 现象未消失则带着新观察回到 ④ 继续这一圈，直到这一小步通过</text>
+</svg><div class="legend">绿框 = 人主导的环节 ｜ 蓝框 = Agent 执行的环节</div></div>
+<p class="note">环短、频繁、<b>质量把关几乎全在人</b>——Agent 更像"快速打字员 + 局部修补匠"，需求拆分/根因判断/最终正确性靠人兜底。</p>
+</div><div class="pageno">14 / 44</div></section>
+<section class="slide " data-i="14"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">1 · 如何给 AI 提供提示词</h1><div class="body">
+<p>能力有限的模型对<b>信息密度</b>格外敏感：给得越具体越不跑偏，一留白就<b>自己脑补</b>。</p>
+<div class="grid2">
+  <div class="c c2"><b>✅ 好例 · #1</b><br><span class="muted">第一条提示词直接<b>贴出完整样例 HLSL</b>（<code>vs_main</code> 全文），给一个具体、可运行的目标。</span></div>
+  <div class="c c3"><b>❌ 反例 · #97</b><br><span class="muted">没给 config 真实字段名 → AI <b>臆造字段名</b> → 解析 config 出错。</span></div>
+</div>
+<p class="note">本期更基础的功课是<b>把输入说全</b>——样例、字段、数据格式这类 AI 无从猜起的事实。</p>
+</div><div class="pageno">15 / 44</div></section>
+<section class="slide " data-i="15"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">2 · 分析需求 · 3 · 按计划执行</h1><div class="body">
+<div class="grid2">
+  <div class="c"><b>2 · 需求拆分（由人做）</b><br><span class="muted">不是 AI 自己 triage，而是<b>人把大目标切成极小、可独立验证的步骤</b>。表达式求值器沿 #12→#15→#16→#19 一串小步逐步长出来。</span></div>
+  <div class="c c2"><b>3 · 执行单元</b><br><span class="muted">"描述一个具体现象 → 让 AI 改一个点 → 看打印验证 → 下一步"。没有回归套件，<b>验证靠人看打印</b>，所以每步都很小。</span></div>
+</div>
+<p class="note">例：#15 用户指出 <code>transpose(WorldViewProj)</code> 只执行了一半；#19 给出 <code>normalize(mul(nor,(float3x3)World))</code> 驱动加 <code>float3x3</code> cast。</p>
+</div><div class="pageno">16 / 44</div></section>
+<section class="slide " data-i="16"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">4 · 如何纠正 AI 的错误（概览）</h1><div class="body">
+<p>纠错以<b>重度人工介入</b>为特征——用户常要直接给出真因、甚至亲自动手。三个真实案例：</p>
+<div class="grid3">
+  <div class="c c3"><b>案例一 · #35</b><br>找不到根因<br><span class="muted">真因由用户点出</span></div>
+  <div class="c c3"><b>案例二 · #37</b><br>修复不彻底<br><span class="muted">"I have to fix it by my hand"</span></div>
+  <div class="c c3"><b>案例三 · #42</b><br>误删代码<br><span class="muted">删掉了 return 处理</span></div>
+</div>
+<p class="note">每个案例都拆成 <b>AI 的错误判断 → 用户点出的真因 → 对应代码改动</b>。</p>
+</div><div class="pageno">17 / 44</div></section>
+<section class="slide " data-i="17"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">案例一 · 找不到根因 · #35</h1><div class="body">
+<ul>
+<li><b>现象</b>：整段 HLSL 函数体被当成<b>一条语句</b>执行 → 失败。</li>
+<li><b>AI 的误判</b>：认定按 <code>;</code> 切分的字符循环写错了，反复改循环。</li>
+<li><b>真因（用户点出）</b>：<code>body</code> 没去掉最外层 <code>{ }</code> → 第一字符就让 <code>brace_count=1</code>，顶层 <code>;</code> 永不切分。<b>循环没错，错在数据。</b></li>
+</ul>
+<pre><code>body = body.strip()
+if body.startswith('{') and body.endswith('}'):
+    body = body[1:-1]        # 去掉最外层 { }，再按 ; 切分</code></pre>
+</div><div class="pageno">18 / 44</div></section>
+<section class="slide " data-i="18"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">案例二 · 修复不彻底 · #37</h1><div class="body">
+<ul>
+<li><b>现象</b>：<code>dist &lt;= LightRadius</code> 的 <code>&lt;=</code> 被识别成 <code>&lt;</code>，右操作数错成 <code>= LightRadius</code>。</li>
+<li><b>AI 的误判（修了没修对）</b>：加了两字符判断，但取 <code>expr[i-1:i+1]</code>——指向 <code>&lt;</code> 时取到 <code>" &lt;"</code>（空格+<code>&lt;</code>），仍退回单字符。</li>
+<li><b>真因 + 手改</b>：应<b>向前看</b> <code>expr[i:i+2]</code> 命中 <code>&lt;=</code>，并给单字符加护栏。</li>
+</ul>
+<p class="note">提交信息如实记成 <i>"MiniMax-M2.7 fixes two char operator issue failed. I have to fix it by my hand."</i></p>
+</div><div class="pageno">19 / 44</div></section>
+<section class="slide " data-i="19"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">案例三 · 误删代码 · #42</h1><div class="body">
+<ul>
+<li><b>任务</b>：重构 if/else，执行前先检查有无 else、有则先合并再执行。</li>
+<li><b>AI 的误判</b>：重构时<b>顺手误删</b>了取返回值的关键语句（以为无关）。</li>
+</ul>
+<pre><code># 被 AI 误删的语句：
+if 'return' in stmt and 'output' in stmt:
+    ret_val = local_vars.get('output')   # 把 output 取作返回值
+    i += 1
+    continue</code></pre>
+<p class="note">后果：<code>execute_main_function</code> 不再返回结果 → 修复就是原样恢复。"改 A 却删了不相关的 B"是本期必须人逐行 review 兜底的典型。</p>
+</div><div class="pageno">20 / 44</div></section>
+<section class="slide " data-i="20"><div class="kicker">第二部分 · 奠基期（OpenCode + minimax-m2.7）</div><h1 class="stitle">5 · 如何进行调试</h1><div class="body">
+<ul>
+<li>本期最有<b>长远价值</b>的产出：把解释器改造成"<b>会自述</b>"的——给求值过程加<b>可开关的打印</b>（#12/#16/#17/#31）。</li>
+<li>调试方式：开打印 → 跑 → <b>人工读打印</b>定位哪一步操作数/结果不对 → 改。没有自动断言。</li>
+<li>这套打印后来演化成第三部分赖以"沿数据流回溯根因"的 <code>[STMT]</code>/<code>[BINARY OP]</code> 轨迹——<b>为整个项目的可观测性打了地基</b>。</li>
+</ul>
+</div><div class="pageno">21 / 44</div></section>
+<section class="slide divider divC" data-i="21"><h1 class="stitle">第三部分</h1><div class="body"><div class="part-big"><div class="part-num c">C</div><h2>ClaudeCode + Opus</h2><p class="muted">攻坚期 · 真机数据驱动、系统化啃长尾（step87+）</p></div></div><div class="pageno">22 / 44</div></section>
+<section class="slide " data-i="22"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">贯穿第三部分的三个核心案例</h1><div class="body">
+<div class="grid3">
+  <div class="c"><b>C1 多数组 cbuffer</b><br><span class="muted"><code>texgen[2]</code> 读成 0 → 二进制重载只填首个数组字段。一修复同时绿 5 个 case。</span></div>
+  <div class="c c2"><b>C2 反规格化数 FTZ</b><br><span class="muted">大气散射 o0/o1 错 → 常量是 denormal，GPU 按 flush-to-zero 取 0。</span></div>
+  <div class="c c3"><b>C3 (int) 强转</b><br><span class="muted"><code>(int2)v1.zw</code> 被位重解释成天文数字 → 越界读纹理 → 0/0 = NaN。</span></div>
+</div>
+</div><div class="pageno">23 / 44</div></section>
+<section class="slide " data-i="23"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">1 · 提示词是一个分层的上下文系统</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 900 260" role="img" aria-label="提示词四层结构">
+  <defs><style>.b{fill:#1e222b;stroke:#2a2f3a;rx:10}.t{fill:#e6e9ef;font:14px sans-serif}.s{fill:#9aa4b2;font:12px sans-serif}.h{fill:#5db0ff;font:bold 14px sans-serif}</style></defs>
+  <rect class="b" x="20" y="20" width="860" height="50" rx="10"/>
+  <text class="h" x="36" y="42">① 常驻项目说明 CLAUDE.md</text>
+  <text class="s" x="36" y="60">项目是什么 · 怎么运行 · verify-by-log 工作流 · 两个陷阱 · 必跑回归</text>
+  <rect class="b" x="20" y="80" width="860" height="50" rx="10"/>
+  <text class="h" x="36" y="102">② 任务指令（可执行循环）</text>
+  <text class="s" x="36" y="120">挨个修 → 跑 → 找 Error → 定位 → 修 → 验证 → 回归 → 提交 → 加回归 → 写文档</text>
+  <rect class="b" x="20" y="140" width="860" height="50" rx="10"/>
+  <text class="h" x="36" y="162">③ 现状 / 约束清单</text>
+  <text class="s" x="36" y="180">已知未修长尾 + 标注"capture 限制、无解" → AI 不在死路上空转</text>
+  <rect class="b" x="20" y="200" width="860" height="44" rx="10"/>
+  <text class="h" x="36" y="222">④ 留痕要求</text>
+  <text class="s" x="36" y="238">写 Sessions/ 文档 + 填提示词历史 → 既是交付物，也是下一轮记忆</text>
+</svg><div class="legend">提示词四层：越靠上越'常驻'，越靠下越'本轮'</div></div>
+<p class="note">四层：① 常驻 <code>CLAUDE.md</code> → ② 任务指令（可执行循环）→ ③ 现状/约束清单 → ④ 留痕要求。</p>
+</div><div class="pageno">24 / 44</div></section>
+<section class="slide " data-i="24"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">① 常驻说明 CLAUDE.md — 回归约束</h1><div class="body">
+<div class="callout">
+一个 case <b>通过</b>当且仅当三条同时成立：① <code>render.py</code> 干净退出；② 日志<b>无 <code>Error:</code> 行</b>；③ <code>Total PASSED rows: X/Y</code> 满足 <b>X == Y</b>。失败就 grep <code>Error:</code>，<b>先修解释器再往下走</b>。
+</div>
+<ul>
+<li>把"完成"变成<b>机器可判、不可赖账</b>的三条硬指标。</li>
+<li>堵死两条捷径：<b>不许改 runner 硬编码绕过</b>、<b>失败必须回解释器侧修</b>（而非动 golden 或放宽判据）。</li>
+</ul>
+</div><div class="pageno">25 / 44</div></section>
+<section class="slide " data-i="25"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">用真实日志说清 X == Y</h1><div class="body">
+<p><b>Y</b> = golden 行数（= 顶点数）；<b>X</b> = 每字段每分量都在容差内的行数。<b>任一分量超差 → 整行失败</b>。</p>
+<div class="grid2" style="align-items:start">
+  <div><p class="muted" style="margin:0 0 4px">✅ 全通过 event371（6 顶点）</p>
+  <pre style="margin:0"><code>Total PASSED rows: 6/6
+Comparison PASSED</code></pre></div>
+  <div><p class="muted" style="margin:0 0 4px">❌ 未修好 event399（696 顶点）</p>
+  <pre style="margin:0"><code>Error: Row0 Color[0] output=0 golden=0.3647
+Total PASSED rows: 0/696
+Comparison FAILED</code></pre></div>
+</div>
+<p class="note"><b>X==Y</b> 才说明"每个顶点、每个分量都和真机一致"；差一个分量即 <code>X&lt;Y</code>，回归立即判红，且必有对应 <code>Error:</code> 行。</p>
+</div><div class="pageno">26 / 44</div></section>
+<section class="slide " data-i="26"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">② 任务指令 = 可执行循环（落到 C1）</h1><div class="body">
+<pre><code>[找 Error] Error: Row0 texgen[2].x output=0 golden=0.3125   ← 读成 0
+   ↓ [定位] texgen[] 只有 [0] 有值 → 数组重载只填首元素
+   ↓ [修]   按数组步长逐元素填充
+   ↓ [验证] 无 Error、Total PASSED rows: N/N
+   ↓ [回归] run_regression.py 全绿（顺带绿 5 个同类）
+   ↓ [提交] → [加回归] → [写文档 Sessions/stepN] → [下一轮]</code></pre>
+<p class="note">每一步都有<b>机器可判的出口</b>：grep / <code>X==Y</code> / 退出码——AI 能自判是否真完成，而非"感觉修好了"。</p>
+</div><div class="pageno">27 / 44</div></section>
+<section class="slide " data-i="27"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">③ 现状 / 约束清单 — 给 AI 合法的'放弃'理由</h1><div class="body">
+<table>
+<tr><th>长尾项</th><th>是否可解</th></tr>
+<tr><td>八面体法线（event16215/16834）</td><td>⏳ 未解，暂缓</td></tr>
+<tr><td>四元数 typed-buffer SNORM/UNORM</td><td>❌ capture 未记录 view 格式 → 无解</td></tr>
+<tr><td>raw structured buffer（event22201）</td><td>❌ capture 没 dump → 无解</td></tr>
+<tr><td>Tank 18 个超时</td><td>⚠️ 非 bug，纯 Python 光栅化慢</td></tr>
+</table>
+<p class="note">标注"无解/非 bug"让 AI <b>不在死路上空转</b>，把预算投到真正能修的地方。</p>
+</div><div class="pageno">28 / 44</div></section>
+<section class="slide " data-i="28"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">④ 留痕要求 — 交付物 + 下一轮记忆</h1><div class="body">
+<ul>
+<li><b>交付物</b>：Session 文档固定骨架 <code>Goal / Fix(现象→根因→改动→验证) / Blocked classes / Regression</code>。</li>
+<li><b>下一轮记忆（闭环关键）</b>：本轮 <code>Blocked classes</code> → 下一轮的<b>现状/约束清单</b>。判定"无解"的结论<b>沉淀成跨会话记忆</b>，不再重撞南墙。</li>
+<li><b>提示词历史</b>：每轮原文按编号填进 <code>Prompts/</code>，让"当初为什么这么改"可回溯（本手册 <code>#N</code> 链接）。</li>
+</ul>
+<p class="note">写文档不是负担，而是让 AI <b>越修越聪明</b>的记忆机制。</p>
+</div><div class="pageno">29 / 44</div></section>
+<section class="slide " data-i="29"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">✅ 好例 G1 — 贴精确证据 + 排除错误路径</h1><div class="body">
+<pre><code>output.log 打印：
+Error: Row 0 WorldPos[0]: output=-61.6382 golden=11.2829 diff=72.9211
+[STMT] o4.xyz = r1.xyz =&gt; ['-61.6382','11.2829','-88.1203']
+o4.xyz 错了，正确值应为 ['11.2829','-88.1203','-58.05407']。请修复，注意：
+  1. 问题在解释执行 HLSL 中，请修复；
+  2. 不要更改 golden data 的加载函数，golden 加载是正确的；
+  3. 修复后跑 render.py，读 output.log 确认无 Error，有就继续修。</code></pre>
+<p class="note">好在：① 实际值<b>和</b>期望值精确到分量；② 圈定问题域；③ <b>预先排除错误修法</b>（"别改 golden"→否则 AI 为凑数字改基准、制造假绿）；④ 给可机判验证回路。</p>
+</div><div class="pageno">30 / 44</div></section>
+<section class="slide " data-i="30"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">❌ 差例 B1 — 漏掉领域约束，AI 猜错返工</h1><div class="body">
+<p>信息不足的提示词（#12）：<i>"根据 FillMode 实现 wireframe"</i>——没告知 FillMode 取值，AI 只能猜：</p>
+<pre><code>fill_mode_map = {
+  'point':POINT, 'line':LINE, 'solid':SOLID,
+  '0':POINT, '1':LINE, '2':SOLID,   # ← 全是臆造的取值
+}</code></pre>
+<p>用户被迫再发一条纠正（#14）：<i>"应该是 Wireframe 和 Solid。"</i> <span class="red">代价 = 多一轮往返 + 返工。</span></p>
+<p class="note">差不在"语气"而在<b>信息密度</b>——凡是 AI 需要靠猜才能填的空（取值集合/基准/验证方式），就该在提示词里直接给死。</p>
+</div><div class="pageno">31 / 44</div></section>
+<section class="slide " data-i="31"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">为什么必须'机器判绿'—— 第二部分的反面教训</h1><div class="body">
+<ul>
+<li>那一期没有回归套件，AI 完全靠"自称"。<b>#37</b> 里 MiniMax 把两字符运算符修复当成"已修好"提交了——但 <code>&lt;=</code> 依旧错。</li>
+<li><b>没有机器判据拦住这次"假修复"</b>，错误一路溜过，直到用户亲自复跑才发现（"I have to fix it by my hand"）。</li>
+</ul>
+<div class="callout">第三部分把"修好了"从 <b>AI 的一句话</b>，变成 <code>run_regression.py</code> 的<b>退出码 + X==Y</b>——同一句"我觉得修好了"，在第二部分能蒙混、在第三部分会被<b>当场判红</b>。</div>
+</div><div class="pageno">32 / 44</div></section>
+<section class="slide " data-i="32"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">2 · 分析需求：triage → 聚类 → 排序</h1><div class="body">
+<p>面对"挨个修 issue"，AI 先<b>侦察→聚类→排序→立计划</b>，而非盲目动手。Dump 355 个 zip，<b>129 个从未验证</b>——AI 写并行 triage 脚本分类 <code>PASS/FAIL/CRASH/NOCMP/TIMEOUT</code>。</p>
+<table>
+<tr><th>问题类</th><th>代表 case</th><th>处置</th></tr>
+<tr><td>sv_position/TexCoord 读成 0</td><td>23341/23141/…</td><td class="grn-cell">一个 bug(C1) 一次修 5 个</td></tr>
+<tr><td>大气输出错</td><td>20899</td><td class="grn-cell">C2 已修</td></tr>
+<tr><td>(int) 强转 / 顶点纹理取样</td><td>16834/16215</td><td>C3 修 + 部分受阻</td></tr>
+<tr><td>raw buffer 未 dump / 慢绘制</td><td>22201 / ~26+Tank</td><td>受阻：capture 限制 / perf</td></tr>
+</table>
+<p class="note"><b>先找杠杆点</b>：聚类让"129 个失败"坍缩成"少数根因"；修一个根因(C1)就让 5 个 case 同时变绿。按 <b>ROI（确定性高、风险低、影响大）</b> 排序。</p>
+</div><div class="pageno">33 / 44</div></section>
+<section class="slide " data-i="33"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">3 · 如何按计划执行</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 900 190" role="img" aria-label="开发闭环">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
+    <style>.n{fill:#1e222b;stroke:#2a2f3a}.nt{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}.fl{stroke:#5db0ff;stroke-width:1.6;fill:none;marker-end:url(#ar)}</style>
+  </defs>
+  <g>
+    <!-- 上排：左 → 右 -->
+    <rect class="n" x="14"  y="30" width="98" height="40" rx="8"/><text class="nt" x="63"  y="55">运行</text>
+    <rect class="n" x="140" y="30" width="118" height="40" rx="8"/><text class="nt" x="199" y="55">读日志找 Error</text>
+    <rect class="n" x="286" y="30" width="128" height="40" rx="8"/><text class="nt" x="350" y="48">顺管线</text><text class="nt" x="350" y="63">定位根因</text>
+    <rect class="n" x="442" y="30" width="92" height="40" rx="8"/><text class="nt" x="488" y="55">改代码</text>
+    <rect class="n" x="562" y="30" width="118" height="40" rx="8"/><text class="nt" x="621" y="55">单 case 验证</text>
+    <rect class="n" x="708" y="30" width="92" height="40" rx="8"/><text class="nt" x="754" y="55">跑回归</text>
+    <!-- 下排：右 → 左（蛇形，避免走线穿框） -->
+    <rect class="n" x="694" y="118" width="120" height="40" rx="8"/><text class="nt" x="754" y="143">提交 + 加回归</text>
+    <rect class="n" x="474" y="118" width="92"  height="40" rx="8"/><text class="nt" x="520" y="143">写文档</text>
+    <rect class="n" x="272" y="118" width="96"  height="40" rx="8"/><text class="nt" x="320" y="143">下一个</text>
+    <!-- 上排横向箭头 -->
+    <path class="fl" d="M112,50 L138,50"/><path class="fl" d="M258,50 L284,50"/>
+    <path class="fl" d="M414,50 L440,50"/><path class="fl" d="M534,50 L560,50"/><path class="fl" d="M680,50 L706,50"/>
+    <!-- 跑回归 ↓ 提交（正下方，纵向直连） -->
+    <path class="fl" d="M754,70 L754,116"/>
+    <!-- 下排横向箭头：右 → 左 -->
+    <path class="fl" d="M694,138 L568,138"/><path class="fl" d="M474,138 L370,138"/>
+    <!-- 下一个 → 运行（绕到底部再回到左上，全程无交叉） -->
+    <path class="fl" d="M320,158 L320,174 L63,174 L63,72"/>
+  </g>
+</svg><div class="legend">回归不绿不提交；提交后把代表 case 加进回归集，循环下一个</div></div>
+<p class="note">以 C1 为例：从错误输出值<b>沿数据流逆推</b>到那行只填第一个数组就 <code>break</code> 的重载代码 → 定点修复 → 44/44 → 提交。</p>
+</div><div class="pageno">34 / 44</div></section>
+<section class="slide " data-i="34"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">4 · 输入 / 输出数据流</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 900 320" role="img" aria-label="AI 输入输出数据流">
+  <defs>
+    <marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#46d39a"/></marker>
+    <style>.bx{fill:#1e222b;stroke:#2a2f3a}.bt{fill:#e6e9ef;font:13px sans-serif}.bs{fill:#9aa4b2;font:11.5px sans-serif}.fa{stroke:#46d39a;stroke-width:1.6;fill:none;marker-end:url(#ar2)}.hd{fill:#5db0ff;font:bold 13px sans-serif}</style>
+  </defs>
+  <rect class="bx" x="20" y="20" width="380" height="120" rx="10"/>
+  <text class="hd" x="36" y="42">输入：累积对话上下文</text>
+  <text class="bs" x="36" y="64">· CLAUDE.md（规则/陷阱/纪律）</text>
+  <text class="bs" x="36" y="84">· MEMORY.md 索引 + 召回的记忆</text>
+  <text class="bs" x="36" y="104">· 用户提示词（任务/约束/现状）</text>
+  <text class="bs" x="36" y="124">· 每轮工具结果不断追加（过长则摘要）</text>
+  <rect class="bx" x="20" y="160" width="380" height="118" rx="10"/>
+  <text class="hd" x="36" y="182">工具结果（每轮追加到输入）</text>
+  <text class="bs" x="36" y="204">· Read 文件内容 / Grep 命中</text>
+  <text class="bs" x="36" y="224">· Bash 输出：render.py 日志、回归摘要</text>
+  <text class="bs" x="36" y="244">· system-reminder：后台任务完成等</text>
+  <text class="bs" x="36" y="264">· git 状态</text>
+  <rect class="bx" x="500" y="60" width="380" height="180" rx="10"/>
+  <text class="hd" x="516" y="84">输出：文字 或 工具调用</text>
+  <text class="bs" x="516" y="108">· Read/Grep/Glob — 取信息（无副作用）</text>
+  <text class="bs" x="516" y="132">· Edit/Write — 改源码 / 写文档</text>
+  <text class="bs" x="516" y="156">· Bash — render.py / 回归 / git</text>
+  <text class="bs" x="516" y="180">· TodoWrite — 维护计划</text>
+  <text class="bs" x="516" y="212">输出产生新的工具结果，</text>
+  <text class="bs" x="516" y="230">回流成下一轮输入（闭环）</text>
+  <path class="fa" d="M400,150 L498,150"/>
+  <path class="fa" d="M690,240 L690,300 L210,300 L210,280" />
+</svg><div class="legend">AI 的输入是累积上下文；输出是文字或工具调用；工具结果回流形成闭环</div></div>
+<p class="note">AI 的"输入"是不断累积的对话上下文（CLAUDE.md + 记忆 + 提示词 + 每轮工具结果）；"输出"是文字或工具调用；工具结果回流成下一轮输入。</p>
+</div><div class="pageno">35 / 44</div></section>
+<section class="slide " data-i="35"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">5 · 什么输出能帮助调试</h1><div class="body">
+<p><b>结论</b>：把"中间状态"暴露成<b>可 grep 的文本</b>最有价值。C3 的 smoking gun — 逐语句轨迹：</p>
+<pre><code>[STMT] r0.xy = (int2)v1.zw => [1073741824, 1073741824]   ← 把 2.0 当位型！应为 [2,2]
+[METHOD] t1.Load((1073741824,0,0)) = ['0','0','0','0']    ← 越界读 0
+[BINARY OP] left=['312.5','500.0'] right=['0','0'] op=/ => ['inf','inf']   ← 0/0
+... → sv_position = nan</code></pre>
+<p class="note">只看最终 <code>nan</code> 无从下手；逐语句轨迹让 <code>(int2)v1.zw</code> 把 <code>2.0</code> 变成位型 <code>1073741824</code> 一眼可见。</p>
+</div><div class="pageno">36 / 44</div></section>
+<section class="slide " data-i="36"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">可观测性 = 可调试性</h1><div class="body">
+<div class="callout green">
+<b>C2 全靠轨迹</b>：event20899 一度被误判"精度不可解"。重新打开逐语句 + 逐分支轨迹，把 o0/o1 回溯到 <code>cb12[271].z ? r2.x : 1</code> 分支选错，再发现 <code>cb12[271].z</code> 字节是 <code>0x00000001</code>（反规格化数 1.4e-45）。<b>没有逐步轨迹，这个根因不可能被发现。</b>
+</div>
+<p><b>设计准则</b>：让被测系统打印"每一步的输入、运算、输出"，且保证可被 <code>grep Error:</code> / <code>grep '[STMT]'</code> 提取。分量级报错 + 可机判汇总（<code>Total PASSED rows: 0/2160 → 2160/2160</code>）。</p>
+</div><div class="pageno">37 / 44</div></section>
+<section class="slide " data-i="37"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">6 · 回归测试的建立与应用</h1><div class="body">
+<table>
+<tr><th>改动</th><th>回归</th><th>动作</th></tr>
+<tr><td>C1 多数组 cbuffer</td><td>44/44</td><td>提交 + 加 event23341</td></tr>
+<tr><td>C2 FTZ</td><td>45/45 → <b>46/46</b></td><td>提交 + 加 event20899</td></tr>
+<tr><td>C3 ftoi（高风险）</td><td><b>46/46</b></td><td>回归绿才敢提交</td></tr>
+</table>
+<p class="note"><b>FTZ = Flush-To-Zero</b>：GPU 把极小非零浮点（<code>0x00000001</code>=1.4e-45）当 0；解释器需在解码 cbuffer 时同样把 subnormal 刷成 0，否则大气散射三元分支选错。每修好一类就把代表 case 加进回归 → <b>永不回退</b>。</p>
+</div><div class="pageno">38 / 44</div></section>
+<section class="slide " data-i="38"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">7 · TDD 在本项目的应用</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 760 150" role="img" aria-label="红绿循环">
+  <defs><marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#9aa4b2"/></marker></defs>
+  <rect x="30" y="45" width="190" height="60" rx="10" fill="#241316" stroke="#ff6b6b"/>
+  <text x="125" y="72" fill="#ff6b6b" font="bold 14px sans-serif" text-anchor="middle" style="font:bold 14px sans-serif">红</text>
+  <text x="125" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">0/2160 + 一堆 Error</text>
+  <rect x="285" y="45" width="190" height="60" rx="10" fill="#0c1f17" stroke="#46d39a"/>
+  <text x="380" y="72" fill="#46d39a" text-anchor="middle" style="font:bold 14px sans-serif">绿</text>
+  <text x="380" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">最小修复 → 2160/2160</text>
+  <rect x="540" y="45" width="190" height="60" rx="10" fill="#171a21" stroke="#2a2f3a"/>
+  <text x="635" y="72" fill="#5db0ff" text-anchor="middle" style="font:bold 14px sans-serif">防回退</text>
+  <text x="635" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">加进回归集</text>
+  <path d="M222,75 L283,75" stroke="#9aa4b2" stroke-width="1.6" fill="none" marker-end="url(#ar3)"/>
+  <path d="M477,75 L538,75" stroke="#9aa4b2" stroke-width="1.6" fill="none" marker-end="url(#ar3)"/>
+</svg><div class="legend">红→绿：golden 即测试，先于实现存在且必然正确</div></div>
+<p class="note">本项目是 TDD 的变体——<b>"golden 即测试"</b>：测试（GPU 真机 <code>*_vs_mesh.csv</code>）先于实现存在且权威正确。红（<code>0/2160</code>）→ 实现修复 → 绿（<code>2160/2160</code>）。</p>
+</div><div class="pageno">39 / 44</div></section>
+<section class="slide " data-i="39"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">8 · 如何纠正 AI 的错误</h1><div class="body">
+<div class="grid3">
+  <div class="c c3"><b>① 自我纠错</b><br><span class="muted">step119 把 C2 判"精度不可解"；step120 回到逐语句轨迹深挖 → 从"不可解"变"一行修复"。</span></div>
+  <div class="c"><b>② 客观裁判</b><br><span class="muted">C3 改语义前先证伪担忧：翻出 event1031/1399 的 <code>v1</code> 是 <code>uint</code>（不受影响）再改；回归 46/46 复核。</span></div>
+  <div class="c c2"><b>③ 护栏固化</b><br><span class="muted">把历史坑写进 <code>CLAUDE.md</code>（golden 尾部 float3 错位、一元/二元 +/-），不再重犯。</span></div>
+</div>
+<div class="callout"><b>④ 用户直接纠偏</b>：预标"哪些是 capture 限制、无解"，纠正 AI"什么都想修"的倾向。<b>纠错核心</b>：回到数据流、要更细的证据，不要停在第一个看似合理的结论。</div>
+</div><div class="pageno">40 / 44</div></section>
+<section class="slide " data-i="40"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">9 · 记忆系统避免重复开发</h1><div class="body">
+<p>记忆系统 = <code>memory/</code> 下"<b>一事一文件</b>" + 会话开始即载入的索引 <code>MEMORY.md</code>。</p>
+<table>
+<tr><th>记忆</th><th>内容</th><th>避免的重复劳动</th></tr>
+<tr><td>golden-sv-position-first</td><td>golden CSV 把 SV_Position 列排最前</td><td>C2 分析无需重推列序</td></tr>
+<tr><td>per-vertex-binary-vb-decode</td><td>NORMAL/TANGENT 是 R10G10B10A2</td><td>不必重新逆向顶点格式</td></tr>
+<tr><td>witcher3-array-cbuffers</td><td>数组 cbuffer 与实例化输入的坑</td><td>C1 的背景知识</td></tr>
+</table>
+<p class="note">发现"<b>非显而易见、未来还会用到</b>"的事实就写成一条记忆（带"为什么/怎么用"）。纪律：不记 git 已有的、先查重、召回时先核实文件仍存在。<b>同一个坑只踩一次。</b></p>
+</div><div class="pageno">41 / 44</div></section>
+<section class="slide " data-i="41"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">10 · 两个开发周期的对比</h1><div class="body"><div class="svgbox"><svg viewBox="0 0 900 130" role="img" aria-label="两个开发周期"><defs><marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#9aa4b2"/></marker></defs>
+  <rect x="30" y="40" width="400" height="56" rx="10" fill="#1a1430" stroke="#7a6cff"/>
+  <text x="48" y="64" fill="#b3a8ff" style="font:bold 14px sans-serif">前期 · opencode + minimax-m2.7</text>
+  <text x="48" y="84" fill="#cdd6e4" style="font:12px sans-serif">奠基期：小步快跑，搭起解释器与管线骨架</text>
+  <rect x="470" y="40" width="400" height="56" rx="10" fill="#0c1f2a" stroke="#5db0ff"/>
+  <text x="488" y="64" fill="#9ecbff" style="font:bold 14px sans-serif">后期 · claude code + opus</text>
+  <text x="488" y="84" fill="#cdd6e4" style="font:12px sans-serif">攻坚期：真机数据 + 回归纪律，按根因啃长尾</text>
+  <path d="M430,68 L468,68" stroke="#9aa4b2" stroke-width="2" fill="none" marker-end="url(#ar3)"/>
+</svg></div>
+<table>
+<tr><th>维度</th><th>第二部分 · minimax</th><th>第三部分 · opus</th></tr>
+<tr><td>计划</td><td><b>人</b>切碎需求、找杠杆点</td><td><b>AI</b> 自己 triage→聚类→排序</td></tr>
+<tr><td>验证</td><td>加打印、人工看</td><td>verify-by-log + 自动回归 gate</td></tr>
+<tr><td>纠错</td><td>人手改兜底（#37/#42）</td><td>AI 自我纠错 + 回归当裁判</td></tr>
+<tr><td>推进单位</td><td>一个现象一小步</td><td>整条闭环 / 整类根因</td></tr>
+</table>
+</div><div class="pageno">42 / 44</div></section>
+<section class="slide " data-i="42"><div class="kicker">第三部分 · 攻坚期（ClaudeCode + Opus）</div><h1 class="stitle">10 · 优缺点与选型启示</h1><div class="body">
+<div class="grid3">
+  <div class="c"><b>第二部分 优点</b><br><span class="muted">步幅小、易回退、每步可肉眼验证、成本低；为整个项目的<b>可观测性</b>打了地基。</span></div>
+  <div class="c c3"><b>第二部分 缺点</b><br><span class="muted">找不到深层根因、修复不彻底、会误删代码；<b>重度依赖人工兜底</b>、无回归网、推进慢。</span></div>
+  <div class="c c2"><b>第三部分 优缺点</b><br><span class="muted"><b>优</b>：长上下文持有整条管线、根因导向、闭环交付、能自我纠错。<b>缺</b>：成本高、<b>对提示词约束敏感</b>（缺"不要做什么"会改错地方）。</span></div>
+</div>
+<div class="callout"><b>选型启示</b>：搭骨架/能力有限时，把需求切碎、靠人验证最稳；攻坚/上下文充足时，让 AI 持有全局、用<b>回归 + 记忆</b>闭环交付最高效。前期的可观测性铺垫，正是后期能"沿数据流快速回溯根因"的前提。</div>
+</div><div class="pageno">43 / 44</div></section>
+<section class="slide cover-slide" data-i="43"><div class="body">
+<div class="cover">
+  <div class="cover-tag">结语</div>
+  <h1 class="cover-h1">纯 AI coding，做到了一条完整的 D3D 管线</h1>
+  <p class="cover-sub">从一段样例 HLSL，到 123 个真机 case 的回归绿网；<br>关键不在"AI 有多强"，而在<b>把正确性变成机器可判、把经验变成跨会话记忆</b>。</p>
+  <div class="cover-chips">
+    <span class="tag">机器判绿，不许自称修好</span>
+    <span class="tag">回到数据流要证据</span>
+    <span class="tag">留痕 = 下一轮记忆</span>
+  </div>
+</div>
+</div></section>
+<div id="hint">← / → 或空格翻页 · F 全屏 · 点击左右半屏翻页</div>
+<script>
+const slides=[...document.querySelectorAll('.slide')];
+let i=Math.max(0,Math.min(slides.length-1,parseInt(location.hash.slice(1))||0));
+const bar=document.getElementById('bar');
+function show(n){i=Math.max(0,Math.min(slides.length-1,n));
+  slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+  bar.style.width=((i+1)/slides.length*100)+'%';
+  history.replaceState(null,'','#'+i); slides[i].scrollTop=0;}
+function next(){show(i+1)} function prev(){show(i-1)}
+document.addEventListener('keydown',e=>{
+  if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();next();}
+  else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();prev();}
+  else if(e.key==='Home'){show(0)} else if(e.key==='End'){show(slides.length-1)}
+  else if(e.key==='f'||e.key==='F'){if(!document.fullscreenElement)document.documentElement.requestFullscreen();else document.exitFullscreen();}});
+document.addEventListener('click',e=>{if(e.target.closest('a'))return;
+  const x=e.clientX/window.innerWidth; if(x>0.62)next(); else if(x<0.38)prev();});
+window.addEventListener('hashchange',()=>{const n=parseInt(location.hash.slice(1)); if(!isNaN(n)&&n!==i)show(n);});
+show(i);
+</script>
+</body></html>
