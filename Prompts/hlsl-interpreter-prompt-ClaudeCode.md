@@ -2857,17 +2857,36 @@ column_major 仍转置成逻辑行（`_mR0` 列 swizzle 读逻辑列=寄存器 R
 **剩 3 个非主序问题**：event2848/7308 是 `sv_position` float32 精度边缘（diff 0.0104/0.026 vs 容差 0.01，F1 类）；
 event2867 是蒙皮 `Color`(o3=`SkinningParameters[..]._m30..`) 部分行偏离。均非 WorldToPSSM0 主序，留待精度/蒙皮专项。
 
-# 162
+# 162 event2848 / event7308 — sv_position float32 precision问题
 ## Prompts
+继续修复下列问题
+event2848 / event7308 — sv_position float32 precision boundary (diff 0.0104 / 0.026 vs 0.01 tolerance), F1-class.
+event2867 — skinning Color (o3 = SkinningParameters[..]._m30 blend) mismatch on some rows.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+fix: treat NaN==NaN (and matching ±inf) as agreement in VS-golden compare (TombRaider event2867 0→3372/3372).
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step162-nan-agree-and-precision-triage.md`。
+
+**event2867 已修（比较语义）**：其**全部 11346 个 Color 失败都是 `output=nan golden=nan`**——GPU 对退化蒙皮顶点
+本就输出 NaN（golden=nan），我方也复现 NaN，二者一致，但比较用 `not(|ov-gv|<=tol)` 把 `nan==nan` 恒判失败。
+新增 `_num_agree(ov,gv,tol)`：双方都 NaN（或都 ±inf 且相等）视为一致，**单侧** NaN/inf 仍判失败（我方 NaN vs
+真实 golden 的真 bug 照旧捕获）。event2867 **0→3372/3372**。
+
+**event2848/7308 判为精度受限，不强修**：同 shader 重复 draw，`sv_position` 最大 diff 0.026（值~220，相对~1.2e-4）。
+**关键实验**：开 `float32_emulation=false`（全双精度）**仍失败**（max diff 0.0176）——非单纯 float32/FMA 舍入。
+该 VS 是程序化顶点动画（`rsqrt`/`sincos`/`frac`/分支算偏移 + 大中间量~1300 世界坐标相减抵消），**病态**计算，任何
+算术路径都会与 GPU 具体 float32 指令序列（FMA + GPU 版超越函数）分离~1e-4。要匹配需位精确复刻 GPU FMA+sincos/rsqrt，
+不现实；不放宽全局容差（掩盖真错）。属 F1，保留 Dump。
+
+**结果**：TombRaider **34→35/37**，回归 130/130 零回归（event2867 入回归守护 NaN 一致 + 蒙皮扁平索引），Dump
+TombRaider 3→2。剩 event2848/7308 为病态程序化动画精度受限，非可修 bug。
 
 # 163
 ## Prompts

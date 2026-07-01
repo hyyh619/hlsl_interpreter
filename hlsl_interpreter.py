@@ -5909,6 +5909,21 @@ class HLSLInterpreter:
     # 原本通过的分量变成失败, 且真实逻辑错误(相对差量级 >1) 仍会被捕获。
     _REL_TOLERANCE = 2e-5
 
+    @staticmethod
+    def _num_agree(ov: float, gv: float, tol: float) -> bool:
+        """Whether an output component agrees with golden within tolerance,
+        treating special values correctly. If BOTH are NaN (the GPU produced NaN
+        for this vertex and we reproduced it — e.g. TombRaider event2867's Color
+        for degenerate skinning), that is agreement; likewise matching ±inf. A
+        NaN/inf on only ONE side stays a mismatch, so our NaN vs a real golden
+        value is still caught. `not (|diff| <= tol)` alone would (wrongly) flag
+        NaN==NaN because every comparison with NaN is False."""
+        if math.isnan(ov) or math.isnan(gv):
+            return math.isnan(ov) and math.isnan(gv)
+        if math.isinf(ov) or math.isinf(gv):
+            return ov == gv
+        return abs(ov - gv) <= tol
+
     def compare_vs_output_with_golden_params(self, results: list, output_params: list,
                                             golden_rows: list, float_tolerance: float = 0.0001,
                                             execute_count: int = None) -> bool:
@@ -5940,11 +5955,7 @@ class HLSLInterpreter:
                         if gv is None:
                             continue
                         if isinstance(ov, float) and isinstance(gv, float):
-                            # `not (diff <= tol)` (rather than `diff > tol`) so a
-                            # NaN/inf output — where every comparison is False —
-                            # is correctly flagged as a mismatch instead of
-                            # silently counting as a pass.
-                            if not (abs(ov - gv) <= _tol(gv)):
+                            if not self._num_agree(ov, gv, _tol(gv)):
                                 self.log_output(
                                     f"Error: Row {row_idx} {key}[{comp_idx}]: "
                                     f"output={ov:.6f} golden={gv:.6f} diff={abs(ov-gv):.6f}"
@@ -5954,7 +5965,8 @@ class HLSLInterpreter:
                             self.log_output(f"Error: Row {row_idx} {key}[{comp_idx}]: output={ov} golden={gv}")
                             row_match = False
                 elif isinstance(output_val, (int, float)) and isinstance(golden_val, (int, float)):
-                    if not (abs(float(output_val) - float(golden_val)) <= _tol(float(golden_val))):
+                    if not self._num_agree(float(output_val), float(golden_val),
+                                           _tol(float(golden_val))):
                         self.log_output(f"Error: Row {row_idx} {key}: output={output_val:.6f} golden={golden_val:.6f}")
                         row_match = False
 
