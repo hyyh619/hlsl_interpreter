@@ -356,8 +356,16 @@ if 'return' in stmt and 'output' in stmt:
 - **两个"反直觉陷阱"**：3Dmigoto 尾部 `float3` 错位、表达式里一元 vs 二元 `+/-`。
 - **硬性规则**：每次改动后必须跑回归测试 `python run_regression.py`。
 
-> **要点**：把"踩过的坑"和"必须遵守的纪律"写进常驻说明，AI 才不会反复犯同样的错。
-> 例如 C1 修复时，AI 直接知道要去看 golden 对比日志、改完要跑回归——这都来自 `CLAUDE.md`。
+**关于回归测试的约束，`CLAUDE.md` 写得非常死，一字不让**——这是全篇最关键的一条纪律，原文（节译）：
+
+> **每次代码改动后，都必须在"认为完成"之前跑回归套件。** 本项目没有单元测试，回归套件就是防止解释器/管线被改坏的安全网。
+> 套件是数据驱动的：`Cases/regression_test_zip_files.csv` 逐行列出必须持续通过的 capture zip；增删覆盖面就改这个 CSV，**不要在 runner 里硬编码 case 名**。
+> 一个 case **通过**当且仅当三条同时成立：① `render.py` 干净退出；② 日志里**没有以 `Error:` 开头的行**（VS-vs-golden 的分量级不符）；③ 日志的 `Total PASSED rows: X/Y` 汇总满足 **X == Y**（每一行 golden 都匹配）。
+> 若某个 case 失败，打开 `Cases/regression_logs/<zip-stem>.log`、grep `Error:` 找到不符分量，**先修解释器再往下走**。
+
+这段约束把"完成"变成了**机器可判、不可赖账**的三条硬指标——AI 不能自称"修好了"，必须让 `run_regression.py` 亮绿。它还顺带堵死了两条捷径：**不许改 runner 硬编码绕过**、**失败必须回到解释器侧修**（而不是去动 golden 或放宽判据）。
+
+> **要点**：把"踩过的坑"（两个陷阱）和"必须遵守的纪律"（回归三判据）写进常驻说明，AI 才不会反复犯同样的错、也不会自欺欺人地"假绿"。例如 C1 修复时，AI 无需被提醒就知道：去看 golden 对比日志定位分量、改完跑 `run_regression.py`、`X==Y` 才算过——这些全部来自 `CLAUDE.md`。
 
 ### 1.2 任务指令（本轮的编号清单）
 用户本轮给出的提示词是一个**可执行的循环规范**，而不是模糊愿望：
@@ -373,20 +381,74 @@ if 'return' in stmt and 'output' in stmt:
 ```
 这段提示词的优点：**可验证的完成标准**（无 error、回归通过）、**明确的循环边界**（一个 case 一轮）、**产出要求**（提交 + 文档 + 回归用例）。〔提示词原文：[ClaudeCode #42 继续修复](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)〕
 
-### 1.3 现状/约束清单
-用户把"已知未修复的长尾"列在前面（八面体法线、raw buffer、SNORM/UNORM、超时），并标注哪些是"capture 限制、无解"。这让 AI **不浪费时间去碰已判定不可解的问题**，把精力放在可解项（C1/C2/C3）。〔提示词原文同上：[ClaudeCode #42 的"尚未修复（剩余长尾）"清单](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)〕
+**这条"可执行循环"落到一个真实 case（C1 多数组 cbuffer）上，一轮是这样跑完的：**
 
-### 1.4 给提示词的实操建议
+```
+[挑 case] 取 Dump 里下一个 zip → 跑 render.py
+   ↓
+[找 Error] output.log 出现:
+   Error: Row0 texgen[2].x output=0.0000 golden=0.3125 diff=0.3125   ← texgen[2] 读成 0
+   ↓
+[定位] 沿数据流回溯:整个 texgen[] 只有 [0] 有值,[1]/[2] 全 0
+        → cbuffer 数组字段的二进制重载只填了首个元素
+   ↓
+[修] load_all_cbuffers_from_combined_csv:按数组步长逐元素填充,而非只填 texgen[0]
+   ↓
+[验证] 重跑该 case → 无 Error、Total PASSED rows: N/N
+   ↓
+[回归] python run_regression.py → 全绿(一次修复顺带绿了 5 个同类 case)
+   ↓
+[提交] git commit 该 fix
+   ↓
+[加回归] 从这 5 个同类 zip 里挑一个,加进 regression_test_zip_files.csv
+   ↓
+[写文档] Sessions/hlsl-interpreter-stepN-*.md 记下现象/根因/改动/回归结果
+   ↓
+[下一轮] 回到 [挑 case]
+```
+
+关键在于**每一步都有机器可判的出口**：找 Error 靠 grep、验证靠 `X==Y`、回归靠退出码——AI 能自己判断这一轮是否真的完成，而不是"感觉修好了"。
+
+### 1.3 现状/约束清单
+用户把"已知未修复的长尾"列在提示词前面，并**逐条标注哪些是"capture 限制、无解"**，这样 AI **不会在死路上空转**——把精力放在可解项（C1/C2/C3），对已判定不可解的项直接跳过。这份清单摘录（原文见 [ClaudeCode #42](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42)）：
+
+| 长尾项 | 状态 | 是否可解 |
+|---|---|---|
+| 打包 uint 八面体法线（event16215/16834） | sv_position 已修，残余 TexCoord 是更深的八面体解码 | ⏳ 未解，暂缓 |
+| 四元数 typed-buffer（event2135/3542…） | 位运算已修；残余因 t3 是 `R8G8B8A8_SNORM`、t2 是 `UNORM` | ❌ **capture 未记录 view 格式，UNORM/SNORM 无法区分 → 无解** |
+| raw structured buffer（event22201） | capture 根本没 dump 该 raw buffer | ❌ **能力/capture 限制 → 无解** |
+| Tank 18 个超时 | 纯 Python 光栅化 ~62k 像素慢 | ⚠️ **非 bug，暂缓** |
+
+标注"无解/非 bug"的价值在于：**它给了 AI 一个合法的"放弃"理由**。没有这份清单，AI 会对着 `R8G8B8A8_SNORM/UNORM` 这种 capture 里根本无从区分的信息反复试探、来回改代码却永远绿不了；有了它，AI 会直接记一句"capture 限制、跳过"，把预算投到真正能修的地方。
+
+### 1.4 留痕要求（写 `Sessions/` 文档 + 填提示词历史）
+任务指令的最后一条永远是"**把思考/执行/结果写入 `Sessions/hlsl-interpreter-stepN-*.md`**"。这不是走形式——留痕在本项目里同时扮演三个角色：
+
+- **① 交付物**：每一轮修复都留下一份可核对的记录。Session 文档有固定骨架，AI 按它填：
+  ```
+  # Step N — <这一轮主题>
+  ## Goal            这一轮要修的 case / issue
+  ## Results summary  修了几个、绿了几个、剩几个
+  ## Fix 1 … Fix k    每个 fix:现象 → 根因 → 代码改动 → 验证
+  ## Blocked classes (honest assessment)   本轮判定无解/暂缓的项 + 为什么
+  ## Regression       回归结果(X/Y)
+  ```
+- **② 下一轮的记忆（闭环的关键）**：本轮文档里的 **`## Blocked classes（honest assessment）`** 一节，下一轮会**原样变成 §1.3 的"现状/约束清单"**——上一轮判定"四元数 SNORM/UNORM 是 capture 限制、无解"，下一轮 AI 读到就直接跳过，不再重蹈覆辙。留痕把"这条路走不通"的结论**沉淀成跨会话的长期记忆**，否则每开一个新会话，AI 又会从零撞一遍南墙。
+- **③ 提示词历史**：除了 Sessions，用户还把每轮的提示词原文按编号填进 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md`（就是本手册通篇 `#N` 超链接指向的东西）。它让"当初为什么这么改"可回溯——本手册 §4/§8 的一整条 `#2→#3→#4` 证据链，就是靠它才能逐条还原。
+
+> **一句话**：留痕文档既是这一轮的**收尾**，也是下一轮的**开局输入**——`Blocked classes` → 下轮 `现状/约束`，`Fix 根因` → 下轮遇到同类现象时的先验。写文档不是额外负担，而是让 AI **越修越聪明**的记忆机制。
+
+### 1.5 给提示词的实操建议
 - **给可验证的成功标准**，而不是"修好它"。本项目的标准是机器可判的：日志无 `Error:` 且 `Total PASSED rows: X/X`。
 - **指明数据/代码在哪**（zip 目录、配置文件），省去 AI 猜测。
 - **把"不要做什么"写出来**（已知无解的类别、不可改动的基准），避免无效探索与改错地方。
-- **要求留痕**（写 session 文档），既是交付物，也是下一轮的记忆。
+- **要求留痕**（写 session 文档 + 填提示词历史），既是交付物，也是下一轮的记忆（详见 §1.4）。
 
-> **反例（缺"不要做什么"→ AI 改错了地方）**：步骤 [#2 修复前序提交引入的 bug](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) 的提示词只说"请修复 Color/WorldPos 的 Error"，**没有声明"golden 数据是基准、不要动它"**。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的**尾部 `float3` 错位**陷阱（golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐）。由于提示词没有禁止改基准，AI 把矛头指向了 **golden 比较侧**——`load_vs_golden_from_mesh_csv` 里的 WorldPos 重映射一度被**注释掉（禁用）**，直到步骤 [#3](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) 才不得不"**恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过**"。正因为吃过这个亏，紧接着的步骤 [#4](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4) 才在提示词里补上明确禁令——"**不要更改 golden data 的加载函数，golden data 加载数据是正确的**"（即下文 §1.5 的好例 G1）。
+> **反例（缺"不要做什么"→ AI 改错了地方）**：步骤 [#2 修复前序提交引入的 bug](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) 的提示词只说"请修复 Color/WorldPos 的 Error"，**没有声明"golden 数据是基准、不要动它"**。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的**尾部 `float3` 错位**陷阱（golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐）。由于提示词没有禁止改基准，AI 把矛头指向了 **golden 比较侧**——`load_vs_golden_from_mesh_csv` 里的 WorldPos 重映射一度被**注释掉（禁用）**，直到步骤 [#3](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) 才不得不"**恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过**"。正因为吃过这个亏，紧接着的步骤 [#4](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4) 才在提示词里补上明确禁令——"**不要更改 golden data 的加载函数，golden data 加载数据是正确的**"（即下文 §1.6 的好例 G1）。
 >
 > **教训**：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"**基准是对的，只许改解释器**"就能堵死后一条错路；漏掉它，就要付出 #2→#3 这样的来回与返工。〔证据链：[#2 缺禁令](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2) → [#3 恢复被注释的重映射](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3) → [#4 补上禁令](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4)〕
 
-### 1.5 好提示词 vs 差提示词：本项目的真实对照
+### 1.6 好提示词 vs 差提示词：本项目的真实对照
 
 下面三组例子全部摘自本仓库 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md` 的真实提示词，可逐条核对（每例均附"提示词原文"超链接，指向对应步骤）。
 
