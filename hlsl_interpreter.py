@@ -64,6 +64,7 @@ class FieldDefinition:
     struct_elem_regs: int = 0  # struct{...} NAME[N] 时每个元素占用的 16 字节寄存器数；0 表示非内嵌结构体
     struct_members: List = None  # struct 成员布局 [(name, type, reg_off, comp_off, arr_size), ...]
     struct_int_data: List = None  # struct 元素的整数寄存器行（用于 uint/int/bool 成员的精确位）
+    is_row_major: bool = False  # 声明了 row_major：cbuffer 寄存器即逻辑行，加载时不转置
 
 
 @dataclass
@@ -1021,9 +1022,19 @@ class HLSLInterpreter:
                     else:
                         reg_offset = -1
                         comp_off = 0
+                    # Record the declared major order: a `row_major` matrix keeps
+                    # its cbuffer registers AS rows (no transpose on load), so the
+                    # decompiled `M._m00_m01_m02_m03` (row) accessor maps straight
+                    # to register 0. A plain/`column_major` matrix stores columns
+                    # in registers and is transposed to logical rows on load, so
+                    # the decompiled `M._m00_m10_m20_m30` (column) accessor maps to
+                    # register 0. Getting this per-matrix is what lets TombRaider's
+                    # row_major WorldToPSSM0 and the Collision suite's column_major
+                    # WorldViewProj both resolve correctly.
+                    is_row_major = bool(re.search(r'\brow_major\b', line))
                     fields.append(FieldDefinition(field_type, field_name, '',
                                                   array_size=array_size, reg_offset=reg_offset,
-                                                  comp_off=comp_off))
+                                                  comp_off=comp_off, is_row_major=is_row_major))
         return CbufferDefinition(name, fields, register=register)
 
     # 控制流关键字: header 正则可能把 "else if (...)" 误判成函数定义，需排除
@@ -3877,15 +3888,22 @@ class HLSLInterpreter:
                         if row_ri >= len(decoded):
                             break
                         if base == 64 and row_ri + 3 < len(decoded):
-                            # float4x4: load all 4 column registers, transpose to row-major
-                            cols = [decoded[row_ri + k] for k in range(4)]
-                            arr.append([[cols[c][r] for c in range(4)] for r in range(4)])
+                            # float4x4 array element. Transpose column-major
+                            # registers to logical rows; keep row_major registers
+                            # as-is (see the non-array branch below).
+                            regs = [decoded[row_ri + k] for k in range(4)]
+                            if getattr(field, 'is_row_major', False):
+                                arr.append(regs)
+                            else:
+                                arr.append([[regs[c][r] for c in range(4)]
+                                            for r in range(4)])
                         elif ftype == 'float4x3' and row_ri + 2 < len(decoded):
-                            # float4x3 column-major: 3 registers = 3 columns; transpose to
-                            # row-major logical (4 rows x 3 cols) so the _mRC accessor and
-                            # mul() read elements consistently with float4x4.
-                            cols = [decoded[row_ri + k] for k in range(3)]
-                            arr.append([[cols[c][r] for c in range(3)] for r in range(4)])
+                            regs = [decoded[row_ri + k] for k in range(3)]
+                            if getattr(field, 'is_row_major', False):
+                                arr.append(regs)
+                            else:   # column-major: 3 cols -> row-major 4x3
+                                arr.append([[regs[c][r] for c in range(3)]
+                                            for r in range(4)])
                         elif base == 48 and row_ri + 2 < len(decoded):
                             # float3x4 / float3x3: 3 registers, kept as-is
                             arr.append([decoded[row_ri], decoded[row_ri + 1], decoded[row_ri + 2]])
@@ -3899,16 +3917,29 @@ class HLSLInterpreter:
                     # Non-array field.
                     if base == 64:      # float4x4
                         if ri + 3 < len(decoded):
-                            # D3D HLSL stores float4x4 column-major in cbuffer registers:
-                            # decoded[ri+k] is column k.  The interpreter accesses elements
-                            # as matrix[row][col], so transpose to row-major here.
-                            cols = [decoded[ri], decoded[ri+1],
-                                    decoded[ri+2], decoded[ri+3]]
-                            field.data = [[cols[c][r] for c in range(4)] for r in range(4)]
-                    elif ftype == 'float4x3':   # column-major: 3 cols -> row-major 4x3
+                            # A plain/column_major matrix stores columns in the
+                            # registers; transpose to logical rows so the element
+                            # accessor matches. A `row_major` matrix already stores
+                            # rows in registers — keep them as-is so the decompiled
+                            # `M._m00_m01_m02_m03` accessor (and mul) map straight to
+                            # register R, exactly like the disasm cb[base+R] and the
+                            # struct-array path (fixes TombRaider WorldToPSSM0 /
+                            # ScreenMatrix without disturbing column_major cases).
+                            regs = [decoded[ri], decoded[ri + 1],
+                                    decoded[ri + 2], decoded[ri + 3]]
+                            if getattr(field, 'is_row_major', False):
+                                field.data = regs
+                            else:
+                                field.data = [[regs[c][r] for c in range(4)]
+                                              for r in range(4)]
+                    elif ftype == 'float4x3':
                         if ri + 2 < len(decoded):
-                            cols = [decoded[ri], decoded[ri+1], decoded[ri+2]]
-                            field.data = [[cols[c][r] for c in range(3)] for r in range(4)]
+                            regs = [decoded[ri], decoded[ri + 1], decoded[ri + 2]]
+                            if getattr(field, 'is_row_major', False):
+                                field.data = regs
+                            else:   # column-major: 3 cols -> row-major 4x3
+                                field.data = [[regs[c][r] for c in range(3)]
+                                              for r in range(4)]
                     elif base == 48:    # float3x4 / float3x3
                         if ri + 2 < len(decoded):
                             field.data = [decoded[ri], decoded[ri+1], decoded[ri+2]]
