@@ -25,6 +25,7 @@
     border:1px solid var(--line);border-radius:20px;padding:3px 11px;margin:8px 6px 0 0;background:var(--panel)}
   h2{margin:46px 0 14px;font-size:23px;border-left:4px solid var(--accent);padding-left:12px}
   h3{margin:26px 0 10px;font-size:18px;color:#2a3340}
+  h4{margin:20px 0 8px;font-size:15.5px;color:#2a3340}
   p,li{color:#2f3a47}
   code{font-family:var(--mono);font-size:13.5px;background:var(--panel2);border:1px solid var(--line);
     border-radius:5px;padding:1px 6px;color:#0a52c0}
@@ -442,7 +443,33 @@ if 'return' in stmt and 'output' in stmt:
 <b>每次代码改动后，都必须在"认为完成"之前跑回归套件。</b> 本项目没有单元测试，回归套件就是防止解释器/管线被改坏的安全网。套件数据驱动：<code>Cases/regression_test_zip_files.csv</code> 逐行列出必须持续通过的 capture；增删覆盖面就改这个 CSV，<b>不要在 runner 里硬编码 case 名</b>。<br>
 一个 case <b>通过</b>当且仅当三条同时成立：① <code>render.py</code> 干净退出；② 日志里<b>没有以 <code>Error:</code> 开头的行</b>；③ 日志的 <code>Total PASSED rows: X/Y</code> 满足 <b>X == Y</b>。失败就打开 <code>Cases/regression_logs/&lt;stem&gt;.log</code> grep <code>Error:</code>，<b>先修解释器再往下走</b>。
 </div>
+
+<h4><code>Total PASSED rows: X/Y</code> 到底是什么？用实际日志说清 X == Y</h4>
+<p>它由 <code>compare_vs_output_with_golden</code> 在跑完 VS 后打印（<code>hlsl_interpreter.py</code>）：</p>
+<ul>
+<li><b>Y = golden 的总行数</b>，即这次 Draw 的<b>顶点数</b>（golden VS 输出每个顶点一行）。</li>
+<li><b>X = "整行都对"的行数</b>：某一行里，<b>每个语义字段（<code>SV_POSITION</code>/<code>COLOR</code>/<code>WORLDPOS</code>…）的每个分量</b>都与 golden 在 <code>float_tolerance</code> 内相等，这一行才计入 X。<b>任何一个分量超差，整行判失败</b>（并打一条 <code>Error:</code> 行），X 不加一。</li>
+</ul>
+<p>一个<b>全通过</b>的真实 case（<code>event371</code>，6 个顶点）日志尾部：</p>
+<pre><code>VS executed 6 vertices in 0.0028s
+Comparing VS output with golden data...
+Total PASSED rows: 6/6
+Comparison PASSED: All output data matches golden data within tolerance</code></pre>
+<p><code>6/6</code> → <b>X == Y</b>，6 行 golden 全部逐分量匹配 = 这个 case 绿。反过来，一个<b>没修好</b>的真实 case（<code>event399</code> 某次修复前，696 个顶点）：</p>
+<pre><code>Error: Row 0 Color[0]: output=0.000000 golden=0.364710 diff=0.364710
+Error: Row 0 Color[1]: output=0.000000 golden=0.364710 diff=0.364710
+Error: Row 1 Color[0]: output=0.000000 golden=1.121450 diff=1.121450
+   … (每个出错分量一条 Error 行) …
+Total PASSED rows: 0/696
+Comparison FAILED: Some output data does not match golden data</code></pre>
+<p><code>0/696</code> → <b>X ≠ Y</b>（X=0，一行都没对上，Color 全算成 0）= 这个 case 红。回归判据要的就是 <b>X == Y</b>：<b>Y 是应对上的行数、X 是真正对上的行数，两者相等才说明"每一个顶点、每一个分量都和真机一致"</b>——差一行、甚至一行里差一个分量，<code>X &lt; Y</code>，回归立即判红。这也和判据②互为印证：只要 <code>X &lt; Y</code>，日志里必有对应 <code>Error:</code> 行指出是哪行、哪字段、哪分量、差多少。</p>
+
 <p>这段约束把"完成"变成<b>机器可判、不可赖账</b>的三条硬指标，还顺带堵死两条捷径：<b>不许改 runner 硬编码绕过</b>、<b>失败必须回解释器侧修</b>（而非动 golden 或放宽判据）——AI 不能自称"修好了"，必须让 <code>run_regression.py</code> 亮绿。</p>
+<div class="callout amber">
+<b>为什么要"机器判绿"——看第二部分一个反面教训</b>
+<p style="margin:6px 0">那一期还没有回归套件，AI 完全靠"自称"。步骤 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">OpenCode #37</a> 里，MiniMax-M2.7 <b>把两字符运算符的修复当成"已修好"提交了</b>（提交信息说修复 <code>&lt;=</code> 识别问题）。但它其实<b>没修对</b>：检测到 <code>&lt;</code> 时取 <code>expr[i-1:i+1]</code> 得到的是 <code>" &lt;"</code>（空格+<code>&lt;</code>），<code>&lt;=</code> 依旧被切成 <code>&lt;</code>，<code>dist &lt;= LightRadius</code> 照错不误。因为<b>没有任何机器判据拦住这次"假修复"</b>，错误一路溜过，直到用户亲自复跑、读打印才发现，最后提交信息只能如实记成 <i>"MiniMax-M2.7 fixes two char operator issue failed. I have to fix it by my hand."</i>（详见 <a href="#qb4">第二部分 §4 案例二</a>）。</p>
+<b>这正是第三部分立下回归铁律的原因</b>：把"修好了"从 <b>AI 的一句话</b>，变成 <code>run_regression.py</code> 的<b>退出码 + <code>X==Y</code></b>。同样一次"我觉得修好了"，在第二部分能蒙混过关、在第三部分会被回归<b>当场判红</b>——"假绿"再也过不了闸门。
+</div>
 
 <h3>② 任务指令：一条落到真实 case 的可执行循环</h3>
 <p>把 ② 的循环规范落到 C1（多数组 cbuffer）上，一轮是这样跑完的——<b>每一步都有机器可判的出口</b>：</p>
