@@ -669,7 +669,7 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 
 ### 6.1 建立
 本项目**没有单元测试**，回归套件就是安全网。它是**数据驱动**的：
-- `Cases/regression_test_zip_files.csv` 列出必须保持通过的 capture zip（一行一个）。
+- [`Cases/regression_test_zip_files.csv`](../Cases/regression_test_zip_files.csv) 列出必须保持通过的 capture zip（一行一个）。
 - `run_regression.py` 读这个 CSV，逐个 headless 跑 `render.py`，每个写一份 `Cases/regression_logs/<name>.log`，最后打印 PASS/FAIL 汇总，任一失败则退出码非零（可 gate CI）。
 - **通过判据**（三条全满足）：① `render.py` 干净退出；② 日志无 `Error:` 行；③ `Total PASSED rows: X/X`（X==Y）。
 
@@ -677,6 +677,8 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 - **每次改动后必跑**（`CLAUDE.md` 硬性规则）。C1 改完跑出 44/44、C2 跑出 45/45（含新加的 20899）、C3 跑出 46/46。
 - **每修好一类，就把代表 case 加进回归**。本轮新增 `event23341`（多数组代表）和 `event20899`（FTZ 代表），让这两类**永不回退**。
 - **回归是"提交闸门"**：只有回归绿了才提交。C3 是个"改变既有强转语义"的高风险改动——正是回归 46/46 才让它敢提交。
+
+> **FTZ = Flush-To-Zero（反规格化数刷零）**：GPU 做浮点运算时把极小的非零浮点（denormal，如 `0x00000001` 按 float 解释成 `1.4e-45`）直接当 `0`。`event20899` 里常量 `cb12[271].z` 正是这种值，被用作三元条件 `cb12[271].z ? r2.x : 1`——GPU 视其为 0 走 false 分支，解释器却因保留了非零 denormal 走错分支、污染大气散射 o0/o1。修复：解码 cbuffer 时把 subnormal 刷成 `0.0`（`asint`/`asuint` 不受影响，仍读精确整数位）。详见 §5 / §8。
 
 > 注意：回归 CSV 与 zip 本身是 **gitignore** 的（本地基础设施），所以提交里只含代码 + 文档；回归集在本地累积。
 
