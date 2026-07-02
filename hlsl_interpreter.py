@@ -337,6 +337,8 @@ class HLSLInterpreter:
         self._eval_counter = 0                              # evaluate_syntax_tree执行计数器
         self._should_print = True                           # 当前是否应该打印
         self._log_file = None                               # 日志文件句柄
+        self._gs_emit = None                                # GS 执行时的 Append 回调（否则 None）
+        self._gs_restart = None                             # GS 执行时的 RestartStrip 回调
         self.hlsl_code = None                               # 加载的HLSL代码
         self.max_workers = max_workers                       # 线程池最大工作线程数
         self._parsed_func_cache = {}                         # 解析过的函数体缓存
@@ -2557,6 +2559,18 @@ class HLSLInterpreter:
                             return res
                 if isinstance(arr, list) and 0 <= idx < len(arr):
                     elem = arr[idx]
+                    # Nested 2D index, e.g. a geometry shader's per-primitive
+                    # input `v[i][j].swz` (v[i] = primitive-vertex i's attribute
+                    # list, v[i][j] = attribute slot j).
+                    if rest.startswith('[') and isinstance(elem, list):
+                        m2 = re.match(r'^\[([^\]]+)\](.*)$', rest)
+                        if m2:
+                            j = self._eval_subscript(m2.group(1), local_vars)
+                            inner = elem[j] if 0 <= j < len(elem) else 0.0
+                            r2 = m2.group(2)
+                            if r2.startswith('.'):
+                                return self.apply_swizzle(inner, r2[1:])
+                            return inner
                     if rest.startswith('.'):
                         return self.apply_swizzle(elem, rest[1:])
                     return elem
@@ -2759,6 +2773,21 @@ class HLSLInterpreter:
             return None
 
         self.debug_print(f"\n[STMT] Executing: {stmt}")
+
+        # Geometry-shader stream ops (only active during GS execution, when
+        # self._gs_emit is set). `<stream>.Append(...)` emits the current output
+        # register values as one output vertex; `<stream>.RestartStrip()` ends
+        # the current output strip. 3Dmigoto decompiles the emit as e.g.
+        # `m0.Append(0)` — the argument is a dummy; the real vertex is whatever
+        # o0/o1/.. hold at that point.
+        if self._gs_emit is not None:
+            mgs = re.match(r'^(\w+)\s*\.\s*(Append|RestartStrip)\s*\(', stmt)
+            if mgs:
+                if mgs.group(2) == 'Append':
+                    self._gs_emit(local_vars)
+                else:
+                    self._gs_restart()
+                return None
 
         # if-else条件语句处理
         if stmt.startswith('if'):
@@ -5874,6 +5903,128 @@ class HLSLInterpreter:
             results.append(canonical)
 
         return results
+
+    @staticmethod
+    def _assemble_primitives(idx_list: list, topology: int) -> list:
+        """Group the drawn vertex indices into input primitives for the GS,
+        per D3D primitive topology. Returns a list of tuples of vertex indices.
+        topology: 1=pointlist, 2=linelist, 3=linestrip, 4=trianglelist,
+        5=trianglestrip (D3D11_PRIMITIVE_TOPOLOGY values)."""
+        n = len(idx_list)
+        seq = list(range(n))          # positions into the VS-result list
+        if topology == 1:             # point list → 1 vertex per primitive
+            return [(i,) for i in seq]
+        if topology == 2:             # line list
+            return [(seq[i], seq[i + 1]) for i in range(0, n - 1, 2)]
+        if topology == 3:             # line strip
+            return [(seq[i], seq[i + 1]) for i in range(n - 1)]
+        if topology == 4:             # triangle list
+            return [(seq[i], seq[i + 1], seq[i + 2]) for i in range(0, n - 2, 3)]
+        if topology == 5:             # triangle strip
+            # D3D strip winding: even triangle i → (i, i+1, i+2); odd triangle →
+            # (i, i+2, i+1) (last two swapped to keep consistent facing). The GS
+            # sees the vertices in this order — confirmed by the gs_mesh golden.
+            out = []
+            for i in range(n - 2):
+                out.append((seq[i], seq[i + 1], seq[i + 2]) if i % 2 == 0
+                           else (seq[i], seq[i + 2], seq[i + 1]))
+            return out
+        # Unknown/patch topology: treat as a triangle list fallback.
+        return [(seq[i], seq[i + 1], seq[i + 2]) for i in range(0, n - 2, 3)]
+
+    def executeGS_with_params(self, main_func: str, gs_input_params: list,
+                              gs_output_params: list, gs_input_sig: list,
+                              vs_results: list, idx_list: list, topology: int,
+                              num_instances: int = 1) -> list:
+        """Execute the geometry shader over the assembled input primitives and
+        return the emitted output vertices (list of dicts keyed by canonical
+        output semantic), in Append order — i.e. the GS mesh-output stream.
+
+        `gs_input_sig` is the GS input signature (slot/index/semantic); each GS
+        input slot j maps by semantic to a VS-result key, so `v[i][j]` (the
+        decompiled per-primitive-vertex accessor) reads primitive-vertex i's
+        attribute slot j. `vs_results` are the VS outputs (canonical keys)."""
+        sem_to_key = self._get_output_semantic_to_key_map()
+
+        def _canon(sem, idx):
+            sem_full = f'{sem.upper()}{idx}' if idx > 0 else sem.upper()
+            return sem_to_key.get(sem_full, sem_full)
+
+        # GS input slot -> (canonical VS-result key, semantic upper), by slot.
+        slot_meta = [(_canon(s['semantic'], s['index']), s['semantic'].upper())
+                     for s in sorted(gs_input_sig, key=lambda r: r['slot'])]
+        # GS output param -> (canonical key, component count).
+        out_keys = [(_canon(p['semantic_base'], p['semantic_index']),
+                     p['name'], min(self._type_component_count(p['type']), 4))
+                    for p in gs_output_params]
+
+        prims = self._assemble_primitives(idx_list, topology)
+        emitted = []
+
+        def _emit(local_vars):
+            row = {}
+            for key, pname, comp in out_keys:
+                val = local_vars.get(pname)
+                if isinstance(val, list) and len(val) > comp:
+                    val = val[:comp]
+                row[key] = val
+            emitted.append(row)
+
+        self._gs_emit = _emit
+        self._gs_restart = lambda: None   # flat vertex list: strip restart = separator
+        self._eval_counter = 0
+        try:
+            for inst in range(max(1, num_instances)):
+                for prim in prims:
+                    v2d = []
+                    for vpos in prim:
+                        vs = vs_results[vpos] if 0 <= vpos < len(vs_results) else {}
+                        # SV_VertexID for this input vertex = the drawn index
+                        # (falls back to the position); SV_InstanceID = inst.
+                        vid = (idx_list[vpos] if idx_list and vpos < len(idx_list)
+                               else vpos)
+                        attrs = []
+                        for key, sem in slot_meta:
+                            if sem.startswith('SV_VERTEXID'):
+                                attrs.append(vs.get(key, vid))
+                            elif sem.startswith('SV_INSTANCEID'):
+                                attrs.append(inst)
+                            else:
+                                attrs.append(vs.get(key, [0.0, 0.0, 0.0, 0.0]))
+                        v2d.append(attrs)
+                    self._execute_gs_main(self.hlsl_code, main_func,
+                                          gs_input_params, gs_output_params, v2d, inst)
+        finally:
+            self._gs_emit = None
+            self._gs_restart = None
+        return emitted
+
+    def _execute_gs_main(self, code: str, main_func: str, input_params: list,
+                         output_params: list, v2d: list, instance_id: int) -> None:
+        """Run one GS invocation for a single input primitive. `v2d[i][j]` is
+        primitive-vertex i's attribute slot j. Output vertices are produced via
+        the Append interception in execute_statement (self._gs_emit)."""
+        local_vars = {'v': v2d, 'SV_GSInstanceID': instance_id}
+        for param in output_params:
+            local_vars[param['name']] = (
+                [0.0, 0.0, 0.0, 1.0] if param.get('type') == 'float4'
+                else self._default_value_for_type(param['type']))
+        self._eval_counter += 1
+        self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._sb_index_burst = None
+        cache_key = f'void_{main_func}_{id(code)}'
+        if cache_key in self._parsed_func_cache:
+            statements = list(self._parsed_func_cache[cache_key]['statements'])
+        else:
+            statements = self._collect_function_statements(main_func)
+            self._parsed_func_cache[cache_key] = {'statements': statements, 'body': ''}
+        for stmt in statements:
+            if stmt is None:
+                continue
+            s = stmt.strip()
+            if s == 'return' or s.startswith('return;') or s == 'return':
+                break
+            self.execute_statement(stmt, local_vars)
 
     # Maps PS input semantic → the canonical attribute key produced by the
     # rasterizer's barycentric interpolation (see rasterizer._interpolate_*).

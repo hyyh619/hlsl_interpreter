@@ -904,6 +904,94 @@ def _run_zip_workflow(config: dict, data_path: str, config_path: str):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+_TOPO_NAME_TO_ENUM = {
+    'POINTLIST': 1, 'LINELIST': 2, 'LINESTRIP': 3,
+    'TRIANGLELIST': 4, 'TRIANGLESTRIP': 5,
+}
+
+
+def _draw_input_topology(data_folder: str) -> int:
+    """GS input-primitive topology enum from draw_call_info.csv's
+    PrimitiveTopology (e.g. 'TriangleStrip' → 5). Falls back to triangle list."""
+    path = os.path.join(data_folder, 'draw_call_info.csv')
+    if os.path.exists(path):
+        for row in _read_csv_rows(path):
+            if row.get('Property', '').strip() == 'PrimitiveTopology':
+                name = row.get('Value', '').strip().upper().replace('_', '')
+                return _TOPO_NAME_TO_ENUM.get(name, 4)
+    return 4
+
+
+def _run_gs_stage(config, data_folder, log_file_path, vs_interp, vs_results,
+                  idx_list, float_tolerance):
+    """If the draw has a geometry shader (GS_shader.hlsl) with a *_gs_mesh.bin
+    golden, execute the GS over the VS-output primitives and compare the emitted
+    stream against the golden — printing the same total/passed + first-few-Error
+    summary as the VS comparison."""
+    gs_hlsl = os.path.join(data_folder, 'GS_shader.hlsl')
+    gs_bin, gs_layout = vs_interp.find_stage_mesh_dump(data_folder, 'gs')
+    if not (os.path.exists(gs_hlsl) and gs_bin and gs_layout):
+        return
+    log = vs_interp.log_output
+    try:
+        gs_interp = _make_interpreter(config, d3d.SHADER_STAGE_GS, log_file_path)
+        # Route GS logging through the VS interpreter's already-open log handle
+        # (gs_interp buffers to its own cache that we never flush/close, so its
+        # comparison summary would otherwise be lost).
+        gs_interp.log_to_file = False
+        gs_interp.log_output = vs_interp.log_output
+        with open(gs_hlsl, 'r', encoding='utf-8') as f:
+            gs_code = gs_interp.preprocess_hlsl(f.read())
+        gs_interp.hlsl_code = gs_code
+
+        gs_tex, gs_desc, gs_samp = _load_stage_textures(data_folder, 'GS', log)
+        if gs_tex:
+            gs_interp.set_texture_and_sampler(gs_tex, gs_desc, gs_samp)
+        gs_interp._parse_texture_and_sampler_bindings(gs_code)
+        gs_interp._parse_structured_buffers(gs_code)
+        for cb_block in gs_interp._extract_cbuffer_blocks(gs_code):
+            cb_def = gs_interp.parse_cbuffer(cb_block)
+            if cb_def:
+                gs_interp.cbuffers[cb_def.name] = cb_def
+        gs_interp.parse_all_functions(gs_code)
+
+        gs_cb_csv = os.path.join(data_folder, 'GS_constant_buffers.csv')
+        if os.path.exists(gs_cb_csv):
+            gs_interp.load_all_cbuffers_from_combined_csv(gs_cb_csv)
+        gs_interp.override_cbuffers_from_binary(data_folder, 'GS')
+        gs_interp.load_structured_buffer_data(data_folder)
+        gs_interp.load_typed_buffer_data(data_folder)
+
+        gs_sig = gs_interp.load_signature_from_csv(
+            os.path.join(data_folder, 'GS_input_output_signature.csv'))
+        gs_params = gs_interp.parse_main_params_with_semantics(gs_code, 'main')
+        gs_in, gs_out = gs_params['inputs'], gs_params['outputs']
+        gs_interp.map_params_to_signature(gs_out, gs_sig['outputs'])
+
+        topo = _draw_input_topology(data_folder)
+        log("=" * 50)
+        log("Executing Geometry Shader...")
+        emitted = gs_interp.executeGS_with_params(
+            'main', gs_in, gs_out, gs_sig['inputs'], vs_results, idx_list, topo)
+        log(f"GS emitted {len(emitted)} output vertices (input topology={topo})")
+
+        golden = gs_interp.load_mesh_output_golden(gs_bin, gs_layout)
+        log(f"Loaded {len(golden)} golden GS rows from mesh bin+layout "
+            f"({os.path.basename(gs_bin)})")
+        if golden and len(emitted) != len(golden):
+            # A count mismatch would make the row-by-row compare below report a
+            # vacuous X/X over min(len) — call it out explicitly instead.
+            log(f"Error: GS emitted-vertex count {len(emitted)} != golden "
+                f"{len(golden)} (emit/primitive-assembly mismatch)")
+        if golden:
+            log("\nComparing GS output with golden data...")
+            gs_interp.compare_vs_output_with_golden_params(
+                emitted, gs_out, golden, float_tolerance=float_tolerance)
+    except Exception as e:
+        import traceback
+        log(f"GS stage error: {e}\n{traceback.format_exc()}")
+
+
 def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     """Execute VS → Rasterizer → Depth → PS pipeline from extracted data folder."""
     # Config parameters
@@ -1175,6 +1263,12 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             float_tolerance=float_tolerance,
             execute_count=execute_count,
         )
+
+    # Geometry-shader stage (optional): if the draw has a GS, run it over the
+    # VS-output primitives and compare the emitted stream against the
+    # *_gs_mesh.bin golden. Runs even in vs_only mode (it is a mesh comparison).
+    _run_gs_stage(config, data_folder, log_file_path, vs_interp, vs_results,
+                  idx_list, float_tolerance)
 
     # VS-only mode stops here: the golden comparison (and its "Total PASSED
     # rows" summary) is already logged above, so skip the rest of the pipeline.
