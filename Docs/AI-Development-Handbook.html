@@ -289,31 +289,33 @@ void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … 
   <defs>
     <marker id="arf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
     <style>
-      .h{fill:#15261c;stroke:#3a6b4d}.a{fill:#152a40;stroke:#2f5e8f}
+      .h{fill:#dbe8fb;stroke:#3a8f5c;stroke-width:1.5}.a{fill:#152a40;stroke:#2f5e8f}
       .t{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}
       .ts{fill:#9aa4b2;font:11px sans-serif;text-anchor:middle}
+      .th{fill:#14324a;font:12.5px sans-serif;text-anchor:middle}
+      .tsh{fill:#3f6b53;font:11px sans-serif;text-anchor:middle}
       .f{stroke:#5db0ff;stroke-width:1.7;fill:none;marker-end:url(#arf)}
       .lg{fill:#9aa4b2;font:11.5px sans-serif}
     </style>
   </defs>
   <!-- top row: ①→②→③→④ -->
-  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="t" x="105" y="44">① 需求发起</text><text class="ts" x="105" y="61">人 · 切小步/给样例</text>
+  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="th" x="105" y="44">① 需求发起</text><text class="tsh" x="105" y="61">人 · 切小步/给样例</text>
   <rect class="a" x="240" y="24" width="190" height="48" rx="9"/><text class="t" x="335" y="44">② coding</text><text class="ts" x="335" y="61">Agent · 只改一个点</text>
-  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="t" x="565" y="44">③ 调试</text><text class="ts" x="565" y="61">人 · 跑 + 读打印</text>
-  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="t" x="795" y="44">④ 反馈</text><text class="ts" x="795" y="61">人 · 指出现象/根因</text>
+  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="th" x="565" y="44">③ 调试</text><text class="tsh" x="565" y="61">人 · 跑 + 读打印</text>
+  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="th" x="795" y="44">④ 反馈</text><text class="tsh" x="795" y="61">人 · 指出现象/根因</text>
   <path class="f" d="M200,48 L238,48"/><path class="f" d="M430,48 L468,48"/><path class="f" d="M660,48 L698,48"/>
   <!-- ④ down to bottom row -->
   <path class="f" d="M795,72 L795,128"/>
   <!-- bottom row: ⑤←④ , ⑥←⑤ -->
   <rect class="a" x="470" y="130" width="190" height="48" rx="9"/><text class="t" x="565" y="150">⑤ bug 修复</text><text class="ts" x="565" y="167">Agent / 人手改兜底</text>
-  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="t" x="335" y="150">⑥ 再调试验证</text><text class="ts" x="335" y="167">人 · 再跑 + 再读</text>
+  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="th" x="335" y="150">⑥ 再调试验证</text><text class="tsh" x="335" y="167">人 · 再跑 + 再读</text>
   <path class="f" d="M698,154 L662,154"/><path class="f" d="M470,154 L432,154"/>
   <!-- ⑥ loop back up to ① -->
   <path class="f" d="M240,154 L60,154 L60,74"/>
   <!-- loop label -->
   <text class="lg" x="240" y="205">↻ 现象未消失则带着新观察回到 ④ 继续这一圈，直到这一小步通过</text>
 </svg>
-<div class="legend"><span style="color:#7fd0a0">绿框 = 人主导的环节</span> ｜ <span style="color:#7fb6ee">蓝框 = Agent 执行的环节</span></div>
+<div class="legend"><span style="color:#7fd0a0">绿框 + 浅蓝背景 = 人主导的环节</span> ｜ <span style="color:#7fb6ee">蓝框 = Agent 执行的环节</span></div>
 </div>
 
 <p><b>每一环具体是谁、做什么：</b></p>
