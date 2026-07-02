@@ -117,9 +117,10 @@
 <h2 id="q0">0 · 项目概述</h2>
 
 <h3>项目的目的</h3>
-<p>本项目的初衷并不是"做一个 D3D11 仿真器"，而是<b>一次关于 AI coding 的研究</b>——它的目标随开发推进逐步演化：</p>
+<div class="callout green"><b>缘起（最初的目的）</b>：起因是一个非常具体的工程问题——作者当时在用 <b>AI Agent 实现 Irrlicht 游戏引擎的 DX11 video driver layer</b>，遇到 <b>VS（顶点着色器）计算不正确、导致渲染错误</b>。定位这类 bug 的常规做法是用 <b>RenderDoc 对 DXBC 反汇编指令</b>逐条调试，但反汇编<b>不直观、不方便看</b>；作者更想<b>直接运行 HLSL 高级语言指令</b>来查错。于是用 AI Agent 写了一个<b>简单的 HLSL 解释执行器</b>——这就是本项目的起点。</div>
+<p>从这个具体的调试需求出发，"用 AI 写解释器"这件事本身也变成了<b>一次关于 AI coding 的研究</b>——目标随开发推进逐步演化：</p>
 <div class="grid3">
-  <div class="c"><b>① 为研究 AI coding 而生</b><br>项目最早是为了探索"用 AI 写代码"这件事本身能走多远而立项的。</div>
+  <div class="c"><b>① 最初：一个 HLSL 调试器</b><br>为看清 Irrlicht DX11 driver 的 VS 计算问题而写——用"直接解释 HLSL"取代"读 DXBC 反汇编"，把调试拉回高级语言层面。</div>
   <div class="c c2"><b>② 验证纯 AI coding 的边界</b><br>核心问题：在几乎不动手写代码、<b>全程由 AI 编程</b>的前提下，到底能做到什么程度？整个仓库正是这个实验的产物。</div>
   <div class="c c3"><b>③ 长成完整 D3D 管线</b><br>从"解释一段样例 HLSL"逐步演化成一个<b>完整的 Direct3D 可编程图形管线</b>（VS→光栅化→深度/模板→PS→输出合并 + 纹理/cbuffer/回归体系）。</div>
 </div>
