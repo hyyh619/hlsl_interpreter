@@ -632,6 +632,26 @@ zip(capture) → 解压 → CSV/HLSL/BMP/bin
 ```
 C1 的 bug 就在"cbuffers + constant_*.bin → VS 执行"这一段；C2 在"constant_*.bin 解码"；C3 在"二进制 VB → VS 执行的强转"。
 
+### 4.4 逐步加厚 capture：用更多 draw dump 攻克长尾 bug
+
+§5 讲的是"让**被测系统**多吐中间状态"；这一节讲的是它的**输入侧对偶**——**让 capture 多 dump 一层真机数据**。最早的 capture 只有"四舍五入的 CSV + 转码后的 BMP"，很多长尾 bug 在这层有损表示下**根本看不见**，只能标成"capture 限制、无解"。攻坚期的关键一招，就是**逐步把整个 draw 的原始数据全都 dump 下来**——每加一类数据，就把一类"无解"变成"可修"。
+
+> **核心洞见**：CSV / BMP 是 GPU 真正吃进去的数据的**有损重编码**。凡是只在**位级**才暴露的 bug（反规格化数、精确整数格式、精确纹素），你不把 GPU 当初读到的**同一份原始字节**喂给解释器，就永远看不到它。所以 `render.py` 的策略是——**同名数据里 raw 优先、CSV/BMP 仅作旧 capture 的回退**（源码注释：*"prefer raw binary captures for maximum precision … ia_vertex_data.csv uses rounded floats and may store some formats as zeros"*）。
+
+| dump 的数据 | 文件（capture 内） | 取代了什么有损来源 | 解锁的修复 / 用途 | 步骤 |
+|---|---|---|---|---|
+| **Pipeline statistics** | `pipeline_statistics.csv`（`RawCounter,Value`） | —（新增的真机每阶段计数基准） | ① 可机判地对比 `VSInvocations` / `SamplesPassed`（后者带容差）；② **用真机 `IAPrimitives` 判定三角形 LIST vs STRIP**——`pipeline_state.csv` 里的 topology 枚举不可靠（把 list 谎报成 STRIP），真机图元数才是 ground truth | [step90](Sessions/hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output.md) · [step95](Sessions/hlsl-interpreter-step95-samples-passed-tolerance.md) · [step100](Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md) |
+| **VS / GS / DS mesh-out** | `*_vs_mesh.csv`，及更精确的 `*_vs_mesh.bin` + `*_vs_mesh_layout.csv`（`find_stage_mesh_dump` 同样支持 `gs`/`ds`） | 取代 CSV golden 的**尾部 `float3` 错位**陷阱（CLAUDE.md 陷阱#1） | bin+layout 形式**显式 stride/type/order**，无 SV-Position 重排、无 uint 列位重解释、无尾部 `float3` 错位——是整个"verify-by-log"工作流的**权威基准（oracle）** | 见 CLAUDE.md 陷阱#1 |
+| **原始格式 texture/image** | `*.img`（raw DXGI）伴随 `*.bmp` | 取代有损转码的 BMP（丢精度/通道/格式信息） | 按真机 **DXGI 格式精确解码纹素**，修复 `Texture2D.Sample` 采样不匹配（含 event1399 的 vector-load hazard） | [step113](Sessions/hlsl-interpreter-step113-raw-img-texture-loading.md) · [step114](Sessions/hlsl-interpreter-step114-texture-load-and-dxbc-vector-load-hazard-event1399.md) |
+| **Raw 顶点缓冲（VB）** | `vb_slot*.bin` | 取代 `ia_vertex_data.csv`（浮点已四舍五入，某些格式甚至存成 0） | 拿到**精确位型**的逐顶点属性 + 逐实例输入，修复精度长尾（Witcher countryside） | [step117](Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.md) · [step121](Sessions/hlsl-interpreter-step121-binary-input-data-precision.md) |
+| **Raw 索引缓冲（IB）** | `ib_res_*.bin` | 取代 CSV 的 `IDX` 列 | 得到**真实 draw 索引序列**，并据此还原 `SV_VertexID`（否则每个顶点都读元素 0，如 Octopath 的 `Buffer<float4>` texcoord 表） | [step118](Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.md) |
+| **Raw 常量缓冲（CB）** | `constant_*.bin` | 取代 CSV 里已四舍五入的常量 | 揭示被 CSV 抹平的 **subnormal**（event20899：`cb12[271].z` 的字节是 `0x00000001` = `1.4e-45`），根因是 GPU 的 FTZ 让三元分支走 false、解释器却因保留 denormal 走错分支（**C2**）；另支持 Witcher 多数组 cbuffer 的二进制覆盖 | [step119](Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.md) · [step120](Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.md) |
+| **pre/post-draw 渲染目标 & 深度模板** | `*_res_*_<W>x<H>_<FORMAT>.raw`（+ `.png` 预览）、`diff_ps_output_rt0.csv` | 取代无字节级基准的状态 | 加载真机 **pre-draw 深度缓冲**做 early-Z / late-Z 对照，并对**输出合并像素（颜色+深度）逐像素比对** golden RT0 | [step94](Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.md) · [step122](Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.md) |
+
+**一条把它讲透的证据链——C2 / event20899。** 这个 bug 在 [step119](Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.md) 一度被判成"大气数学的精度长尾、不可解"。真相是：常量 `cb12[271].z` 是个反规格化数（denormal），GPU 按 **FTZ** 当 `0`、三元 `cb12[271].z ? r2.x : 1` 走 false 分支；解释器保留了非零 denormal，走了 true 分支，污染大气散射的 `o0/o1`。**但这个根因在 CSV 里是看不见的**——CSV 把常量四舍五入后，`1.4e-45` 和 `0` 长得一模一样。只有 dump 出 `constant_*.bin`、把 `cb12[271].z` 的**原始字节**解码成 `0x00000001`，才第一次看见"它其实是个非零 subnormal"。加厚 dump（拿到 raw CB）**+** 加厚被测系统的自述（逐分支轨迹，§5.4）两件事叠加，才把 [step120](Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.md) 的"一行修复"变成可能。
+
+> **方法论**：当一个 bug 反复被判"精度/capture 限制、无解"时，先别信——**问一句"我喂给解释器的，是不是 GPU 当初读到的同一份原始字节？"** 很多时候答案是"不是，是被 CSV/BMP 有损重编码过的"。把那一层 dump 成 raw，"无解"往往就变成"可修"。这也正是 §1.3"现状/约束清单"里那些"无解项"需要**定期复核**的原因——它们中的一部分，只是**当时的 dump 还不够厚**。
+
 ---
 
 ## 5 · 什么输出能帮助调试
