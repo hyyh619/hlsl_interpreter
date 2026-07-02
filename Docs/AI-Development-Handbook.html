@@ -117,9 +117,10 @@
 <h2 id="q0">0 · 项目概述</h2>
 
 <h3>项目的目的</h3>
-<p>本项目的初衷并不是"做一个 D3D11 仿真器"，而是<b>一次关于 AI coding 的研究</b>——它的目标随开发推进逐步演化：</p>
+<div class="callout green"><b>缘起（最初的目的）</b>：起因是一个非常具体的工程问题——作者当时在用 <b>AI Agent 实现 Irrlicht 游戏引擎的 DX11 video driver layer</b>，遇到 <b>VS（顶点着色器）计算不正确、导致渲染错误</b>。定位这类 bug 的常规做法是用 <b>RenderDoc 对 DXBC 反汇编指令</b>逐条调试，但反汇编<b>不直观、不方便看</b>；作者更想<b>直接运行 HLSL 高级语言指令</b>来查错。于是用 AI Agent 写了一个<b>简单的 HLSL 解释执行器</b>——这就是本项目的起点。</div>
+<p>从这个具体的调试需求出发，"用 AI 写解释器"这件事本身也变成了<b>一次关于 AI coding 的研究</b>——目标随开发推进逐步演化：</p>
 <div class="grid3">
-  <div class="c"><b>① 为研究 AI coding 而生</b><br>项目最早是为了探索"用 AI 写代码"这件事本身能走多远而立项的。</div>
+  <div class="c"><b>① 最初：一个 HLSL 调试器</b><br>为看清 Irrlicht DX11 driver 的 VS 计算问题而写——用"直接解释 HLSL"取代"读 DXBC 反汇编"，把调试拉回高级语言层面。</div>
   <div class="c c2"><b>② 验证纯 AI coding 的边界</b><br>核心问题：在几乎不动手写代码、<b>全程由 AI 编程</b>的前提下，到底能做到什么程度？整个仓库正是这个实验的产物。</div>
   <div class="c c3"><b>③ 长成完整 D3D 管线</b><br>从"解释一段样例 HLSL"逐步演化成一个<b>完整的 Direct3D 可编程图形管线</b>（VS→光栅化→深度/模板→PS→输出合并 + 纹理/cbuffer/回归体系）。</div>
 </div>
@@ -288,31 +289,33 @@ void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … 
   <defs>
     <marker id="arf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
     <style>
-      .h{fill:#15261c;stroke:#3a6b4d}.a{fill:#152a40;stroke:#2f5e8f}
+      .h{fill:#dbe8fb;stroke:#3a8f5c;stroke-width:1.5}.a{fill:#152a40;stroke:#2f5e8f}
       .t{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}
       .ts{fill:#9aa4b2;font:11px sans-serif;text-anchor:middle}
+      .th{fill:#14324a;font:12.5px sans-serif;text-anchor:middle}
+      .tsh{fill:#3f6b53;font:11px sans-serif;text-anchor:middle}
       .f{stroke:#5db0ff;stroke-width:1.7;fill:none;marker-end:url(#arf)}
       .lg{fill:#9aa4b2;font:11.5px sans-serif}
     </style>
   </defs>
   <!-- top row: ①→②→③→④ -->
-  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="t" x="105" y="44">① 需求发起</text><text class="ts" x="105" y="61">人 · 切小步/给样例</text>
+  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="th" x="105" y="44">① 需求发起</text><text class="tsh" x="105" y="61">人 · 切小步/给样例</text>
   <rect class="a" x="240" y="24" width="190" height="48" rx="9"/><text class="t" x="335" y="44">② coding</text><text class="ts" x="335" y="61">Agent · 只改一个点</text>
-  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="t" x="565" y="44">③ 调试</text><text class="ts" x="565" y="61">人 · 跑 + 读打印</text>
-  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="t" x="795" y="44">④ 反馈</text><text class="ts" x="795" y="61">人 · 指出现象/根因</text>
+  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="th" x="565" y="44">③ 调试</text><text class="tsh" x="565" y="61">人 · 跑 + 读打印</text>
+  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="th" x="795" y="44">④ 反馈</text><text class="tsh" x="795" y="61">人 · 指出现象/根因</text>
   <path class="f" d="M200,48 L238,48"/><path class="f" d="M430,48 L468,48"/><path class="f" d="M660,48 L698,48"/>
   <!-- ④ down to bottom row -->
   <path class="f" d="M795,72 L795,128"/>
   <!-- bottom row: ⑤←④ , ⑥←⑤ -->
   <rect class="a" x="470" y="130" width="190" height="48" rx="9"/><text class="t" x="565" y="150">⑤ bug 修复</text><text class="ts" x="565" y="167">Agent / 人手改兜底</text>
-  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="t" x="335" y="150">⑥ 再调试验证</text><text class="ts" x="335" y="167">人 · 再跑 + 再读</text>
+  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="th" x="335" y="150">⑥ 再调试验证</text><text class="tsh" x="335" y="167">人 · 再跑 + 再读</text>
   <path class="f" d="M698,154 L662,154"/><path class="f" d="M470,154 L432,154"/>
   <!-- ⑥ loop back up to ① -->
   <path class="f" d="M240,154 L60,154 L60,74"/>
   <!-- loop label -->
   <text class="lg" x="240" y="205">↻ 现象未消失则带着新观察回到 ④ 继续这一圈，直到这一小步通过</text>
 </svg>
-<div class="legend"><span style="color:#7fd0a0">绿框 = 人主导的环节</span> ｜ <span style="color:#7fb6ee">蓝框 = Agent 执行的环节</span></div>
+<div class="legend"><span style="color:#7fd0a0">绿框 + 浅蓝背景 = 人主导的环节</span> ｜ <span style="color:#7fb6ee">蓝框 = Agent 执行的环节</span></div>
 </div>
 
 <p><b>每一环具体是谁、做什么：</b></p>
