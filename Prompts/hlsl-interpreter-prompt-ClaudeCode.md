@@ -3135,8 +3135,11 @@ Notice:
 
 **剩余 44 案九类**（详单见 session 文档）：①超时×4（OldWorld×3+witcher22260，203k 顶点纯 Python 性能）②无 golden×6（EndlessSpace3093/Nobu2894/sekiro2 tessellation×4）③GS 条件发射计数 0×3（manhattan50/sekiro2_14998/sekiro4_20560，GS cbuffer birth-index 解码）④GS 发射值差×4（manhattan87/124/161/198）⑤HS/DS 结构墙×5（witcher fork/join 丢弃×3 + sekiro4 point-sprite×2）⑥GPU 超越函数墙×2（TombRaider2848/7308）⑦精度临界×6（sekiro2_3207/9493/4833、sekiro4_7844、Octopath664/3012）⑧VS 纹理采样精确性×11（witcher×9 + Octopath3601 + EndlessSpace2991）⑨Octopath 地形系统性偏差×3（576/2651/2682，8/23064；步 158「zero cbuffers」判断对新 dump 已不成立，真因待查）。可修优先级：③④一处 GS cbuffer 解码修复覆盖 7 案。
 
-# 169
+# 169 GS 条件发射计数 0（cbuffer 解码）
 ## Prompts
+修复下列问题
+③ GS 条件发射计数 0（cbuffer 解码）	3	可修，与④同源
+④ GS 发射值不匹配	4	可修
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3146,6 +3149,19 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**勘误**：读 GS cbuffer 二进制验证 birth-index 本来就解码正确（event50 start=end=0）——「cbuffer 解码」假设不成立；逐案深挖出 **8 个独立真 bug**。详见 `Sessions/hlsl-interpreter-step169-fix-gs-emit-classes-stream-out-sb-decode.md`。
+
+1. **manhattan「GS」实为 VS+Stream-Output**（disasm 是 `vs_4_0`，GS_shader.hlsl 与 VS 逐字节相同；golden = SO buffer 全量含零尾）→ `_run_gs_stage` 检测无 `Stream<>`/`Append` 时直通 VS 结果 + golden 全零尾裁剪。
+2. **struct 成员被 `// Offset:` 注释杀死**：按 `;` 切分后注释落到下段开头，`GXStandardParticleVS` 只剩 1 成员（stride 176→16）→ 解析前剥离行注释。
+3. **stride 采信捕获**：`_captured_sb_strides` 按 Name/Slot 用 buffer_params.csv 的 ElementByteSize 覆盖源码推导。
+4. **SB 成员尾部 swizzle 丢弃**：`t0[i].Position.y` 返回整 float4 → 标量化取 `.x`（sv_position 三分量广播之源）→ trailer 应用 apply_swizzle。
+5. **非索引 draw 的 SV_VertexID 从 0 起**（D3D11 语义，StartVertexLocation 只偏移 VB 取数，与 Vulkan/GL 相反）：VertexOffset=1 曾致全部粒子错位一位 → SV_VertexID = idx−VertexOffset。
+6. **RenderDoc post-GS golden 是 strip→list 展开**（1074=179×6、29148=4858×6，4858 恰=我们门判定通过数——门本来就对）→ GS 按 strip 收集、`dcl_outputtopology trianglestrip` 时展开，奇三角形 (i, i+2, i+1)（逐角对 golden 验证）。
+7. **`f32tof16` 向零舍入**（D3D 指令语义；打包色恰差 1 ULP 证实）→ `_f32_to_f16_rtz`。
+8. **原始/矩阵元素 SB + 反编译伪影**：`StructuredBuffer<uint3>` 的 `[i].xy`、`.ViewToLightSpaceMatrix._m02`（列主序 c*4+r）；`and rX,rX,0xffff` 被反编译成 `rX = rX ? 0.000000 : 0` 自三元式 → `preprocess_hlsl` 模式重写回 `(uint)X & 0xffff`。
+
+**结果**：manhattan event50 **PASS 1000/1000（晋级，回归 130/130 零回归）**；event87/124/161/198 → 998~999/1000（残余 1~2 行=birth 粒子 `frac(87362×sin(80000+))` 大相位 hash，行号与 birth 范围 [646,648)/[411,412) 完全吻合 → 并入类⑥超越函数墙）；sekiro2_14998 发射 0→**28974/29148（99.4%）**计数精确吻合（残余 TexCoord4 ~0.13 → 类⑦）；sekiro4_20560 计数 1074=1074、VS 179/179（残余 TEXCOORD9 = irradiance volume RGBM 的 alpha 解码 exp2 放大 → 类⑧）。**类③④宣告消灭**（残余全部并入既有墙类），Dump 逐案对比零退步。
 
 # 170
 ## Prompts

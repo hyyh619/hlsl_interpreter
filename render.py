@@ -970,14 +970,52 @@ def _run_gs_stage(config, data_folder, log_file_path, vs_interp, vs_results,
 
         topo = _draw_input_topology(data_folder)
         log("=" * 50)
-        log("Executing Geometry Shader...")
-        emitted = gs_interp.executeGS_with_params(
-            'main', gs_in, gs_out, gs_sig['inputs'], vs_results, idx_list, topo)
+        # Stream-output passthrough: some captures (manhattan particle sims)
+        # have NO geometry shader — the draw is a VS + stream-output, and the
+        # dump exports the same VS bytecode as GS_shader.hlsl (disasm model
+        # vs_*, no Stream<> param / Append calls). The post-"GS" golden is then
+        # simply the VS output captured from the SO buffer, so pass the VS
+        # results straight through instead of re-running the shader (which
+        # would apply the particle update twice).
+        is_stream_out = ('Stream<' not in gs_code and '.Append(' not in gs_code)
+        if is_stream_out:
+            log("GS stage is a VS stream-output passthrough (no Stream/Append "
+                "in decompiled source) — using VS results as the emitted stream")
+            emitted = list(vs_results)
+        else:
+            # RenderDoc's post-GS golden expands trianglestrip output into a
+            # triangle list (4-vertex quad strip -> 6 rows), so mirror that
+            # when the GS declares dcl_outputtopology trianglestrip.
+            out_topo = ''
+            gs_disasm = os.path.join(data_folder, 'GS_shader_disasm.txt')
+            if os.path.exists(gs_disasm):
+                with open(gs_disasm, 'r', encoding='utf-8', errors='replace') as f:
+                    m = re.search(r'dcl_outputtopology\s+(\w+)', f.read())
+                    out_topo = m.group(1).lower() if m else ''
+            expand = out_topo == 'trianglestrip'
+            log(f"Executing Geometry Shader... (output topology: {out_topo or 'unknown'}"
+                + (", expanding strips to triangle list" if expand else "") + ")")
+            emitted = gs_interp.executeGS_with_params(
+                'main', gs_in, gs_out, gs_sig['inputs'], vs_results, idx_list, topo,
+                expand_strips=expand)
         log(f"GS emitted {len(emitted)} output vertices (input topology={topo})")
 
         golden = gs_interp.load_mesh_output_golden(gs_bin, gs_layout)
         log(f"Loaded {len(golden)} golden GS rows from mesh bin+layout "
             f"({os.path.basename(gs_bin)})")
+        if 0 < len(emitted) < len(golden):
+            # A stream-output capture dumps the WHOLE SO buffer, so the golden
+            # can carry unwritten all-zero capacity rows past the real payload.
+            # Trim that zero tail (only ever rows beyond our emit count).
+            def _row_all_zero(row):
+                return all(
+                    (all(v == 0 for v in val) if isinstance(val, list) else val == 0)
+                    for val in row.values())
+            if all(_row_all_zero(r) for r in golden[len(emitted):]):
+                log(f"Golden GS rows {len(emitted)}..{len(golden) - 1} are all "
+                    f"zero (unwritten SO capacity) — trimming golden to "
+                    f"{len(emitted)} rows")
+                golden = golden[:len(emitted)]
         if golden and len(emitted) != len(golden):
             # A count mismatch would make the row-by-row compare below report a
             # vacuous X/X over min(len) — call it out explicitly instead.
@@ -1376,11 +1414,27 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # SV_VertexID is a per-vertex system value (the index-buffer value for an
     # indexed draw, +BaseVertex=0). Used e.g. to index a Buffer<float4> texcoord
     # table (Octopath). Without it every vertex reads element 0.
+    # D3D11 quirk: for a NON-indexed draw SV_VertexID starts at 0 —
+    # StartVertexLocation offsets only the vertex-buffer fetch, not the system
+    # value (unlike Vulkan/GL). idx_list carries the offset for the VB reads,
+    # so subtract it back here (sekiro particle draws have VertexOffset=1 and
+    # index StructuredInstance[SV_VertexID]; the +1 shifted every particle).
     sv_vid_params = [p['name'] for p in vs_input_params
                      if p['semantic_base'].upper() == 'SV_VERTEXID']
     if sv_vid_params and idx_list:
+        vid_offset = 0
+        for row in _read_csv_rows(draw_call_info_csv):
+            if (row.get('Property') or '').strip() == 'Indexed':
+                if (row.get('Value') or '').strip().lower() == 'false':
+                    for r2 in _read_csv_rows(draw_call_info_csv):
+                        if (r2.get('Property') or '').strip() == 'VertexOffset':
+                            try:
+                                vid_offset = int((r2.get('Value') or '0').strip())
+                            except ValueError:
+                                pass
+                break
         for i, vtx in enumerate(vertex_data):
-            vid = idx_list[i] if i < len(idx_list) else i
+            vid = (idx_list[i] if i < len(idx_list) else i) - vid_offset
             for pname in sv_vid_params:
                 vtx[pname] = vid
 

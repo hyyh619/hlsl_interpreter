@@ -2040,7 +2040,11 @@ class HLSLInterpreter:
                         # truncated; an int is already the raw bits.
                         bits = self._bitcast_to_int(x, False) if isinstance(x, float) else int(x)
                         return struct.unpack('<e', struct.pack('<H', bits & 0xFFFF))[0]
-                    return struct.unpack('<H', struct.pack('<e', float(x)))[0]
+                    # D3D's f32tof16 rounds TOWARD ZERO (struct.pack '<e' would
+                    # round to nearest-even and lands one ULP high half the
+                    # time — sekiro4 packed GS colors differ by exactly 1 in
+                    # the f16 bits against the golden).
+                    return self._f32_to_f16_rtz(float(x))
                 except (struct.error, ValueError, OverflowError):
                     return 0.0 if func_name == 'f16tof32' else 0
             result = [_conv(v) for v in val] if isinstance(val, list) else _conv(val)
@@ -2525,8 +2529,26 @@ class HLSLInterpreter:
                                 return 0
                             if rm.group(2) is not None:
                                 k = self._eval_subscript(rm.group(2), local_vars)
+                                vals = vals[k] if 0 <= k < len(vals) else 0.0
+                            # Trailing component swizzle (t0[i].Position.x) —
+                            # it was silently dropped, so every component read
+                            # the member's full vector (scalarized to .x).
+                            trailer = (rm.group(3) or '').strip()
+                            # Matrix-member element access
+                            # (g_SpotLightBuffer[i].ViewToLightSpaceMatrix._m02):
+                            # HLSL matrices store column-major by default, so
+                            # element (r, c) of a float4x4 lives at c*4 + r.
+                            mm = re.match(r'^\._m(\d)(\d)$', trailer)
+                            if mm and isinstance(vals, list) and len(vals) >= 4:
+                                r_, c_ = int(mm.group(1)), int(mm.group(2))
+                                nrows = 4 if len(vals) in (16, 12) else 3
+                                k = c_ * nrows + r_
                                 return vals[k] if 0 <= k < len(vals) else 0.0
-                            return vals[0] if len(vals) == 1 else vals
+                            if trailer.startswith('.') and isinstance(vals, list):
+                                return self.apply_swizzle(vals, trailer[1:])
+                            if isinstance(vals, list):
+                                return vals[0] if len(vals) == 1 else vals
+                            return vals
                     return 0
 
                 idx = self._eval_subscript(idx_expr, local_vars)
@@ -3534,6 +3556,11 @@ class HLSLInterpreter:
         'float': 1, 'float2': 2, 'float3': 3, 'float4': 4,
         'int': 1, 'int2': 2, 'int3': 3, 'int4': 4,
         'uint': 1, 'uint2': 2, 'uint3': 3, 'uint4': 4,
+        # Matrix members inside StructuredBuffer structs are stored tightly
+        # packed (sekiro4's SpotLight.ViewToLightSpaceMatrix): count their
+        # full float footprint so later member offsets stay correct.
+        'float4x4': 16, 'float3x4': 12, 'float4x3': 12, 'float3x3': 9,
+        'float2x2': 4,
     }
 
     def _parse_structured_buffers(self, code: str):
@@ -3549,7 +3576,13 @@ class HLSLInterpreter:
         for m in re.finditer(r'struct\s+(\w+)\s*\{([^}]*)\}', code, re.DOTALL):
             sname = m.group(1)
             members = []
-            for fld in m.group(2).split(';'):
+            # Strip line comments first: RenderDoc-derived structs carry
+            # trailing `// Offset: N` comments, which after the ';' split land
+            # at the START of the next field chunk and silently killed every
+            # member but the first (sekiro2/4 particle structs parsed as one
+            # float4 -> stride 16 instead of 176).
+            body = re.sub(r'//[^\n]*', '', m.group(2))
+            for fld in body.split(';'):
                 fld = fld.strip()
                 if not fld:
                     continue
@@ -3566,9 +3599,16 @@ class HLSLInterpreter:
         ):
             elem_type, name, reg = m.group(1), m.group(2), int(m.group(3))
             members = struct_layouts.get(elem_type, [])
-            stride = sum(self._SB_COMPONENTS.get(bt, 1) * cnt for (_, bt, cnt) in members) * 4
+            # Primitive element type (StructuredBuffer<uint> / <uint3> — the
+            # sekiro tile-light index/lookup tables): no struct layout, the
+            # element IS the value and `buf[i].x` swizzles it directly.
+            elem_prim = elem_type if (not members and
+                                      elem_type in self._SB_COMPONENTS) else None
+            stride = (self._SB_COMPONENTS[elem_prim] * 4 if elem_prim else
+                      sum(self._SB_COMPONENTS.get(bt, 1) * cnt
+                          for (_, bt, cnt) in members) * 4)
             self.structured_buffers[name] = {
-                'register': reg, 'element_type': elem_type,
+                'register': reg, 'element_type': elem_type, 'elem_prim': elem_prim,
                 'members': members, 'stride': stride, 'data': None,
             }
 
@@ -3593,14 +3633,56 @@ class HLSLInterpreter:
             name, reg = m.group(1), int(m.group(2))
             self.byte_address_buffers[name] = {'register': reg, 'data': None}
 
+    def _captured_sb_strides(self, data_folder: str) -> dict:
+        """Read buffer_params.csv and return the captured per-buffer element
+        byte sizes, keyed by resource name AND by register slot. The capture's
+        ElementByteSize is authoritative (it includes packing the source-derived
+        member sum can miss), so load_structured_buffer_data prefers it."""
+        params_path = os.path.join(data_folder, 'buffer_params.csv')
+        by_name, by_slot = {}, {}
+        if not os.path.exists(params_path):
+            return {'name': by_name, 'slot': by_slot}
+        rows = self.load_csv(params_path)
+        if rows and len(rows) >= 2:
+            header = [h.strip() for h in rows[0]]
+
+            def col(c):
+                return header.index(c) if c in header else -1
+            ci_slot, ci_name, ci_elem = col('Slot'), col('Name'), col('ElementByteSize')
+            if ci_slot >= 0 and ci_elem >= 0:
+                for row in rows[1:]:
+                    if len(row) <= max(ci_slot, ci_elem):
+                        continue
+                    try:
+                        slot = int(row[ci_slot])
+                        esize = int(row[ci_elem])
+                    except ValueError:
+                        continue
+                    if esize <= 0:
+                        continue
+                    if 0 <= ci_name < len(row) and row[ci_name].strip():
+                        by_name.setdefault(row[ci_name].strip(), esize)
+                    by_slot.setdefault(slot, esize)
+        return {'name': by_name, 'slot': by_slot}
+
     def load_structured_buffer_data(self, data_folder: str):
         """
         Load each parsed StructuredBuffer's contents from the captured binary
         (VS_slot_{reg}_res_*_buffer.bin). Keeps the raw bytes; elements are
-        decoded on demand to avoid materialising large palettes.
+        decoded on demand to avoid materialising large palettes. The element
+        stride prefers the capture's ElementByteSize (buffer_params.csv) over
+        the source-derived member sum.
         """
         import glob
+        captured = self._captured_sb_strides(data_folder) if self.structured_buffers else None
         for name, sb in self.structured_buffers.items():
+            cap = (captured['name'].get(name) or
+                   captured['slot'].get(sb['register'])) if captured else 0
+            if cap and cap != sb['stride']:
+                self.log_output(
+                    f"StructuredBuffer '{name}': stride {sb['stride']}B (from source) "
+                    f"overridden by captured ElementByteSize {cap}B")
+                sb['stride'] = cap
             if sb['stride'] <= 0:
                 continue
             reg = sb['register']
@@ -4158,6 +4240,21 @@ class HLSLInterpreter:
         base = index * stride
         if base < 0 or base + stride > len(raw):
             return None
+        # Primitive element (StructuredBuffer<uint3> etc.): `member_name` is
+        # really a component swizzle on the element itself (buf[i].x / .xy).
+        prim = sb.get('elem_prim')
+        if prim and not sb['members']:
+            comps = self._SB_COMPONENTS.get(prim, 1)
+            fmt = 'f' if 'float' in prim else ('I' if 'uint' in prim else 'i')
+            try:
+                vals = list(struct.unpack_from(f'<{comps}{fmt}', raw, base))
+            except struct.error:
+                return None
+            if all(c in 'xyzw' for c in member_name.lower()):
+                idx4 = {'x': 0, 'y': 1, 'z': 2, 'w': 3}
+                return [vals[idx4[c]] if idx4[c] < len(vals) else 0
+                        for c in member_name.lower()]
+            return vals
         offset_floats = 0
         for (mname, btype, cnt) in sb['members']:
             comps = self._SB_COMPONENTS.get(btype, 1) * cnt
@@ -4730,7 +4827,23 @@ class HLSLInterpreter:
             for name, replacement in defines.items():
                 line = re.sub(r'\b' + re.escape(name) + r'\b', replacement, line)
             result_lines.append(line)
-        return '\n'.join(result_lines)
+        code = '\n'.join(result_lines)
+        # 3Dmigoto decompiler artifact: `and rX, rX, l(0x0000ffff)` (extract a
+        # packed 16-bit index, e.g. sekiro4's tile-light index low half) is
+        # emitted as the nonsense self-ternary `rX = rX ? 0.000000 : 0;` (the
+        # mask printed as a float). A real movc with two zero branches is never
+        # generated, so rewrite it back to the bitwise AND.
+        artifact = re.compile(
+            r'\b(\w+\.\w+)\s*=\s*(\w+\.\w+)\s*\?\s*0\.0+\s*:\s*0\s*;')
+
+        def _fix_and_mask(m):
+            if m.group(1) != m.group(2):
+                return m.group(0)
+            self.log_output(
+                f"Repaired decompiler artifact: '{m.group(0).strip()}' -> "
+                f"'{m.group(1)} = (uint){m.group(1)} & 0xffff;'")
+            return f'{m.group(1)} = (uint){m.group(1)} & 0xffff;'
+        return artifact.sub(_fix_and_mask, code)
 
     def parse_main_params_with_semantics(self, code: str, func_name: str = 'main') -> Optional[dict]:
         """
@@ -5483,6 +5596,29 @@ class HLSLInterpreter:
         return bits
 
     @staticmethod
+    def _f32_to_f16_rtz(f: float) -> int:
+        """Convert float32 -> half bit pattern with ROUND-TOWARD-ZERO, the
+        rounding mode D3D specifies for the f32tof16 instruction (plain
+        struct.pack('<e') rounds to nearest-even and can land one ULP high).
+        Overflow clamps to the largest finite half (IEEE RTZ); only a real
+        inf input yields inf. NaN keeps a quiet-NaN payload."""
+        bits = struct.unpack('<I', struct.pack('<f', f))[0]
+        sign = (bits >> 16) & 0x8000
+        exp = (bits >> 23) & 0xFF
+        man = bits & 0x7FFFFF
+        if exp == 0xFF:                      # inf / NaN
+            return sign | 0x7C00 | (0x200 if man else 0)
+        e = exp - 127 + 15                   # rebias to half
+        if e >= 0x1F:                        # too large: RTZ -> max finite half
+            return sign | 0x7BFF
+        if e <= 0:                           # subnormal half (or underflow to 0)
+            if e < -10:
+                return sign
+            man = (man | 0x800000) >> (1 - e)
+            return sign | (man >> 13)
+        return sign | (e << 10) | (man >> 13)
+
+    @staticmethod
     def _to_f32(x):
         """Round a Python float (double) to the nearest float32, the precision
         the GPU actually uses. Lists are rounded element-wise; ints/bools and
@@ -6022,7 +6158,8 @@ class HLSLInterpreter:
     def executeGS_with_params(self, main_func: str, gs_input_params: list,
                               gs_output_params: list, gs_input_sig: list,
                               vs_results: list, idx_list: list, topology: int,
-                              num_instances: int = 1) -> list:
+                              num_instances: int = 1,
+                              expand_strips: bool = False) -> list:
         """Execute the geometry shader over the assembled input primitives and
         return the emitted output vertices (list of dicts keyed by canonical
         output semantic), in Append order — i.e. the GS mesh-output stream.
@@ -6046,7 +6183,8 @@ class HLSLInterpreter:
                     for p in gs_output_params]
 
         prims = self._assemble_primitives(idx_list, topology)
-        emitted = []
+        strips = []      # completed output strips (lists of rows)
+        cur = []         # rows of the strip being built
 
         def _emit(local_vars):
             row = {}
@@ -6055,10 +6193,15 @@ class HLSLInterpreter:
                 if isinstance(val, list) and len(val) > comp:
                     val = val[:comp]
                 row[key] = val
-            emitted.append(row)
+            cur.append(row)
+
+        def _restart():
+            if cur:
+                strips.append(list(cur))
+                cur.clear()
 
         self._gs_emit = _emit
-        self._gs_restart = lambda: None   # flat vertex list: strip restart = separator
+        self._gs_restart = _restart
         self._eval_counter = 0
         try:
             for inst in range(max(1, num_instances)):
@@ -6081,9 +6224,24 @@ class HLSLInterpreter:
                         v2d.append(attrs)
                     self._execute_gs_main(self.hlsl_code, main_func,
                                           gs_input_params, gs_output_params, v2d, inst)
+                    _restart()   # a strip never spans GS invocations
         finally:
             self._gs_emit = None
             self._gs_restart = None
+
+        if not expand_strips:
+            return [row for strip in strips for row in strip]
+        # RenderDoc's post-GS mesh output stores triangle-STRIP output expanded
+        # into a triangle LIST (a 4-vertex quad strip becomes 2 triangles = 6
+        # rows), so expand each strip the D3D way: even triangle i = (i, i+1,
+        # i+2), odd = (i, i+2, i+1) (last two swapped to keep the winding —
+        # verified against the sekiro4 gs_mesh golden). Strips too short to
+        # form a triangle emit nothing on the GPU either.
+        emitted = []
+        for strip in strips:
+            for i in range(len(strip) - 2):
+                a, b, c = strip[i], strip[i + 1], strip[i + 2]
+                emitted.extend((a, b, c) if i % 2 == 0 else (a, c, b))
         return emitted
 
     def _execute_gs_main(self, code: str, main_func: str, input_params: list,
