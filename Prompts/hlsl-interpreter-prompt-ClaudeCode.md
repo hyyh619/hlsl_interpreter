@@ -3106,8 +3106,13 @@ tri/quad/isoline × integer/pow2/fractional；integer factor 1 = 最小 patch（
 **回归**：`run_regression.py` **125/125 零回归**（`_run_ds_stage` 无 HS/DS 时提前返回）。**分步任务（GS→DS/HS+Tess）两步完成。**
 **后续**：`StructuredBuffer<struct>` stride 按结构体布局推断（修 sekiro4 光照）；拿到含 fork 阶段的反汇编补 `vpc*`（解 witcher 墙）。
 
-# 168
+# 168 重新运行Dump和Case文件夹所有的case
 ## Prompts
+1. 未更新dump前，buffer_params.csv 记录了 typed buffer 的 ElementByteSize 却没有记录 SRV 的真实视图 格式（DXGI_FORMAT）。ReplayRdcDraw 只能从反汇编推断，而 D3D typed-buffer load 一律声明为 (float,...)，SNORM 与 UNORM（及 float/int）无从区分。凡「经 SV_VertexID/SV_InstanceID 从 typed buffer 拉每顶点/每实例归一化数据」的 draw（蒙皮切线/法线、morph、部分全屏 pass），若真实格式是 SNORM 而被推 成 UNORM，则每个拉取顶点的数据全错
+2. 新导出的 dump 将携带真实 typed-buffer 格式。
+3. 重新运行Dump和Case文件夹所有的case
+4. 如果测试未通过的case，请调查失败原因并分类
+5. 每个失败分类请详细列出所有相关case
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3117,6 +3122,18 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**任务**：消费新 dump 的真实 typed-buffer 视图格式（`buffer_params.csv` 新增 `ViewFormat`/`ViewByteOffset` 列），全量重跑 Dump+Cases 并分类失败。详见 `Sessions/hlsl-interpreter-step168-viewformat-typed-buffers-retriage-and-swizzle-fix.md`。
+
+**格式消费**：`load_typed_buffer_data` 读 `ViewFormat`（存 `tb['view_format']`）并按 `ViewByteOffset` 开窗；新增通用 DXGI 名解析器 `_decode_view_format`（R8/16/32 × FLOAT/UNORM/SNORM/UINT/SINT 任意 RGBA 组合，`_SRGB`→UNORM，混合位宽如 R10G10B10A2/R32_TYPELESS 返回 None）；`_typed_buffer_load` 真实格式优先、无列/不支持则回退原字节分布推断——旧 dump 零破坏。交叉验证：旧推断对 Octopath 各 buffer 恰好全对（unorm/half 均与真实格式一致），证明既有失败另有元凶。
+
+**顺手修出两个真 bug**：
+① **frac/floor/ceil/round/trunc 对 NaN/±inf 崩溃**（witcher3_event16834 exit=1）：`math.floor(NaN)` 抛异常；改按 GPU 语义透传（`frac(±inf)`=NaN）。
+② **方法调用尾部 swizzle 被静默丢弃**（重要）：`_parse_method_call` 用 `rfind(')')` 截参数，`tex.Load(...).y` 的 `.y` 被吞、整条返回 float4、取标量拿到 `.x`。潜伏原因：反编译代码尾部 swizzle 几乎全是前缀恒等（`.xy`/`.xyzw`），丢弃后结果碰巧相同。修复：配对闭括号截参 + 尾部 swizzle 包装为新 `swizzle` 语法树节点（evaluator 加分支）。**步 158 的「event2135/2912 四元数分量置换解码 bug」实为此 bug**——`.y` 拿成 `.x` 表现恰似 x↔y 交换。
+
+**结果**：回归 125/125→修复后仍全过；Dump 48 案第二轮 **4 转 PASS**（Octopath event2135 6/6、event2912 504/504、sekiro2 event15481/16052 3/3）已晋级 Cases+回归表（**129/129**）；event664 0/51→36/51、event3012 30/51→35/51（收敛为精度残差）。
+
+**剩余 44 案九类**（详单见 session 文档）：①超时×4（OldWorld×3+witcher22260，203k 顶点纯 Python 性能）②无 golden×6（EndlessSpace3093/Nobu2894/sekiro2 tessellation×4）③GS 条件发射计数 0×3（manhattan50/sekiro2_14998/sekiro4_20560，GS cbuffer birth-index 解码）④GS 发射值差×4（manhattan87/124/161/198）⑤HS/DS 结构墙×5（witcher fork/join 丢弃×3 + sekiro4 point-sprite×2）⑥GPU 超越函数墙×2（TombRaider2848/7308）⑦精度临界×6（sekiro2_3207/9493/4833、sekiro4_7844、Octopath664/3012）⑧VS 纹理采样精确性×11（witcher×9 + Octopath3601 + EndlessSpace2991）⑨Octopath 地形系统性偏差×3（576/2651/2682，8/23064；步 158「zero cbuffers」判断对新 dump 已不成立，真因待查）。可修优先级：③④一处 GS cbuffer 解码修复覆盖 7 案。
 
 # 169
 ## Prompts

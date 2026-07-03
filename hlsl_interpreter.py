@@ -1582,6 +1582,20 @@ class HLSLInterpreter:
         elif node.node_type == 'method_call':
             return self.execute_method_call_node(node, local_vars)
 
+        elif node.node_type == 'swizzle':
+            # Component selection on a computed value (e.g. the result of a
+            # method call: `tex.Load(...).y`).
+            val = self.evaluate_syntax_tree(node.left, local_vars)
+            if val is None:
+                return None
+            if not isinstance(val, list):
+                val = [val]
+            idx = {'x': 0, 'y': 1, 'z': 2, 'w': 3,
+                   'r': 0, 'g': 1, 'b': 2, 'a': 3}
+            comps = [val[idx[c]] if idx[c] < len(val) else 0.0
+                     for c in str(node.value)]
+            return comps[0] if len(comps) == 1 else comps
+
         elif node.node_type == 'ternary':
             cond = self.evaluate_syntax_tree(node.left, local_vars)
             if self._to_bool(cond):
@@ -1827,6 +1841,12 @@ class HLSLInterpreter:
                 op = lambda v: float(round(v))
             else:  # frac
                 op = lambda v: v - math.floor(v)
+            # GPU semantics: floor/ceil/trunc/round/frac of NaN is NaN and of
+            # ±inf is ±inf (frac(inf) is NaN); math.floor/ceil/trunc raise on
+            # them instead — pass non-finite inputs through.
+            base_op = op
+            op = lambda v: (base_op(v) if math.isfinite(v)
+                            else (float('nan') if func_name == 'frac' else v))
             if isinstance(val, list):
                 result = [float(op(v)) for v in val]
             else:
@@ -3617,9 +3637,11 @@ class HLSLInterpreter:
             return header.index(name) if name in header else -1
         ci_slot, ci_bin = col('Slot'), col('BinFile')
         ci_elem, ci_type = col('ElementByteSize'), col('DescriptorType')
+        ci_fmt, ci_voff = col('ViewFormat'), col('ViewByteOffset')
         if ci_slot < 0 or ci_bin < 0:
             return
-        # register -> (binfile, elem_size); prefer TypedBuffer rows.
+        # register -> (binfile, elem_size, view_format, view_offset);
+        # prefer TypedBuffer rows.
         by_reg = {}
         for row in rows[1:]:
             if len(row) <= max(ci_slot, ci_bin):
@@ -3634,30 +3656,39 @@ class HLSLInterpreter:
                 esize = int(row[ci_elem]) if 0 <= ci_elem < len(row) else 0
             except ValueError:
                 esize = 0
+            fmt = row[ci_fmt].strip() if 0 <= ci_fmt < len(row) else ''
+            try:
+                voff = int(row[ci_voff]) if 0 <= ci_voff < len(row) else 0
+            except ValueError:
+                voff = 0
             if slot not in by_reg or dtype == 'TypedBuffer':
-                by_reg[slot] = (binfile, esize)
+                by_reg[slot] = (binfile, esize, fmt, voff)
         for name, tb in self.typed_buffers.items():
             info = by_reg.get(tb['register'])
             if not info:
                 continue
-            binfile, esize = info
+            binfile, esize, fmt, voff = info
             binpath = os.path.join(data_folder, binfile)
             if not binfile or not os.path.exists(binpath):
                 continue
             with open(binpath, 'rb') as f:
-                tb['data'] = f.read()
+                data = f.read()
+            tb['data'] = data[voff:] if voff else data
             tb['elem_size'] = esize or (tb['comp'] * 4)
+            tb['view_format'] = fmt
             n = len(tb['data']) // tb['elem_size'] if tb['elem_size'] else 0
             self.log_output(
                 f"Loaded typed Buffer '{name}' (t{tb['register']}): {n} elements, "
-                f"{tb['elem_size']}B/elem from {os.path.basename(binpath)}"
+                f"{tb['elem_size']}B/elem"
+                + (f", view {fmt}" if fmt else "")
+                + f" from {os.path.basename(binpath)}"
             )
 
         for name, bab in self.byte_address_buffers.items():
             info = by_reg.get(bab['register'])
             if not info:
                 continue
-            binfile, _ = info
+            binfile = info[0]
             binpath = os.path.join(data_folder, binfile)
             if not binfile or not os.path.exists(binpath):
                 continue
@@ -3682,6 +3713,52 @@ class HLSLInterpreter:
             else:
                 out.append(0)
         return out[0] if ncomp == 1 else out
+
+    @staticmethod
+    def _decode_view_format(fmt: str, data: bytes, off: int):
+        """Decode one typed-buffer element at byte offset `off` per the SRV's
+        actual DXGI view format name from buffer_params.csv (new dumps record
+        it in the ViewFormat column, e.g. R16G16_FLOAT, R8G8B8A8_UNORM).
+        Returns a list of component values, or None when the name isn't a
+        uniform-width RGBA format (caller falls back to byte-level inference).
+        """
+        if not fmt or '_' not in fmt:
+            return None
+        comp_part, _, kind = fmt.rpartition('_')
+        if kind == 'SRGB':  # R8G8B8A8_UNORM_SRGB → treat as UNORM (no gamma)
+            comp_part, _, kind = comp_part.rpartition('_')
+        bits = [int(b) for b in re.findall(r'[RGBA](\d+)', comp_part)]
+        if not bits or any(b != bits[0] for b in bits):
+            return None  # mixed widths (R10G10B10A2, R11G11B10) unsupported
+        width, n = bits[0], len(bits)
+        if off + n * width // 8 > len(data):
+            return None
+        if kind == 'FLOAT':
+            ch = {32: 'f', 16: 'e'}.get(width)
+            return list(struct.unpack_from('<%d%s' % (n, ch), data, off)) if ch else None
+        if kind == 'UNORM':
+            if width == 8:
+                return [b / 255.0 for b in data[off:off + n]]
+            if width == 16:
+                return [v / 65535.0 for v in struct.unpack_from('<%dH' % n, data, off)]
+            return None
+        if kind == 'SNORM':
+            # D3D SNORM: c / (2^(w-1)-1), clamped to [-1, 1] (min-int -> -1).
+            if width == 8:
+                return [max(v / 127.0, -1.0)
+                        for v in struct.unpack_from('<%db' % n, data, off)]
+            if width == 16:
+                return [max(v / 32767.0, -1.0)
+                        for v in struct.unpack_from('<%dh' % n, data, off)]
+            return None
+        if kind in ('UINT', 'SINT'):
+            ch = {8: 'B', 16: 'H', 32: 'I'}.get(width)
+            if ch is None:
+                return None
+            if kind == 'SINT':
+                ch = ch.lower()
+            return list(struct.unpack_from('<%d%s' % (n, ch), data, off))
+        return None
 
     @staticmethod
     def _infer_4byte_typed_buffer_fmt(data: bytes) -> str:
@@ -3769,6 +3846,16 @@ class HLSLInterpreter:
         if off + esize > len(data):
             return None
         comp = tb.get('comp') or 4
+        # New dumps record the SRV's actual DXGI view format (ViewFormat column
+        # in buffer_params.csv) — decode by it directly, no inference needed.
+        view_fmt = tb.get('view_format')
+        if view_fmt:
+            vals = self._decode_view_format(view_fmt, data, off)
+            if vals is not None:
+                defaults = (0.0, 0.0, 0.0, 1.0)
+                while len(vals) < 4:
+                    vals.append(defaults[len(vals)])
+                return vals[:4]
         if comp and esize // comp == 1:
             fmt = tb.get('norm_fmt')
             if fmt is None:

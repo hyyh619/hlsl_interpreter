@@ -344,10 +344,32 @@ class SyntaxTreeParser:
 
         obj_name = expr[:dot_pos].strip()
         method_name = expr[dot_pos+1:paren_pos].strip()
-        args_str = expr[paren_pos+1:expr.rfind(')')]
+        # Find the method call's own closing paren (not rfind: the call may be
+        # followed by a swizzle, e.g. `tex.Load(int2(x,y)).y`).
+        depth = 0
+        close_pos = -1
+        for i in range(paren_pos, len(expr)):
+            if expr[i] == '(':
+                depth += 1
+            elif expr[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    close_pos = i
+                    break
+        if close_pos < 0:
+            close_pos = expr.rfind(')')
+        args_str = expr[paren_pos+1:close_pos]
 
         arg_nodes = [self._parse_expression(arg.strip()) for arg in _split_args_cached(args_str)]
-        return SyntaxTreeNode('method_call', method_name, left=SyntaxTreeNode('value', obj_name), args=arg_nodes)
+        node = SyntaxTreeNode('method_call', method_name, left=SyntaxTreeNode('value', obj_name), args=arg_nodes)
+        # Trailing swizzle on the call result: wrap in a swizzle node so `.y`
+        # actually selects the component (it was silently dropped before).
+        trailer = expr[close_pos+1:].strip()
+        if trailer.startswith('.'):
+            swz = trailer[1:].strip()
+            if re.fullmatch(r'[xyzwrgba]{1,4}', swz):
+                node = SyntaxTreeNode('swizzle', swz, left=node)
+        return node
 
     def _split_args(self, args_str: str) -> List[str]:
         return list(_split_args_cached(args_str))
