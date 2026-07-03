@@ -39,6 +39,258 @@ ADDRESS_MAP = {
     "D3D11_TEXTURE_ADDRESS_MIRROR_ONCE": 5,
 }
 
+
+# ---------------------------------------------------------------------------
+# BC7 block decoder (D3D11 / BPTC spec). Needed because captures dump
+# BC7-compressed volumes/textures as raw .img data whose BMP fallback is
+# 24-bit (alpha lost) and 2D-only (sekiro4's 40x8x76 irradiance volumes).
+# Tables are the canonical BPTC partition/anchor tables; decode validated
+# texel-exact against RenderDoc's BMP conversions of the same resources.
+# ---------------------------------------------------------------------------
+
+_BC7_PART2 = [
+    [0,0,1,1,0,0,1,1,0,0,1,1,0,0,1,1], [0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1],
+    [0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1], [0,0,0,1,0,0,1,1,0,0,1,1,0,1,1,1],
+    [0,0,0,0,0,0,0,1,0,0,0,1,0,0,1,1], [0,0,1,1,0,1,1,1,0,1,1,1,1,1,1,1],
+    [0,0,0,1,0,0,1,1,0,1,1,1,1,1,1,1], [0,0,0,0,0,0,0,1,0,0,1,1,0,1,1,1],
+    [0,0,0,0,0,0,0,0,0,0,0,1,0,0,1,1], [0,0,1,1,0,1,1,1,1,1,1,1,1,1,1,1],
+    [0,0,0,0,0,0,0,1,0,1,1,1,1,1,1,1], [0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,1],
+    [0,0,0,1,0,1,1,1,1,1,1,1,1,1,1,1], [0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1],
+    [0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1], [0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1],
+    [0,0,0,0,1,0,0,0,1,1,1,0,1,1,1,1], [0,1,1,1,0,0,0,1,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,1,0,0,0,1,1,1,0], [0,1,1,1,0,0,1,1,0,0,0,1,0,0,0,0],
+    [0,0,1,1,0,0,0,1,0,0,0,0,0,0,0,0], [0,0,0,0,1,0,0,0,1,1,0,0,1,1,1,0],
+    [0,0,0,0,0,0,0,0,1,0,0,0,1,1,0,0], [0,1,1,1,0,0,1,1,0,0,1,1,0,0,0,1],
+    [0,0,1,1,0,0,0,1,0,0,0,1,0,0,0,0], [0,0,0,0,1,0,0,0,1,0,0,0,1,1,0,0],
+    [0,1,1,0,0,1,1,0,0,1,1,0,0,1,1,0], [0,0,1,1,0,1,1,0,0,1,1,0,1,1,0,0],
+    [0,0,0,1,0,1,1,1,1,1,1,0,1,0,0,0], [0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0],
+    [0,1,1,1,0,0,0,1,1,0,0,0,1,1,1,0], [0,0,1,1,1,0,1,1,1,1,0,1,1,1,0,0],
+    [0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1], [0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1],
+    [0,1,0,1,1,0,1,0,0,1,0,1,1,0,1,0], [0,0,1,1,0,0,1,1,1,1,0,0,1,1,0,0],
+    [0,0,1,1,1,1,0,0,0,0,1,1,1,1,0,0], [0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0],
+    [0,1,1,0,1,0,0,1,0,1,1,0,1,0,0,1], [0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1],
+    [0,1,1,1,0,0,1,1,1,1,0,0,1,1,1,0], [0,0,0,1,0,0,1,1,1,1,0,0,1,0,0,0],
+    [0,0,1,1,0,0,1,0,0,1,0,0,1,1,0,0], [0,0,1,1,1,0,1,1,1,1,0,1,1,1,0,0],
+    [0,1,1,0,1,0,0,1,1,0,0,1,0,1,1,0], [0,0,1,1,1,1,0,0,1,1,0,0,0,0,1,1],
+    [0,1,1,0,0,1,1,0,1,0,0,1,1,0,0,1], [0,0,0,0,0,1,1,0,0,1,1,0,0,0,0,0],
+    [0,1,0,0,1,1,1,0,0,1,0,0,0,0,0,0], [0,0,1,0,0,1,1,1,0,0,1,0,0,0,0,0],
+    [0,0,0,0,0,0,1,0,0,1,1,1,0,0,1,0], [0,0,0,0,0,1,0,0,1,1,1,0,0,1,0,0],
+    [0,1,1,0,1,1,0,0,1,0,0,1,0,0,1,1], [0,0,1,1,0,1,1,0,1,1,0,0,1,0,0,1],
+    [0,1,1,0,0,0,1,1,1,0,0,1,1,1,0,0], [0,0,1,1,1,0,0,1,1,1,0,0,0,1,1,0],
+    [0,1,1,0,1,1,0,0,1,1,0,0,1,0,0,1], [0,1,1,0,0,0,1,1,0,0,1,1,1,0,0,1],
+    [0,1,1,1,1,1,1,0,1,0,0,0,0,0,0,1], [0,0,0,1,1,0,0,0,1,1,1,0,0,1,1,1],
+    [0,0,0,0,1,1,1,1,0,0,1,1,0,0,1,1], [0,0,1,1,0,0,1,1,1,1,1,1,0,0,0,0],
+    [0,0,1,0,0,0,1,0,1,1,1,0,1,1,1,0], [0,1,0,0,0,1,0,0,0,1,1,1,0,1,1,1],
+]
+
+_BC7_PART3 = [
+    [0,0,1,1,0,0,1,1,0,2,2,1,2,2,2,2], [0,0,0,1,0,0,1,1,2,2,1,1,2,2,2,1],
+    [0,0,0,0,2,0,0,1,2,2,1,1,2,2,1,1], [0,2,2,2,0,0,2,2,0,0,1,1,0,1,1,1],
+    [0,0,0,0,0,0,0,0,1,1,2,2,1,1,2,2], [0,0,1,1,0,0,1,1,0,0,2,2,0,0,2,2],
+    [0,0,2,2,0,0,2,2,1,1,1,1,1,1,1,1], [0,0,1,1,0,0,1,1,2,2,1,1,2,2,1,1],
+    [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2], [0,0,0,0,1,1,1,1,1,1,1,1,2,2,2,2],
+    [0,0,0,0,1,1,1,1,2,2,2,2,2,2,2,2], [0,0,1,2,0,0,1,2,0,0,1,2,0,0,1,2],
+    [0,1,1,2,0,1,1,2,0,1,1,2,0,1,1,2], [0,1,2,2,0,1,2,2,0,1,2,2,0,1,2,2],
+    [0,0,1,1,0,1,1,2,1,1,2,2,1,2,2,2], [0,0,1,1,2,0,0,1,2,2,0,0,2,2,2,0],
+    [0,0,0,1,0,0,1,1,0,1,1,2,1,1,2,2], [0,1,1,1,0,0,1,1,2,0,0,1,2,2,0,0],
+    [0,0,0,0,1,1,2,2,1,1,2,2,1,1,2,2], [0,0,2,2,0,0,2,2,0,0,2,2,1,1,1,1],
+    [0,1,1,1,0,1,1,1,0,2,2,2,0,2,2,2], [0,0,0,1,0,0,0,1,2,2,2,1,2,2,2,1],
+    [0,0,0,0,0,0,1,1,0,1,2,2,0,1,2,2], [0,0,0,0,1,1,0,0,2,2,1,0,2,2,1,0],
+    [0,1,2,2,0,1,2,2,0,0,1,1,0,0,0,0], [0,0,1,2,0,0,1,2,1,1,2,2,2,2,2,2],
+    [0,1,1,0,1,2,2,1,1,2,2,1,0,1,1,0], [0,0,0,0,0,1,1,0,1,2,2,1,1,2,2,1],
+    [0,0,2,2,1,1,0,2,1,1,0,2,0,0,2,2], [0,1,1,0,0,1,1,0,2,0,0,2,2,2,2,2],
+    [0,0,1,1,0,1,2,2,0,1,2,2,0,0,1,1], [0,0,0,0,2,0,0,0,2,2,1,1,2,2,2,1],
+    [0,0,0,0,0,0,0,2,1,1,2,2,1,2,2,2], [0,2,2,2,0,0,2,2,0,0,1,2,0,0,1,1],
+    [0,0,1,1,0,0,1,2,0,0,2,2,0,2,2,2], [0,1,2,0,0,1,2,0,0,1,2,0,0,1,2,0],
+    [0,0,0,0,1,1,1,1,2,2,2,2,0,0,0,0], [0,1,2,0,1,2,0,1,2,0,1,2,0,1,2,0],
+    [0,1,2,0,2,0,1,2,1,2,0,1,0,1,2,0], [0,0,1,1,2,2,0,0,1,1,2,2,0,0,1,1],
+    [0,0,1,1,1,1,2,2,2,2,0,0,0,0,1,1], [0,1,0,1,0,1,0,1,2,2,2,2,2,2,2,2],
+    [0,0,0,0,0,0,0,0,2,1,2,1,2,1,2,1], [0,0,2,2,1,1,2,2,0,0,2,2,1,1,2,2],
+    [0,0,2,2,0,0,1,1,0,0,2,2,0,0,1,1], [0,2,2,0,1,2,2,1,0,2,2,0,1,2,2,1],
+    [0,1,0,1,2,2,2,2,2,2,2,2,0,1,0,1], [0,0,0,0,2,1,2,1,2,1,2,1,2,1,2,1],
+    [0,1,0,1,0,1,0,1,0,1,0,1,2,2,2,2], [0,2,2,2,0,1,1,1,0,2,2,2,0,1,1,1],
+    [0,0,0,2,1,1,1,2,0,0,0,2,1,1,1,2], [0,0,0,0,2,1,1,2,2,1,1,2,2,1,1,2],
+    [0,2,2,2,0,1,1,1,0,1,1,1,0,2,2,2], [0,0,0,2,1,1,1,2,1,1,1,2,0,0,0,2],
+    [0,1,1,0,0,1,1,0,0,1,1,0,2,2,2,2], [0,0,0,0,0,0,0,0,2,1,1,2,2,1,1,2],
+    [0,1,1,0,0,1,1,0,2,2,2,2,2,2,2,2], [0,0,2,2,0,0,1,1,0,0,1,1,0,0,2,2],
+    [0,0,2,2,1,1,2,2,1,1,2,2,0,0,2,2], [0,0,0,0,0,0,0,0,0,0,0,0,2,1,1,2],
+    [0,0,0,2,0,0,0,1,0,0,0,2,0,0,0,1], [0,2,2,2,1,2,2,2,0,2,2,2,1,2,2,2],
+    [0,1,0,1,2,2,2,2,2,2,2,2,2,2,2,2], [0,1,1,1,2,0,1,1,2,2,0,1,2,2,2,0],
+]
+
+_BC7_ANCHOR2 = [
+    15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,
+    15, 2, 8, 2, 2, 8, 8,15, 2, 8, 2, 2, 8, 8, 2, 2,
+    15,15, 6, 8, 2, 8,15,15, 2, 8, 2, 2, 2,15,15, 6,
+     6, 2, 6, 8,15,15, 2, 2,15,15,15,15,15, 2, 2,15,
+]
+_BC7_ANCHOR3_1 = [
+     3, 3,15,15, 8, 3,15,15, 8, 8, 6, 6, 6, 5, 3, 3,
+     3, 3, 8,15, 3, 3, 6,10, 5, 8, 8, 6, 8, 5,15,15,
+     8,15, 3, 5, 6,10, 8,15,15, 3,15, 5,15,15,15,15,
+     3,15, 5, 5, 5, 8, 5,10, 5,10, 8,13,15,12, 3, 3,
+]
+_BC7_ANCHOR3_2 = [
+    15, 8, 8, 3,15,15, 3, 8,15,15,15,15,15,15,15, 8,
+    15, 8,15, 3,15, 8,15, 8, 3,15, 6,10,15,15,10, 8,
+    15, 3,15,10,10, 8, 9,10, 6,15, 8,15, 3, 6, 6, 8,
+    15, 3,15,15,15,15,15,15,15,15,15,15, 3,15,15, 8,
+]
+
+_BC7_WEIGHTS = {
+    2: (0, 21, 43, 64),
+    3: (0, 9, 18, 27, 37, 46, 55, 64),
+    4: (0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64),
+}
+
+# mode -> (subsets, partition_bits, rotation_bits, index_sel_bit,
+#          color_bits, alpha_bits, pbit_mode, index_bits, index2_bits)
+# pbit_mode: 0 = none, 1 = per-endpoint, 2 = shared per subset
+_BC7_MODES = {
+    0: (3, 4, 0, 0, 4, 0, 1, 3, 0),
+    1: (2, 6, 0, 0, 6, 0, 2, 3, 0),
+    2: (3, 6, 0, 0, 5, 0, 0, 2, 0),
+    3: (2, 6, 0, 0, 7, 0, 1, 2, 0),
+    4: (1, 0, 2, 1, 5, 6, 0, 2, 3),
+    5: (1, 0, 2, 0, 7, 8, 0, 2, 2),
+    6: (1, 0, 0, 0, 7, 7, 1, 4, 0),
+    7: (2, 6, 0, 0, 5, 5, 1, 2, 0),
+}
+
+
+def _bc7_decode_block(block: bytes):
+    """Decode one 16-byte BC7 block into a list of 16 (r, g, b, a) tuples
+    (0-255 ints), texels in row-major order. All-zero mode byte (reserved)
+    decodes to transparent black per spec."""
+    bits = int.from_bytes(block, 'little')
+    pos = 0
+
+    def read(n):
+        nonlocal pos
+        v = (bits >> pos) & ((1 << n) - 1)
+        pos += n
+        return v
+
+    mode = 0
+    while mode < 8 and not (bits >> mode) & 1:
+        mode += 1
+    if mode == 8:
+        return [(0, 0, 0, 0)] * 16
+    pos = mode + 1
+
+    (subsets, part_bits, rot_bits, sel_bits,
+     cbits, abits, pmode, ibits, i2bits) = _BC7_MODES[mode]
+
+    partition = read(part_bits) if part_bits else 0
+    rotation = read(rot_bits) if rot_bits else 0
+    index_sel = read(sel_bits) if sel_bits else 0
+
+    nep = subsets * 2
+    # Endpoints are stored component-major: all R, then G, then B[, then A].
+    ep = [[0, 0, 0, 255] for _ in range(nep)]
+    for c in range(3):
+        for e in range(nep):
+            ep[e][c] = read(cbits)
+    if abits:
+        for e in range(nep):
+            ep[e][3] = read(abits)
+
+    pbits = []
+    if pmode == 1:
+        pbits = [read(1) for _ in range(nep)]
+    elif pmode == 2:
+        shared = [read(1) for _ in range(subsets)]
+        pbits = [shared[e // 2] for e in range(nep)]
+
+    # Expand endpoints to 8 bits (append pbit, then replicate top bits).
+    for e in range(nep):
+        for c in range(4):
+            n = cbits if c < 3 else abits
+            if c == 3 and not abits:
+                continue
+            v = ep[e][c]
+            if pbits:
+                v = (v << 1) | pbits[e]
+                n += 1
+            v = (v << (8 - n))
+            v |= v >> n
+            ep[e][c] = v & 0xFF
+
+    # Subset assignment + anchor texels.
+    if subsets == 1:
+        assign = [0] * 16
+        anchors = {0: 0}
+    elif subsets == 2:
+        assign = _BC7_PART2[partition]
+        anchors = {0: 0, 1: _BC7_ANCHOR2[partition]}
+    else:
+        assign = _BC7_PART3[partition]
+        anchors = {0: 0, 1: _BC7_ANCHOR3_1[partition],
+                   2: _BC7_ANCHOR3_2[partition]}
+    anchor_set = set(anchors.values())
+
+    def read_indices(nbits):
+        out = []
+        for t in range(16):
+            out.append(read(nbits - 1) if t in anchor_set else read(nbits))
+        return out
+
+    idx0 = read_indices(ibits)
+    idx1 = read_indices(i2bits) if i2bits else None
+
+    w0 = _BC7_WEIGHTS[ibits]
+    w1 = _BC7_WEIGHTS[i2bits] if i2bits else None
+
+    texels = []
+    for t in range(16):
+        s = assign[t]
+        e0, e1 = ep[s * 2], ep[s * 2 + 1]
+        if idx1 is None:
+            wc = wa = w0[idx0[t]]
+        elif index_sel:
+            # index_sel swaps the streams: idx1 (3-bit) drives color.
+            wc, wa = w1[idx1[t]], w0[idx0[t]]
+        else:
+            wc, wa = w0[idx0[t]], w1[idx1[t]]
+        r = (e0[0] * (64 - wc) + e1[0] * wc + 32) >> 6
+        g = (e0[1] * (64 - wc) + e1[1] * wc + 32) >> 6
+        b = (e0[2] * (64 - wc) + e1[2] * wc + 32) >> 6
+        a = (e0[3] * (64 - wa) + e1[3] * wa + 32) >> 6
+        if rotation == 1:
+            a, r = r, a
+        elif rotation == 2:
+            a, g = g, a
+        elif rotation == 3:
+            a, b = b, a
+        texels.append((r, g, b, a))
+    return texels
+
+
+def decode_bc7_image(data: bytes, width: int, height: int, offset: int = 0):
+    """Decode a BC7 image (one 2D surface) into a top-left-origin RGBA float
+    grid. Returns None if `data` is too short."""
+    bw, bh = (width + 3) // 4, (height + 3) // 4
+    if offset + bw * bh * 16 > len(data):
+        return None
+    pixels = [[[0.0, 0.0, 0.0, 1.0] for _ in range(width)] for _ in range(height)]
+    for by in range(bh):
+        for bx in range(bw):
+            block = data[offset + (by * bw + bx) * 16:
+                         offset + (by * bw + bx) * 16 + 16]
+            texels = _bc7_decode_block(block)
+            for ty in range(4):
+                y = by * 4 + ty
+                if y >= height:
+                    break
+                row = pixels[y]
+                for tx in range(4):
+                    x = bx * 4 + tx
+                    if x >= width:
+                        break
+                    r, g, b, a = texels[ty * 4 + tx]
+                    row[x] = [r / 255.0, g / 255.0, b / 255.0, a / 255.0]
+    return pixels
+
 # Address-mode names as they appear in 3Dmigoto's sampler_params.csv
 # (e.g. AddressU="Wrap"). Maps to the D3D11_TEXTURE_ADDRESS_* constants.
 ADDRESS_NAME_MAP = {
@@ -48,6 +300,12 @@ ADDRESS_NAME_MAP = {
     "BORDER": D3D11_TEXTURE_ADDRESS_BORDER,
     "MIRRORONCE": D3D11_TEXTURE_ADDRESS_MIRROR_ONCE,
     "MIRROR_ONCE": D3D11_TEXTURE_ADDRESS_MIRROR_ONCE,
+    # RenderDoc-style names used by the new dumps' sampler_params.csv —
+    # unrecognized they silently fell back to WRAP, so a clamp sampler
+    # wrapped u>1 to the OPPOSITE texture edge (sekiro4 irradiance volume).
+    "CLAMPEDGE": D3D11_TEXTURE_ADDRESS_CLAMP,
+    "CLAMPBORDER": D3D11_TEXTURE_ADDRESS_BORDER,
+    "REPEAT": D3D11_TEXTURE_ADDRESS_WRAP,
 }
 
 # Filter component values used internally by Sampler._get_filter_mode:
@@ -360,13 +618,17 @@ class TextureDesc:
         DataPath: str = "",
         MipDataPaths: Optional[List[str]] = None,
         FormatStr: str = "",
-        ArrayMipDataPaths: Optional[List[List[str]]] = None
+        ArrayMipDataPaths: Optional[List[List[str]]] = None,
+        Depth: int = 1,
+        Kind: str = ""
     ):
         # Raw DXGI format name (e.g. 'R8G8B8A8_UNORM', 'R32G32B32A32_FLOAT')
         # used to decode raw .img texel data. Empty → rely on BMP / default.
         self.FormatStr = FormatStr
         self.Width = Width
         self.Height = Height
+        self.Depth = Depth
+        self.Kind = Kind
         self.MipLevels = MipLevels
         self.ArraySize = ArraySize
         self.Format = Format
@@ -529,12 +791,14 @@ class Texture:
     def _decode_raw_texels(self, data: bytes, fmt: str, width: int,
                            height: int) -> Optional[List[List[List[float]]]]:
         """Decode raw row-major (top-left origin) texel bytes for an
-        uncompressed DXGI format into an RGBA-float grid."""
+        uncompressed DXGI format (or BC7) into an RGBA-float grid."""
         if not fmt:
             return None
         name = fmt.strip().upper()
         if name.startswith('DXGI_FORMAT_'):
             name = name[len('DXGI_FORMAT_'):]
+        if name.startswith('BC7_UNORM'):
+            return decode_bc7_image(data, width, height, 0)
         spec = self._FMT_SPECS.get(name)
         if spec is None and name.endswith('_TYPELESS'):
             spec = self._FMT_SPECS.get(name[:-len('_TYPELESS')] + '_FLOAT') \
@@ -710,7 +974,9 @@ class Texture:
 
         return mip_level[y][x]
 
-    def _sample_linear(self, mip_level: List[List[List[float]]], u: float, v: float) -> List[float]:
+    def _sample_linear(self, mip_level: List[List[List[float]]], u: float, v: float,
+                       address_u: int = D3D11_TEXTURE_ADDRESS_WRAP,
+                       address_v: int = D3D11_TEXTURE_ADDRESS_WRAP) -> List[float]:
         h = len(mip_level)
         w = len(mip_level[0])
 
@@ -722,22 +988,27 @@ class Texture:
         if v != v or v in (float('inf'), float('-inf')):
             v = 0.0
 
-        fu = u * w
-        fv = v * h
+        # D3D11 bilinear: the sample point in texel space is u*w - 0.5 (texel
+        # centers sit at integer+0.5). The previous u*w convention was half a
+        # texel off, blending neighbours at exact texel-center samples.
+        fu = u * w - 0.5
+        fv = v * h - 0.5
 
-        u0 = int(fu)
-        v0 = int(fv)
-
-        u1 = (u0 + 1) % w
-        v1 = (v0 + 1) % h
-
+        u0 = math.floor(fu)
+        v0 = math.floor(fv)
         s = fu - u0
         t = fv - v0
+        u0 = int(u0)
+        v0 = int(v0)
 
-        u0 = max(0, min(w - 1, u0))
-        v0 = max(0, min(h - 1, v0))
-        u1 = max(0, min(w - 1, u1))
-        v1 = max(0, min(h - 1, v1))
+        def _nb(i, n, mode):
+            if mode == D3D11_TEXTURE_ADDRESS_WRAP:
+                return i % n
+            return max(0, min(n - 1, i))
+        u1 = _nb(u0 + 1, w, address_u)
+        v1 = _nb(v0 + 1, h, address_v)
+        u0 = _nb(u0, w, address_u)
+        v0 = _nb(v0, h, address_v)
 
         c00 = mip_level[v0][u0]
         c10 = mip_level[v0][u1]
@@ -772,6 +1043,82 @@ class Texture:
             return [0.0, 0.0, 0.0, 0.0]
         return list(level[y][x])
 
+    def _get_volume_slices(self, texture_desc: TextureDesc):
+        """Decode a Texture3D's .img (Depth slices of Width x Height, each
+        slice compressed/packed independently) into a list of 2D pixel grids.
+        Returns [] when the volume can't be decoded."""
+        path = texture_desc.DataPath
+        key = ('volume', path)
+        if key in self._mip_levels_cache:
+            return self._mip_levels_cache[key]
+        slices = []
+        w = max(1, int(texture_desc.Width or 1))
+        h = max(1, int(texture_desc.Height or 1))
+        d = max(1, int(getattr(texture_desc, 'Depth', 1) or 1))
+        fmt = (getattr(texture_desc, 'FormatStr', '') or '').strip().upper()
+        if fmt.startswith('DXGI_FORMAT_'):
+            fmt = fmt[len('DXGI_FORMAT_'):]
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except Exception:
+            data = b''
+        if data and path.lower().endswith('.img'):
+            if fmt.startswith('BC7_UNORM'):
+                ssize = ((w + 3) // 4) * ((h + 3) // 4) * 16
+                for i in range(d):
+                    px = decode_bc7_image(data, w, h, i * ssize)
+                    if px is None:
+                        break
+                    slices.append(px)
+            else:
+                spec = self._FMT_SPECS.get(fmt)
+                if spec:
+                    ssize = self._COMP_SIZE[spec[0]] * len(spec[1]) * w * h
+                    for i in range(d):
+                        px = self._decode_raw_texels(
+                            data[i * ssize:(i + 1) * ssize], fmt, w, h)
+                        if px is None:
+                            break
+                        slices.append(px)
+        if not slices:
+            # Fall back to the 2D pipeline (BMP slice 0) so behaviour degrades
+            # to the pre-volume state instead of black.
+            mips = self._get_mip_levels(texture_desc)
+            slices = [mips[0]] if mips else []
+        self._mip_levels_cache[key] = slices
+        return slices
+
+    def sample_volume(self, u: float, v: float, w: float,
+                      texture_desc: TextureDesc, sampler: Sampler) -> List[float]:
+        """Sample a Texture3D at (u, v, w) with the sampler's filter/address
+        modes: bilinear within the two bracketing depth slices + linear across
+        w (trilinear), or full point sampling for a point filter."""
+        slices = self._get_volume_slices(texture_desc)
+        if not slices:
+            return [0.0, 0.0, 0.0, 0.0]
+        depth = len(slices)
+        tu, tv, tw = sampler.transform_coordinates(u, v, w)
+        _, mag_filter, _ = sampler._get_filter_mode()
+        z = tw * depth - 0.5
+        if mag_filter == 0:
+            zi = min(max(int(round(z)), 0), depth - 1)
+            return self._sample_nearest(slices[zi], tu, tv)
+        z0 = math.floor(z)
+        frac = z - z0
+        if sampler.AddressW == D3D11_TEXTURE_ADDRESS_WRAP:
+            z0c = int(z0) % depth
+            z1c = (int(z0) + 1) % depth
+        else:
+            z0c = min(max(int(z0), 0), depth - 1)
+            z1c = min(max(int(z0) + 1, 0), depth - 1)
+        c0 = self._sample_linear(slices[z0c], tu, tv,
+                                 sampler.AddressU, sampler.AddressV)
+        c1 = (self._sample_linear(slices[z1c], tu, tv,
+                                  sampler.AddressU, sampler.AddressV)
+              if z1c != z0c else c0)
+        return [c0[i] * (1 - frac) + c1[i] * frac for i in range(4)]
+
     def sample(self, u: float, v: float, w: float, texture_desc: TextureDesc, sampler: Sampler,
                 ddx_uv: Optional[List[float]] = None, ddy_uv: Optional[List[float]] = None,
                 name: str = '', array_slice: int = 0) -> List[float]:
@@ -802,7 +1149,8 @@ class Texture:
 
         if level_count == 1:
             single = (self._sample_nearest(mip_levels[0], tu, tv) if mag_filter == 0
-                        else self._sample_linear(mip_levels[0], tu, tv))
+                        else self._sample_linear(mip_levels[0], tu, tv,
+                                                 sampler.AddressU, sampler.AddressV))
             if TRACE.texture_lod:
                 TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, single, name)
             return single
@@ -820,7 +1168,8 @@ class Texture:
         def _within(level: int) -> List[float]:
             if level_filter == 0:
                 return self._sample_nearest(mip_levels[level], tu, tv)
-            return self._sample_linear(mip_levels[level], tu, tv)
+            return self._sample_linear(mip_levels[level], tu, tv,
+                                       sampler.AddressU, sampler.AddressV)
 
         # Blend the two bracketing mip levels by the LOD fraction. NOTE: the
         # captured sampler here is Mip=Point, but our quad-derivative LOD runs

@@ -419,7 +419,11 @@ class DXBCInterpreter:
             n = {'dp2': 2, 'dp3': 3, 'dp4': 4}[op]
             a = self.read_src_n(ops[1], n, regs, inp, out)
             b = self.read_src_n(ops[2], n, regs, inp, out)
-            d = sum(x * y for x, y in zip(a, b))
+            # GPU dpN = mul + mad chain with one float32 rounding per step
+            # (a double sum rounded once drifts ULPs on position chains).
+            d = _as_f32(a[0] * b[0])
+            for i in range(1, n):
+                d = _as_f32(a[i] * b[i] + d)
             emit(dest, {p: d for p in lanes})
             return nxt
 
@@ -541,6 +545,11 @@ class DXBCInterpreter:
             a = src(1, lanes); b = src(2, lanes)
             emit(dest, {p: u2f((f2u(a[p]) >> (f2u(b[p]) & 31)) & 0xFFFFFFFF)
                         for p in lanes})
+            return nxt
+        if op in ('umin', 'umax'):
+            a = src(1, lanes); b = src(2, lanes)
+            f = min if op == 'umin' else max
+            emit(dest, {p: u2f(f(f2u(a[p]), f2u(b[p]))) for p in lanes})
             return nxt
         if op == 'ineg':
             a = src(1, lanes)

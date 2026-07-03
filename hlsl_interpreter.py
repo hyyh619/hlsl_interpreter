@@ -1381,6 +1381,21 @@ class HLSLInterpreter:
         n = len(m)
         return [[m[j][i] for j in range(n)] for i in range(n)]
 
+    def _gpu_dot(self, pairs) -> float:
+        """Accumulate a dot product the way the GPU does under float32
+        emulation: mul then a mad chain, each step rounded ONCE to float32
+        (the f32 products are exact in double, and rounding the double
+        product+accumulator sum once per step is exactly a fused mad).
+        A double-precision sum rounded once at the end drifts a few ULP from
+        the GPU on long position chains (sekiro sv_position ~0.005 misses)."""
+        t = None
+        for x, y in pairs:
+            if t is None:
+                t = self._to_f32(x * y)
+            else:
+                t = self._to_f32(x * y + t)
+        return t if t is not None else 0.0
+
     def mul_matrix_vector(self, m: List[List[float]], v: List[float]) -> List[float]:
         """
         矩阵乘向量: result = m * v
@@ -1392,6 +1407,9 @@ class HLSLInterpreter:
             return [0, 0, 0, 0]
         if not m:
             return [0, 0, 0, 0]
+        if self.f32_emulation:
+            return [self._gpu_dot((v[i], m[i][j]) for i in range(len(v)))
+                    for j in range(len(m[0]))]
         return [sum(v[i] * m[i][j] for i in range(len(v))) for j in range(len(m[0]))]
 
     def mul_matrix_matrix(self, a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
@@ -1428,6 +1446,8 @@ class HLSLInterpreter:
             return 0.0
         if len(a) != len(b):
             return 0.0
+        if self.f32_emulation:
+            return self._gpu_dot(zip(a, b))
         return sum(x * y for x, y in zip(a, b))
 
     def reflect_vec(self, I: List[float], N: List[float]) -> List[float]:
@@ -2186,6 +2206,15 @@ class HLSLInterpreter:
                     if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                         texture_desc = self._texture_desc_list[reg_id]
                         sampler = self._resolve_sampler(sampler_name, reg_id)
+                        if self._is_volume_texture(binding, texture_desc):
+                            wc = coords[2] if len(coords) > 2 else 0.0
+                            result = self._texture_exec.sample_volume(
+                                u, v, wc, texture_desc, sampler)
+                            self.debug_print(
+                                f"[METHOD] {obj_name}.Sample({sampler_name}, "
+                                f"({u:.4f}, {v:.4f}, {wc:.4f})) [3D] = "
+                                f"{self._format_float(result)}")
+                            return result
                         ddx_uv, ddy_uv = self._compute_uv_derivatives(args[1], local_vars)
                         result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=obj_name, array_slice=array_slice)
                         self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
@@ -2222,6 +2251,15 @@ class HLSLInterpreter:
                     if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
                         texture_desc = self._texture_desc_list[reg_id]
                         sampler = self._resolve_sampler(sampler_name, reg_id)
+                        if self._is_volume_texture(binding, texture_desc):
+                            wc = coords[2] if len(coords) > 2 else 0.0
+                            result = self._texture_exec.sample_volume(
+                                u, v, wc, texture_desc, sampler)
+                            self.debug_print(
+                                f"[METHOD] {obj_name}.SampleLevel({sampler_name}, "
+                                f"({u:.4f}, {v:.4f}, {wc:.4f}), {lod}) [3D] = "
+                                f"{self._format_float(result)}")
+                            return result
                         array_slice = self._array_slice_for(binding, coords)
                         result = self._texture_exec.sample(
                             u, v, float(lod or 0.0), texture_desc, sampler,
@@ -4291,6 +4329,14 @@ class HLSLInterpreter:
         返回: 输出颜色列表
         """
         return [p.ps_output_color if p.ps_output_color else p.color for p in pixels]
+
+    @staticmethod
+    def _is_volume_texture(binding, texture_desc) -> bool:
+        """True when the sampled resource is a Texture3D — either declared so
+        in the HLSL binding or reported so by texture_params.csv (Kind)."""
+        kind = getattr(binding, 'kind', '') if binding else ''
+        desc_kind = getattr(texture_desc, 'Kind', '') or ''
+        return kind == 'Texture3D' or desc_kind == 'Texture3D'
 
     @staticmethod
     def _array_slice_for(binding, coords) -> int:

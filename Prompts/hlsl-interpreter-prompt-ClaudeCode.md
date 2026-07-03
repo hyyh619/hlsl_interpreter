@@ -3163,17 +3163,31 @@ Notice:
 
 **结果**：manhattan event50 **PASS 1000/1000（晋级，回归 130/130 零回归）**；event87/124/161/198 → 998~999/1000（残余 1~2 行=birth 粒子 `frac(87362×sin(80000+))` 大相位 hash，行号与 birth 范围 [646,648)/[411,412) 完全吻合 → 并入类⑥超越函数墙）；sekiro2_14998 发射 0→**28974/29148（99.4%）**计数精确吻合（残余 TexCoord4 ~0.13 → 类⑦）；sekiro4_20560 计数 1074=1074、VS 179/179（残余 TEXCOORD9 = irradiance volume RGBM 的 alpha 解码 exp2 放大 → 类⑧）。**类③④宣告消灭**（残余全部并入既有墙类），Dump 逐案对比零退步。
 
-# 170
+# 170 精度临界（float32 仿真残差）	6	需 bit-exact GPU 数学
 ## Prompts
+修复下列问题
+⑧的 irradiance volume（Texture3D）alpha 解码——它是 sekiro4_20560 唯一残余，也可能带动 witcher 纹理采样家族
+⑦ 精度临界（float32 仿真残差）	6	需 bit-exact GPU 数学
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-
 ## Git commit: 
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step170-bc7-texture3d-sampling-and-gpu-dot-rounding.md`。
+
+**类⑧（irradiance volume）— 揭开四层纹理栈缺陷，sekiro4_20560 从 0/1074 → PASS 1074/1074：**
+1. **BC7 解码器**（新增，texture.py 纯 Python，8 模式全支持）：volume 是 Texture3D 40×8×76 **BC7_UNORM**，原路径回退 24bpp BMP → alpha 恒 1.0 → RGBM `exp2(20*(α−0.5))` 放大 1024 倍。用同 zip 的 RenderDoc BMP 逐纹素验证：首轮抓出 PART2 分区表 16~63 行错误，换规范表后 40×8×2 资源 320/320 精确、256×256 达 65534/65536。2D `.img` 路径同步接入 BC7（不再丢 alpha）。
+2. **Texture3D 体加载 + 三线性采样**：`TextureDesc.Depth/Kind`、`_get_volume_slices`（按切片独立解码）、`sample_volume`（z 轴 `w*D−0.5` + 双线性×z 线性）、Sample/SampleLevel 按绑定/Type 路由。
+3. **采样器地址名 `ClampEdge`/`ClampBorder`（RenderDoc 命名）不被识别 → 静默退化 WRAP**：clamp 采样在 u>1 处环绕到纹理另一头。潜伏面最广，witcher 全家受益。
+4. **`_sample_linear` 半纹素偏移**：`u*w` → D3D 规范 `u*w−0.5`，邻居按地址模式 wrap 取模/clamp 夹边。golden 隐含 α 验证：修正后 0.3077 vs 0.3079 ✓。
+
+**类⑦（精度临界）— GPU 点积舍入链：** 两解释器的 dot/矩阵乘原为双精度累加一次舍入；GPU dpN 是 mul+mad 链每步一次 f32 舍入。新增 `_gpu_dot`（f32 乘积双精度精确 + 每步一次舍入 = mad 语义），接入 `dot_product`/`mul_matrix_vector`（f32_emulation 门控）与 dxbc_interp 的 dp2/3/4（顺带补 umin/umax）。**Octopath event664 36/51→51/51、event3012 35/51→51/51 双双 PASS**——此前判为"需 bit-exact GPU 数学"，dpN 逐步舍入正是那个 bit-exact 语义。TombRaider 2848/7308（类⑥墙）顺带 742→827/1548；sekiro2_3207/9493 +8 行；sekiro2_4833/sekiro4_7844 无变化（DXBC VM 定位：法线 o1 精确、位置 o0 差 1e-3 相对量级，在骨骼数据侧，VM 尚缺骨骼 buffer 加载，留后续）。
+
+**结果**：3 案晋级（sekiro4_event20560、Octopath event664/event3012），回归 **133/133 全过零回归**（双线性半纹素修正未破坏任何既有 case）；witcher 家族误差收敛（event16215 错误行 180→150）但未过线。类⑦ 6 案 → 剩 4 案；类⑧ sekiro4 消灭、witcher 9 案残留。
 
 # 171
 ## Prompts

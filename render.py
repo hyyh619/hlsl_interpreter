@@ -831,6 +831,8 @@ def _load_stage_textures(data_folder, stage, log=None):
             MipDataPaths=mip_paths,
             FormatStr=(row.get('Format') or '').strip(),
             ArrayMipDataPaths=array_slices or None,
+            Depth=_as_int(row.get('Depth'), 1) or 1,
+            Kind=(row.get('Type') or '').strip(),
         )
         if log:
             log(f"  {stage} texture t{slot}: res {resource_id}, "
