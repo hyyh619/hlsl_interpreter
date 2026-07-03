@@ -3067,17 +3067,44 @@ strip 绕序 3/6→6/6 修好）。manhattan ×5（粒子发射器）emit 0 vs g
 **结论**：GS 执行框架完成并经 passthrough 验证；复杂粒子/sekiro GS 的 emit-count（GS cbuffer 偏移）待查，非框架
 之误。**下一步（step 167）：DS/HS + Tessellation 固定功能。**
 
-# 167
+# 167 实现 HS/DS + Tessellation 固定功能（分步任务第 2 步）
 ## Prompts
+1. 继续实现 DS/HS 和 tessellation fixed-function（step 166 已完成 GS）。
+2. 每步实现完成后需全量运行相应的 case。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit:
+feat: hull/domain-shader execution + fixed-function tessellator (step 2/2) — HS control-point passthrough, tessellator.py (tri/quad/isoline), DS per-domain-point with vicp/vDomain wiring.
 
 ## Claude Code Session
+完整记录见 `Sessions/hlsl-interpreter-step167-ds-hs-tessellation.md`。分步任务**第 2 步：DS/HS + Tessellation**（GS 见 step 166）。
+
+**实现**：①`tessellator.py`（固定功能）——`tessellate(domain,edge,inside,partitioning)`→domain 点(u,v[,w])+连接性；
+tri/quad/isoline × integer/pow2/fractional；integer factor 1 = 最小 patch（quad→4 角、tri→3 角），单测通过。
+②`executeHS_with_params`（`hlsl_interpreter.py`）——VS 输出按 `in_cp` 分 patch，每 patch 产 `out_cp` 个输出控制点；
+**空体（decompiler 丢 fork 阶段）→ passthrough**；`_execute_hs_main` 支持非空体（`v`/`vicp` 2D + `SV_OutputControlPointID`）。
+③`executeDS_with_params`/`_execute_ds_main`——每 patch × 每 domain 点跑 DS，设 `vicp[i][j]`（复用 GS 2D 索引）、
+`vDomain`/`SV_DomainLocation`、`vpc0..7`（fork 输出，缺失默认 0），按语义填具名输入，收集 canonical 输出流。
+④`render._run_ds_stage`——检测 `HS+DS_shader.hlsl+*_ds_mesh.bin`，跑 VS→HS→tessellator→DS 与 golden 比；
+`_parse_tess_params` 从 disasm 解析 domain/partitioning/cp 数。
+
+**关键发现**：golden DS-out 计数 = **patches × out_cp**（RenderDoc DS-out 预览：每 patch 每输出控制点跑一次 DS）。
+取最小 patch（integer factor 1）前 `out_cp` 个角作 domain 位置（out_cp=1→仅(0,0)；out_cp=4 quad→4 角）→
+**5 个 golden case 计数全对**（witcher16803/16817 4/4、witcher21346 1024/1024、sekiro4_19857 5/5、20244 7/7）。
+
+**框架正确性验证**（逐行未全过，链路对）：sekiro4 `Color.xyz` 逐分量精确匹配 golden（`o0.xyz=vicp[0][5]*vicp[0][1]`
+→ vicp 接线正确）；witcher `TexCoord3` 差值恰为 `size`（几何式 `vDomain*size+corner` 正确）。
+
+**逐行 0 通过 = 结构墙（非框架 bug）**：witcher（3 案）读 `vpc0.y` = HS fork/join（patch 常量）阶段输出，**该阶段被
+3Dmigoto decompiler 丢弃**（HLSL 只剩空控制点阶段）→ 不可修；sekiro4（2 案）= point-sprite SV_POSITION 惯例
+（golden xyz 恒 0）+ `StructuredBuffer<PointLight>` stride 误判 16B 致光照 `o10` 错 + fade 项。域位置扫描确认非域位置问题。
+
+**回归**：`run_regression.py` **125/125 零回归**（`_run_ds_stage` 无 HS/DS 时提前返回）。**分步任务（GS→DS/HS+Tess）两步完成。**
+**后续**：`StructuredBuffer<struct>` stride 按结构体布局推断（修 sekiro4 光照）；拿到含 fork 阶段的反汇编补 `vpc*`（解 witcher 墙）。
 
 # 168
 ## Prompts

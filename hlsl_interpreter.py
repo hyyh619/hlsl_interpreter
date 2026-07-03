@@ -6026,6 +6026,220 @@ class HLSLInterpreter:
                 break
             self.execute_statement(stmt, local_vars)
 
+    # ---------------------------------------------------------------- HS / DS
+    # Hull Shader (control-point phase) + Domain Shader execution. The
+    # tessellator fixed-function that sits between them lives in tessellator.py;
+    # the HS patch-constant (fork/join) phase — which computes SV_TessFactor —
+    # is dropped by the 3Dmigoto decompiler (only the control-point phase is
+    # emitted as HLSL), so tess factors default to the minimal patch and the DS
+    # is invoked once per patch at a single SV_DomainLocation, matching the
+    # RenderDoc `_ds_mesh` golden convention (one DS-out vertex per patch).
+
+    @staticmethod
+    def _body_is_trivial(func_statements) -> bool:
+        """True if a parsed function body has no executable statements (an empty
+        decompiled HS control-point phase → identity passthrough)."""
+        for s in (func_statements or []):
+            if s is None:
+                continue
+            t = s.strip()
+            if not t or t.startswith('//') or t == 'return' or t.startswith('return;'):
+                continue
+            return False
+        return True
+
+    def executeHS_with_params(self, main_func: str, hs_input_params: list,
+                              hs_output_params: list, hs_input_sig: list,
+                              hs_output_sig: list, vs_results: list,
+                              idx_list: list, input_cp_count: int,
+                              output_cp_count: int) -> list:
+        """Run the Hull Shader control-point phase. Returns a list of patches;
+        each patch is a list of `output_cp_count` output control points, keyed
+        by canonical output semantic (the same keys the DS reads via `vicp`).
+
+        For the tessellation captures this project sees, the decompiled HS body
+        is empty (an identity passthrough of the VS output control points), so
+        the passthrough path copies each input control point straight through by
+        semantic. A non-empty body is executed per output control point with the
+        input control points available as the 2D arrays `v`/`vicp` and the
+        current index as `SV_OutputControlPointID`."""
+        sem_to_key = self._get_output_semantic_to_key_map()
+
+        def _canon(sem, idx):
+            sem_full = f'{sem.upper()}{idx}' if idx > 0 else sem.upper()
+            return sem_to_key.get(sem_full, sem_full)
+
+        # VS-result key for each HS *input* register slot (by semantic).
+        in_slot_key = [_canon(s['semantic'], s['index'])
+                       for s in sorted(hs_input_sig, key=lambda r: r['slot'])]
+
+        n = len(vs_results)
+        icp = max(1, input_cp_count)
+        ocp = max(1, output_cp_count)
+        num_patches = n // icp
+
+        statements = self._collect_function_statements(main_func)
+        trivial = self._body_is_trivial(statements)
+
+        patches = []
+        for p in range(num_patches):
+            cps_in = [vs_results[p * icp + i] for i in range(icp)]
+            out_cps = []
+            for cpid in range(ocp):
+                if trivial:
+                    # Identity passthrough: output control point cpid = input
+                    # control point cpid (clamped to available inputs).
+                    src = cps_in[min(cpid, icp - 1)]
+                    out_cps.append(dict(src))
+                else:
+                    out_cps.append(self._execute_hs_main(
+                        main_func, statements, hs_input_params, hs_output_params,
+                        cps_in, in_slot_key, cpid))
+            patches.append(out_cps)
+        return patches
+
+    def _execute_hs_main(self, main_func, statements, input_params, output_params,
+                         cps_in, in_slot_key, cpid) -> dict:
+        """Execute one HS control-point-phase invocation for output control
+        point `cpid`. Returns canonical-keyed output values."""
+        sem_to_key = self._get_output_semantic_to_key_map()
+        # 2D control-point arrays the decompiled HS body may index (v[i][j] /
+        # vicp[i][j]): i = input control point, j = register slot.
+        v2d = []
+        for cp in cps_in:
+            v2d.append([cp.get(k, [0.0, 0.0, 0.0, 0.0]) for k in in_slot_key])
+        local_vars = {'v': v2d, 'vicp': v2d, 'SV_OutputControlPointID': cpid}
+        # Seed the DS-style per-control-point named inputs by semantic too.
+        for param in input_params:
+            key = sem_to_key.get(
+                (f"{param['semantic_base'].upper()}{param['semantic_index']}"
+                 if param['semantic_index'] > 0 else param['semantic_base'].upper()),
+                None)
+            src = cps_in[min(cpid, len(cps_in) - 1)]
+            if key is not None and key in src:
+                local_vars[param['name']] = src[key]
+        for param in output_params:
+            local_vars[param['name']] = (
+                [0.0, 0.0, 0.0, 1.0] if param.get('type') == 'float4'
+                else self._default_value_for_type(param['type']))
+        for stmt in statements:
+            if stmt is None:
+                continue
+            s = stmt.strip()
+            if s == 'return' or s.startswith('return;'):
+                break
+            self.execute_statement(stmt, local_vars)
+        result = {}
+        for param in output_params:
+            sem_base = param['semantic_base'].upper()
+            sem_idx = param['semantic_index']
+            sem_full = f'{sem_base}{sem_idx}' if sem_idx > 0 else sem_base
+            key = sem_to_key.get(sem_full, sem_full)
+            result[key] = local_vars.get(param['name'])
+        return result
+
+    def executeDS_with_params(self, main_func: str, ds_input_params: list,
+                              ds_output_params: list, ds_input_sig: list,
+                              hs_patches: list, domain_points, num_instances: int = 1,
+                              patch_constants: list = None) -> list:
+        """Execute the Domain Shader over the tessellated patches and return the
+        emitted vertices (canonical-keyed) in patch-major, domain-point order —
+        i.e. the DS mesh-output stream.
+
+        The DS is invoked once per tessellator-generated domain point of each
+        patch (`domain_points` is the list of (u, v[, w]) coordinates the
+        tessellator produced — see tessellator.py). For a quad domain at the
+        default factor 1 that is the 4 corners per patch.
+
+        `hs_patches` is the HS output (list of patches, each a list of
+        control-point dicts keyed by canonical semantic — see
+        `executeHS_with_params`). `ds_input_sig` maps DS input register slots to
+        semantics, so `vicp[i][j]` = control point i's register slot j. The
+        decompiled DS body reads the domain coordinate as the undeclared local
+        `vDomain`. `patch_constants` (optional) supplies the HS-fork-phase
+        `vpc*` registers per patch; absent captures default to 0 (the fork phase
+        is not decompiled)."""
+        sem_to_key = self._get_output_semantic_to_key_map()
+
+        def _canon(sem, idx):
+            sem_full = f'{sem.upper()}{idx}' if idx > 0 else sem.upper()
+            return sem_to_key.get(sem_full, sem_full)
+
+        # DS input register slot -> canonical control-point key (by semantic).
+        slot_key = [_canon(s['semantic'], s['index'])
+                    for s in sorted(ds_input_sig, key=lambda r: r['slot'])]
+        # DS output param -> (canonical key, name, component count).
+        out_keys = [(_canon(p['semantic_base'], p['semantic_index']),
+                     p['name'], min(self._type_component_count(p['type']), 4))
+                    for p in ds_output_params]
+
+        pts = [list(p) + [0.0] * (3 - len(p)) for p in (domain_points or [[0.0, 0.0]])]
+        emitted = []
+        self._eval_counter = 0
+        for p_idx, out_cps in enumerate(hs_patches):
+            # vicp[i][j] = control point i's register slot j (float4).
+            vicp = []
+            for cp in out_cps:
+                vicp.append([(cp.get(k) if isinstance(cp.get(k), list)
+                              else [cp.get(k, 0.0), 0.0, 0.0, 0.0])
+                             for k in slot_key])
+            pc = (patch_constants[p_idx]
+                  if patch_constants and p_idx < len(patch_constants) else None)
+            for dom in pts:
+                row = self._execute_ds_main(
+                    main_func, ds_input_params, ds_output_params,
+                    vicp, slot_key, out_cps, dom, out_keys, pc)
+                emitted.append(row)
+        return emitted
+
+    def _execute_ds_main(self, main_func, input_params, output_params, vicp,
+                         slot_key, out_cps, dom, out_keys, patch_constants) -> dict:
+        """Run one DS invocation for a single patch at SV_DomainLocation `dom`."""
+        sem_to_key = self._get_output_semantic_to_key_map()
+        local_vars = {
+            'vicp': vicp, 'v': vicp,          # 2D control-point access
+            'vDomain': list(dom),             # SV_DomainLocation (decompiler name)
+            'SV_DomainLocation': list(dom),
+        }
+        # Patch-constant registers vpc0..vpcN (HS fork-phase output). Default 0
+        # when the fork phase was not decompiled.
+        for k in range(8):
+            local_vars[f'vpc{k}'] = (patch_constants[k]
+                                     if patch_constants and k < len(patch_constants)
+                                     else [0.0, 0.0, 0.0, 0.0])
+        # Named per-control-point inputs by semantic (control point 0).
+        for param in input_params:
+            key = sem_to_key.get(
+                (f"{param['semantic_base'].upper()}{param['semantic_index']}"
+                 if param['semantic_index'] > 0 else param['semantic_base'].upper()),
+                None)
+            if key is not None and vicp and slot_key:
+                if key in slot_key:
+                    j = slot_key.index(key)
+                    local_vars[param['name']] = vicp[0][j]
+        for param in output_params:
+            local_vars[param['name']] = (
+                [0.0, 0.0, 0.0, 1.0] if param.get('type') == 'float4'
+                else self._default_value_for_type(param['type']))
+        self._eval_counter += 1
+        self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._sb_index_burst = None
+        statements = self._collect_function_statements(main_func)
+        for stmt in statements:
+            if stmt is None:
+                continue
+            s = stmt.strip()
+            if s == 'return' or s.startswith('return;'):
+                break
+            self.execute_statement(stmt, local_vars)
+        row = {}
+        for key, pname, comp in out_keys:
+            val = local_vars.get(pname)
+            if isinstance(val, list) and len(val) > comp:
+                val = val[:comp]
+            row[key] = val
+        return row
+
     # Maps PS input semantic → the canonical attribute key produced by the
     # rasterizer's barycentric interpolation (see rasterizer._interpolate_*).
     _SEM_TO_CANONICAL = {

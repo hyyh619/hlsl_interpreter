@@ -992,6 +992,170 @@ def _run_gs_stage(config, data_folder, log_file_path, vs_interp, vs_results,
         log(f"GS stage error: {e}\n{traceback.format_exc()}")
 
 
+def _parse_tess_params(data_folder: str) -> dict:
+    """Extract the tessellation configuration (control-point counts, domain,
+    partitioning) from the HS/DS disasm decls. 3Dmigoto emits these as
+    `dcl_input_control_point_count`, `dcl_tessellator_domain domain_quad`, etc.
+    in the HS disasm (full) and as "Needs manual fix" comments in the DS HLSL.
+    Returns a dict with sensible defaults (quad, integer, 1/1 CPs)."""
+    import re as _re
+    params = {'input_cp': 1, 'output_cp': 1, 'domain': 'quad',
+              'partitioning': 'integer'}
+    text = ''
+    for fn in ('HS_shader_disasm.txt', 'DS_shader_disasm.txt',
+               'HS_shader.hlsl', 'DS_shader.hlsl'):
+        p = os.path.join(data_folder, fn)
+        if os.path.exists(p):
+            with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                text += '\n' + f.read()
+    m = _re.search(r'dcl_input_control_point_count\s+(\d+)', text)
+    if m:
+        params['input_cp'] = int(m.group(1))
+    m = _re.search(r'dcl_output_control_point_count\s+(\d+)', text)
+    if m:
+        params['output_cp'] = int(m.group(1))
+    m = _re.search(r'dcl_tessellator_domain\s+domain_(\w+)', text)
+    if m:
+        d = m.group(1).lower()
+        params['domain'] = 'tri' if d.startswith('tri') else \
+                           ('isoline' if d.startswith('iso') else 'quad')
+    m = _re.search(r'dcl_tessellator_partitioning\s+partitioning_(\w+)', text)
+    if m:
+        params['partitioning'] = m.group(1).lower()
+    return params
+
+
+def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
+                  idx_list, float_tolerance):
+    """If the draw has a hull + domain shader (HS_shader.hlsl + DS_shader.hlsl)
+    with a *_ds_mesh.bin golden, run the tessellation pipeline segment
+    VS → HS (control-point phase) → tessellator → DS and compare the emitted
+    DS-out stream against the golden.
+
+    The captured `_ds_mesh` golden stores one DS-out vertex per patch, so the DS
+    is invoked once per patch at the tessellator's first domain point (the HS
+    patch-constant/fork phase that computes SV_TessFactor is dropped by the
+    3Dmigoto decompiler, so the full tessellation factor set is unavailable —
+    see tessellator.py). This prints the same total/passed + first-few-Error
+    summary as the VS/GS comparisons."""
+    import tessellator
+    hs_hlsl = os.path.join(data_folder, 'HS_shader.hlsl')
+    ds_hlsl = os.path.join(data_folder, 'DS_shader.hlsl')
+    ds_bin, ds_layout = vs_interp.find_stage_mesh_dump(data_folder, 'ds')
+    if not (os.path.exists(hs_hlsl) and os.path.exists(ds_hlsl) and ds_bin and ds_layout):
+        return
+    log = vs_interp.log_output
+    try:
+        tess = _parse_tess_params(data_folder)
+        log("=" * 50)
+        log(f"Executing Hull/Domain Shader (tessellation)... "
+            f"domain={tess['domain']} partitioning={tess['partitioning']} "
+            f"in_cp={tess['input_cp']} out_cp={tess['output_cp']}")
+
+        # ---- HS control-point phase ----------------------------------------
+        hs_interp = _make_interpreter(config, d3d.SHADER_STAGE_HS, log_file_path)
+        hs_interp.log_to_file = False
+        hs_interp.log_output = vs_interp.log_output
+        with open(hs_hlsl, 'r', encoding='utf-8') as f:
+            hs_code = hs_interp.preprocess_hlsl(f.read())
+        hs_interp.hlsl_code = hs_code
+        hs_tex, hs_desc, hs_samp = _load_stage_textures(data_folder, 'HS', log)
+        if hs_tex:
+            hs_interp.set_texture_and_sampler(hs_tex, hs_desc, hs_samp)
+        hs_interp._parse_texture_and_sampler_bindings(hs_code)
+        hs_interp._parse_structured_buffers(hs_code)
+        for cb_block in hs_interp._extract_cbuffer_blocks(hs_code):
+            cb_def = hs_interp.parse_cbuffer(cb_block)
+            if cb_def:
+                hs_interp.cbuffers[cb_def.name] = cb_def
+        hs_interp.parse_all_functions(hs_code)
+        hs_cb_csv = os.path.join(data_folder, 'HS_constant_buffers.csv')
+        if os.path.exists(hs_cb_csv):
+            hs_interp.load_all_cbuffers_from_combined_csv(hs_cb_csv)
+        hs_interp.override_cbuffers_from_binary(data_folder, 'HS')
+        hs_sig = hs_interp.load_signature_from_csv(
+            os.path.join(data_folder, 'HS_input_output_signature.csv'))
+        hs_params = hs_interp.parse_main_params_with_semantics(hs_code, 'main')
+        hs_in, hs_out = hs_params['inputs'], hs_params['outputs']
+        hs_interp.map_params_to_signature(hs_in, hs_sig['inputs'])
+        hs_interp.map_params_to_signature(hs_out, hs_sig['outputs'])
+        hs_patches = hs_interp.executeHS_with_params(
+            'main', hs_in, hs_out, hs_sig['inputs'], hs_sig['outputs'],
+            vs_results, idx_list, tess['input_cp'], tess['output_cp'])
+        log(f"HS produced {len(hs_patches)} patches "
+            f"({tess['output_cp']} control point(s) each)")
+
+        # ---- tessellator: domain points (DS runs once per point per patch) --
+        # The HS fork/join (patch-constant) phase that computes SV_TessFactor is
+        # dropped by the 3Dmigoto decompiler, so the true factors are unknown. We
+        # tessellate at the minimal patch (integer factor 1 -> quad = 4 corners,
+        # tri = 3): when all factors are 1.0 D3D produces this minimal patch
+        # regardless of the declared partitioning mode. The captured golden's
+        # DS-out count therefore only matches when the real runtime factors were
+        # also 1 (see the step-167 session notes).
+        points, _prims = tessellator.tessellate(
+            tess['domain'], None, None, 'integer')
+        # RenderDoc's `_ds_mesh` dump evaluates the DS once per output control
+        # point of each patch (its DS-out preview convention): the golden row
+        # count equals patches x out_cp. So take the first out_cp minimal-patch
+        # corners as the per-patch domain locations (out_cp=1 -> just (0,0);
+        # out_cp=4 quad -> the 4 corners).
+        if tess['output_cp'] and 0 < tess['output_cp'] <= len(points):
+            points = points[:tess['output_cp']]
+        if 'ds_domain_points' in config:
+            points = [tuple(p) for p in config['ds_domain_points']]
+        log(f"Tessellator ({tess['domain']}, factor 1): DS invoked at "
+            f"{len(points)} domain point(s)/patch (out_cp={tess['output_cp']}): "
+            f"{[list(p) for p in points]}")
+
+        # ---- DS execution ---------------------------------------------------
+        ds_interp = _make_interpreter(config, d3d.SHADER_STAGE_DS, log_file_path)
+        ds_interp.log_to_file = False
+        ds_interp.log_output = vs_interp.log_output
+        with open(ds_hlsl, 'r', encoding='utf-8') as f:
+            ds_code = ds_interp.preprocess_hlsl(f.read())
+        ds_interp.hlsl_code = ds_code
+        ds_tex, ds_desc, ds_samp = _load_stage_textures(data_folder, 'DS', log)
+        if ds_tex:
+            ds_interp.set_texture_and_sampler(ds_tex, ds_desc, ds_samp)
+        ds_interp._parse_texture_and_sampler_bindings(ds_code)
+        ds_interp._parse_structured_buffers(ds_code)
+        for cb_block in ds_interp._extract_cbuffer_blocks(ds_code):
+            cb_def = ds_interp.parse_cbuffer(cb_block)
+            if cb_def:
+                ds_interp.cbuffers[cb_def.name] = cb_def
+        ds_interp.parse_all_functions(ds_code)
+        ds_cb_csv = os.path.join(data_folder, 'DS_constant_buffers.csv')
+        if os.path.exists(ds_cb_csv):
+            ds_interp.load_all_cbuffers_from_combined_csv(ds_cb_csv)
+        ds_interp.override_cbuffers_from_binary(data_folder, 'DS')
+        ds_interp.load_structured_buffer_data(data_folder)
+        ds_interp.load_typed_buffer_data(data_folder)
+        ds_sig = ds_interp.load_signature_from_csv(
+            os.path.join(data_folder, 'DS_input_output_signature.csv'))
+        ds_params = ds_interp.parse_main_params_with_semantics(ds_code, 'main')
+        ds_in, ds_out = ds_params['inputs'], ds_params['outputs']
+        ds_interp.map_params_to_signature(ds_out, ds_sig['outputs'])
+        emitted = ds_interp.executeDS_with_params(
+            'main', ds_in, ds_out, ds_sig['inputs'], hs_patches, points)
+        log(f"DS emitted {len(emitted)} output vertices "
+            f"({len(hs_patches)} patches x {len(points)} domain points)")
+
+        golden = ds_interp.load_mesh_output_golden(ds_bin, ds_layout)
+        log(f"Loaded {len(golden)} golden DS rows from mesh bin+layout "
+            f"({os.path.basename(ds_bin)})")
+        if golden and len(emitted) != len(golden):
+            log(f"Error: DS emitted-vertex count {len(emitted)} != golden "
+                f"{len(golden)} (patch-assembly mismatch)")
+        if golden:
+            log("\nComparing DS output with golden data...")
+            ds_interp.compare_vs_output_with_golden_params(
+                emitted, ds_out, golden, float_tolerance=float_tolerance)
+    except Exception as e:
+        import traceback
+        log(f"DS stage error: {e}\n{traceback.format_exc()}")
+
+
 def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     """Execute VS → Rasterizer → Depth → PS pipeline from extracted data folder."""
     # Config parameters
@@ -1268,6 +1432,12 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # VS-output primitives and compare the emitted stream against the
     # *_gs_mesh.bin golden. Runs even in vs_only mode (it is a mesh comparison).
     _run_gs_stage(config, data_folder, log_file_path, vs_interp, vs_results,
+                  idx_list, float_tolerance)
+
+    # Tessellation stage (optional): if the draw has a hull + domain shader,
+    # run VS → HS → tessellator → DS and compare the DS-out stream against the
+    # *_ds_mesh.bin golden. Runs even in vs_only mode (it is a mesh comparison).
+    _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
                   idx_list, float_tolerance)
 
     # VS-only mode stops here: the golden comparison (and its "Total PASSED
