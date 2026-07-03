@@ -3189,11 +3189,29 @@ Notice:
 
 **结果**：3 案晋级（sekiro4_event20560、Octopath event664/event3012），回归 **133/133 全过零回归**（双线性半纹素修正未破坏任何既有 case）；witcher 家族误差收敛（event16215 错误行 180→150）但未过线。类⑦ 6 案 → 剩 4 案；类⑧ sekiro4 消灭、witcher 9 案残留。
 
-# 171
+# 171 index buffer raw data
 ## Prompts
+1. 修 dx_dump.py（抽出 DumpIndexBufferBin，两条 early-return 路径都补）。现在dump了index buffer raw data
+2. 请根据ib_res_*.bin和ia_vertex_data.csv来解析index buffer。
+3. 请重新运行Dump目录和Cases目录的所有case，保证没有regression cases.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+## Git commit: 
+
+## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step171-index-buffer-raw-bin-parsing-and-rerun.md`。
+
+**背景**：dx_dump.py 修复前两条 early-return 路径漏 dump index buffer；修复重导出后，Dump 40 zip 中 26 个新增 `ib_res_*.bin`（其余 14 个均为非索引 draw，本不需要 IB），Cases 的 indexed 案例全覆盖。
+
+**解析验证（systematic，173 zip 三方对账）**：写扫描脚本对每个 zip 比对「bin 按现有约定（IB 绑定 ByteOffset + IndexOffset×stride + BaseVertex）解码」vs「bin 零偏移解码」vs「ia_vertex_data.csv 的 IDX 列」。结论：**所有 indexed 案例加偏移解码与 CSV IDX 100% 逐项一致，零例需要零偏移**——bin 是完整资源 dump（TombRaider 恰在 10MB 截断上限），解释器既有 `load_index_list_from_binary`（步 118/121）约定与新产物完全兼容，无需改解码。强证据案：TombRaider ioff=364746、sekiro2 ioff=1476352、sekiro4 ioff=3484336、witcher boff=130272/211536、stride=4（R32_UINT）案均验证通过。
+
+**代码改动（render.py）**：IB 装载处新增 bin↔CSV IDX 交叉校验护栏——两源并存时逐项比对，不一致打 `Warning: binary IB disagrees ...（binary wins）`，防未来 dump 工具偏移/stride 回归。本轮全部日志**零触发**（两源全量一致）。
+
+**全量重跑**：Cases `run_regression.py` **133/133 全 PASS 零回归**；Dump `triage_dump.py --vs-only` 40 案与步 168–170 基线**逐案持平零退步**（TombRaider 827/1548、manhattan 998~999/1000、sekiro2_3207/9493 43337/45576、sekiro2_4833 12/24、sekiro4_7844 162/324、Octopath 地形 8/23064、witcher16215 150 Error 行等全部一致）。**意外收获：OldWorld_event3338（历史 23550/23814 精度边界→步 168 归超时类）本轮 23814/23814 全过**（新 dump 补齐二进制数据 + 步 170 dpN 舍入叠加生效；单独复核 VS 仅 29.6s、0 Error），已晋级 Cases + 回归表 **134 案**、从 Dump 移除（剩 39 案，超时类缩至 OldWorld 1034/2767 两个 203k 顶点案）。
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 

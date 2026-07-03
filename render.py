@@ -1356,6 +1356,19 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     )
     if idx_list:
         vs_interp.log_output(f"Loaded {len(idx_list)} indices from binary index buffer")
+        # Cross-validate the binary decode against the CSV IDX column when
+        # both exist (guards against dump-tool offset/stride regressions).
+        # The binary is authoritative on disagreement — exact bytes, no
+        # CSV rounding/truncation.
+        csv_idx = vs_interp.load_index_column(ia_vertex_csv)
+        if csv_idx:
+            n = min(len(idx_list), len(csv_idx))
+            mismatches = sum(1 for a, b in zip(idx_list[:n], csv_idx[:n]) if a != b)
+            if mismatches:
+                vs_interp.log_output(
+                    f"Warning: binary IB disagrees with ia_vertex_data.csv IDX on "
+                    f"{mismatches}/{n} indices (binary wins)"
+                )
     else:
         idx_list = vs_interp.load_index_column(ia_vertex_csv)
 
