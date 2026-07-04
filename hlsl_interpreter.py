@@ -1675,12 +1675,21 @@ class HLSLInterpreter:
                 def _to_int(v):
                     if v is None:
                         return 0
+                    if isinstance(v, int):
+                        return v
                     try:
                         f = float(v)
                     except (TypeError, ValueError):
                         return 0
                     if math.isnan(f) or math.isinf(f):
                         return 0
+                    # A float in the denormal range at an int cast can only be
+                    # raw integer BITS that round-tripped through float storage
+                    # (GPUs run FTZ — real math never yields denormals). E.g.
+                    # sekiro tbForce.x: uint 2 reads as 2.8e-45; (uint) must
+                    # give 2, not 0, or the wind loop never runs.
+                    if 0.0 < abs(f) < 1.1754943508222875e-38:
+                        return self._bitcast_to_int(f, True)
                     return int(f)
                 if isinstance(inner, list):
                     return [_to_int(v) for v in inner]
@@ -2458,7 +2467,7 @@ class HLSLInterpreter:
             return rows[idx][self._CB_COMP_IDX[sw]]
         return [rows[idx][self._CB_COMP_IDX[c]] for c in sw]
 
-    def _struct_member_access(self, field, elem_idx, rest):
+    def _struct_member_access(self, field, elem_idx, rest, local_vars=None):
         """Resolve `NAME[elem_idx]<rest>` for a struct{...} NAME[N] cbuffer field.
 
         `rest` is the text after the subscript: '' / '._mRC' / '.member' /
@@ -2485,7 +2494,7 @@ class HLSLInterpreter:
         # Array member element select: member[k] → advance by k register-aligned slots.
         if msub is not None:
             try:
-                k = self._eval_subscript(msub, {})
+                k = self._eval_subscript(msub, local_vars if local_vars is not None else {})
             except Exception:
                 k = 0
             esz = self._CB_TYPE_BYTES.get(mtype, 16)
@@ -2792,6 +2801,25 @@ class HLSLInterpreter:
             parts = name.split('.')
             if len(parts) >= 2:
                 base_name = parts[0]
+
+                # Non-array cbuffer struct instance member access:
+                # `g_forceParam.LoopNum.x` / `.GustParam[i].z`. Route through
+                # _struct_member_access (element 0) so uint/int members read
+                # their exact integer bits (stored as float denormals, the
+                # float view rounds them to 0 — sekiro wind LoopNum.x=2 read
+                # as 0 and the whole wind loop never ran).
+                if base_name not in local_vars and base_name not in self.variables:
+                    for cb_def in self.cbuffers.values():
+                        if not isinstance(cb_def, CbufferDefinition):
+                            continue
+                        for field in cb_def.fields:
+                            if (field.name == base_name
+                                    and getattr(field, 'field_type', '') == '__struct__'
+                                    and not getattr(field, 'array_size', 0)):
+                                res = self._struct_member_access(
+                                    field, 0, name[len(base_name):], local_vars)
+                                if res is not None:
+                                    return res
 
                 # 判断是否为swizzle模式（全是xyzwrgb组成的字符串）
                 # 对于 input.Color.g, parts = ['input', 'Color', 'g']
@@ -4368,7 +4396,10 @@ class HLSLInterpreter:
                         ri0 = (cursor + 15) // 16
                     int_rows_all = self._cb_raw[f'cb{slot}']
                     elements, int_elements = [], []
-                    for j in range(array_size):
+                    # A non-array struct instance (array_size 0, e.g. sekiro's
+                    # `struct {...} g_forceParam`) is one element — without
+                    # max(1,·) it got NO data and every member read as 0.
+                    for j in range(max(1, array_size)):
                         elem_base = ri0 + j * elem_regs
                         rows = [decoded[elem_base + k]
                                 for k in range(elem_regs)
@@ -4381,7 +4412,7 @@ class HLSLInterpreter:
                     if elements:
                         field.data = elements
                         field.struct_int_data = int_elements
-                    cursor = (ri0 + array_size * elem_regs) * 16
+                    cursor = (ri0 + max(1, array_size) * elem_regs) * 16
                     continue
 
                 # Compute this field's byte offset.

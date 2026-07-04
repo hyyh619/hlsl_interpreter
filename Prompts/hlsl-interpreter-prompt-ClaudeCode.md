@@ -3274,8 +3274,10 @@ texture.py / render.py——
 
 **结果**：witcher 16215（0/30→**PASS**）、16834（0/30→**PASS**，GetDimensions+denormal 坐标）、22201（0/18→**PASS**）、Octopath3601（0/96→**PASS** 搭车）4 案晋级（含步 172 的 22092，类⑧已灭 5/11）；回归表 **142 案全过零回归**，Dump 其余各类逐案持平。收敛未过线：22229 10/12（余 2 行 diff=0.005075 恰超容差 1.5%，灯光解析衰减精度临界，不放宽容差）、22260 54/108、21719 368/1728、21895 1057/6360、21979/22049 132/840、ES2991 1464/1536（golden TEXCOORD1 与我们完全一致 → 几何/SB 全对，仅剩宽度曲线图集的单纹素差异）。Dump 剩 31 案。
 
-# 174
+# 174 精度临界（float32 仿真残差）	6	需 bit-exact GPU 数学
 ## Prompts
+修复下列问题
+精度临界（float32 仿真残差）	6	需 bit-exact GPU 数学
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3285,6 +3287,18 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**类⑦"需 bit-exact GPU 数学"的判断大部分不成立——4/6 案实为 denormal 位模式被浮点路径吞掉的装载/解析 bug，修复后精确全过（回归 144/144 零回归）。** 详见 `Sessions/hlsl-interpreter-step174-precision-class-named-struct-cbuffer.md`。
+
+**sekiro2_4833（12/24 → PASS 24/24）**：trace 显示 `(uint)g_forceParam.LoopNum.x = 0`——整个风力 while 循环从未执行（步 173 之前 while 本身也不存在）。二进制里 LoopNum.x=2（denormal 存储）。三层修复：① `override_cbuffers_from_binary` 对非数组 struct 实例（array_size=0）零迭代不填数据 → `range(max(1,·))`；② get_value 点号路径不识别非数组 struct 成员 → 路由 `_struct_member_access(field,0,rest)`（uint 成员经 struct_int_data 读精确位）；③ `_struct_member_access` 成员下标用空局部环境求值（`GustParam[r0.y]` 回退 0）→ 透传 local_vars。
+
+**sekiro4_7844（162/324 → PASS 324/324）**：同引擎风力 struct，纯搭车。步 170"骨骼数据侧"的判断不成立。
+
+**sekiro2_3207/9493（43337 → 44341/45576，+1004 行）**：风力骨骼数来自 `Buffer<mixed4>` 的 uint 道，`(uint)denormal` 值截断为 0 → 风力循环不跑。golden 反解（4×4 求逆）证实缺 ~0.004 风力位移。**通用修复**：int/uint 强转遇 denormal 范围浮点按位重解释（GPU FTZ，运算永不产生 denormal——int 消费点的 denormal 必为原始位）。**残余 1235 行是真精度墙**：sin(≈3889 rad) 大相位（Parallels/Apple GPU），试验 GPU 快速 sin 归约模型局部有效但全量净负效（44341→44338），**已回滚** math.sin；不放宽容差。
+
+**sekiro2_14998**：VS 段 4867/4867 全过；GS 段 28974/29148 维持（TexCoord4 残余非 trig 来源）。
+
+**结果**：2 案晋级（回归表 **144 案全过零回归**），Dump 剩 29 案；3207/9493 因风力循环开销并发下超时（独跑完成）归入慢案。**Denormal 三入口家族收官**（步 173 Load 坐标 + 本步 struct 成员、int 强转）：trace 见 `(uint)x=0` 且"循环不跑/索引恒 0"→ 先查原始位。
 
 # 175
 ## Prompts
