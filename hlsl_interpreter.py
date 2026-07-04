@@ -1840,6 +1840,30 @@ class HLSLInterpreter:
             self.debug_print(f"[FUNC] exp2({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
+        # rcp: 倒数 (1/x)。D3D 的 rcp 是近似指令，但硬件误差 << 容差；按精确
+        # 1/x 以 float32 舍入实现。x=0 给 ±inf、NaN 透传，与 GPU 语义一致。
+        elif func_name == 'rcp':
+            if len(args) != 1:
+                return None
+            val = self.evaluate_syntax_tree(args[0], local_vars)
+            if val is None:
+                return None
+
+            def _rcp1(x):
+                try:
+                    x = float(x)
+                except (TypeError, ValueError):
+                    return math.nan
+                if math.isnan(x):
+                    return math.nan
+                if x == 0.0:
+                    return math.copysign(math.inf, x)
+                return self._f32(1.0 / x)
+
+            result = [_rcp1(v) for v in val] if isinstance(val, list) else _rcp1(val)
+            self.debug_print(f"[FUNC] rcp({self._format_float(val)}) = {self._format_float(result)}")
+            return result
+
         # floor/ceil/round/trunc/frac: 取整与小数部分函数
         # HLSL frac(x) = x - floor(x)（始终返回 [0,1) 的小数部分，对负数也成立）。
         # 这些在 3Dmigoto 反编译出的着色器里大量出现（如 frac() 周期函数、floor() 量化），
@@ -2011,16 +2035,43 @@ class HLSLInterpreter:
             if len(args) != 1:
                 self.debug_print(f"[ERROR] {func_name} requires 1 arg, got {len(args)} at line {node.line_number}")
                 return None
+            arg0 = args[0]
+            # 3Dmigoto renders an INTEGER negate source modifier (disasm
+            # `iadd r0, r0, -cb2[0].yxyx`) as asint(-cbN[i].sw). Evaluated
+            # literally that float-negates first, so a raw 0 becomes -0.0 and
+            # asint returns 0x80000000 — poisoning integer index math (the
+            # Octopath terrain LOD chain). The GPU semantics are integer
+            # negation applied AFTER the bit reinterpretation: -asint(x).
+            int_negate = False
+            if func_name in ('asint', 'asuint') and arg0 is not None and arg0.value == '-':
+                # Unary minus parses as unary_op OR as binary_op with an
+                # empty-value left node.
+                left = getattr(arg0, 'left', None)
+                if arg0.node_type == 'unary_op':
+                    int_negate = True
+                    arg0 = left
+                elif (arg0.node_type == 'binary_op'
+                      and (left is None or (getattr(left, 'node_type', None) == 'value'
+                                            and left.value is None))):
+                    int_negate = True
+                    arg0 = arg0.right
             # For asint/asuint of a direct cbuffer component, use the exact int32
             # bit pattern from the binary load: a float cannot round-trip values
             # like -1 (stored as NaN) through struct re-packing.
             if func_name in ('asint', 'asuint'):
-                raw = self._cbuffer_component_raw_int(args[0])
+                raw = self._cbuffer_component_raw_int(arg0)
                 if raw is not None:
-                    result = raw if func_name == 'asint' else (raw & 0xFFFFFFFF)
+                    if isinstance(raw, list):
+                        result = [-v for v in raw] if int_negate else list(raw)
+                        if func_name == 'asuint':
+                            result = [v & 0xFFFFFFFF for v in result]
+                    else:
+                        result = -raw if int_negate else raw
+                        if func_name == 'asuint':
+                            result &= 0xFFFFFFFF
                     self.debug_print(f"[FUNC] {func_name}(cbuffer raw) = {result}")
                     return result
-            val = self.evaluate_syntax_tree(args[0], local_vars)
+            val = self.evaluate_syntax_tree(arg0, local_vars)
             if val is None:
                 return None
 
@@ -2038,6 +2089,15 @@ class HLSLInterpreter:
                     return x
 
             result = [_reinterpret(v) for v in val] if isinstance(val, list) else _reinterpret(val)
+            if int_negate:
+                if isinstance(result, list):
+                    result = [-v for v in result]
+                    if func_name == 'asuint':
+                        result = [v & 0xFFFFFFFF for v in result]
+                else:
+                    result = -result
+                    if func_name == 'asuint':
+                        result &= 0xFFFFFFFF
             self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
@@ -2306,14 +2366,17 @@ class HLSLInterpreter:
         self.debug_print(f"[ERROR] Unknown method: {method_name}")
         return None
 
-    _CB_COMPONENT_RE = re.compile(r'^(cb\d+)\[(\d+)\]\.([xyzw])$')
+    _CB_COMPONENT_RE = re.compile(r'^(cb\d+)\[(\d+)\]\.([xyzw]{1,4})$')
     _CB_COMP_IDX = {'x': 0, 'y': 1, 'z': 2, 'w': 3}
 
     def _cbuffer_component_raw_int(self, node):
-        """If `node` is a literal cbuffer scalar access (cbN[i].c) whose exact
-        int32 bits were captured by override_cbuffers_from_binary, return that
-        signed int; otherwise None. Lets asint/asuint recover integers that do
-        not survive the float round-trip (e.g. -1 stored as NaN)."""
+        """If `node` is a literal cbuffer access (cbN[i].c or a 2-4 lane
+        swizzle cbN[i].sw) whose exact int32 bits were captured by
+        override_cbuffers_from_binary, return that signed int (scalar) or
+        list of ints (swizzle); otherwise None. Lets asint/asuint recover
+        integers that do not survive the float round-trip: small ints are
+        stored as denormals the CSV rounds to 0.0 — the Octopath terrain
+        tile index asint(cb3[0].yx) read [0,0] instead of [1,7]."""
         if node is None or getattr(node, 'node_type', None) != 'value':
             return None
         m = self._CB_COMPONENT_RE.match(str(node.value).strip())
@@ -2325,7 +2388,10 @@ class HLSLInterpreter:
         idx = int(m.group(2))
         if idx >= len(rows):
             return None
-        return rows[idx][self._CB_COMP_IDX[m.group(3)]]
+        sw = m.group(3)
+        if len(sw) == 1:
+            return rows[idx][self._CB_COMP_IDX[sw]]
+        return [rows[idx][self._CB_COMP_IDX[c]] for c in sw]
 
     def _struct_member_access(self, field, elem_idx, rest):
         """Resolve `NAME[elem_idx]<rest>` for a struct{...} NAME[N] cbuffer field.
@@ -3960,11 +4026,14 @@ class HLSLInterpreter:
         with elem_size//4 components (8B -> R32G32, 16B -> R32G32B32A32)."""
         data = tb.get('data')
         esize = tb.get('elem_size') or 0
-        if not data or esize <= 0 or index < 0:
+        if not data or esize <= 0:
             return None
         off = index * esize
-        if off + esize > len(data):
-            return None
+        if index < 0 or off + esize > len(data):
+            # D3D robust buffer access: an out-of-bounds typed-buffer read
+            # returns zero (not "no value" — returning None here would skip
+            # the assignment and leave a stale register value).
+            return [0.0, 0.0, 0.0, 0.0]
         comp = tb.get('comp') or 4
         # New dumps record the SRV's actual DXGI view format (ViewFormat column
         # in buffer_params.csv) — decode by it directly, no inference needed.

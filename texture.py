@@ -1142,7 +1142,12 @@ class Texture:
             rho_sq = max(dx_u * dx_u + dx_v * dx_v, dy_u * dy_u + dy_v * dy_v)
             lod = 0.5 * math.log2(rho_sq) if rho_sq > 1e-20 else 0.0
         else:
-            lod = tw
+            # Explicit LOD (SampleLevel). Use the RAW w — `tw` has the
+            # sampler's AddressW transform applied, which is only meaningful
+            # for a Texture3D z coordinate; a Clamp AddressW would clamp
+            # LOD 2.0 to 1.0 (Octopath terrain sampled the wrong mip on
+            # every morphing vertex).
+            lod = w if math.isfinite(w) else 0.0
 
         lod = lod + sampler.MipLODBias
         lod = max(sampler.MinLOD, min(sampler.MaxLOD, lod))

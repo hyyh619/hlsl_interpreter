@@ -3215,12 +3215,9 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
-
-## Claude Code Session
-
-# 172
+# 172 Octopath 地形系统性偏差问题调查和修复
 ## Prompts
+Octopath 地形系统性偏差问题调查和修复
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3230,6 +3227,19 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**类⑨消灭：Octopath event576/2651/2682 全部 23064/23064 全 PASS（此前 8/23064），根因是解释器共享基础设施里五个叠加 bug，与 dump 数据无关。** 详见 `Sessions/hlsl-interpreter-step172-octopath-terrain-asint-negate-rcp-oob.md`。
+
+**定位方法**：shader 是 clipmap 地形（t0/t1 typed buffer 存块 LOD、t2 heightmap 双 mip 采高按 morph 因子插值、Point/ClampEdge 采样器）。DXBC VM 的 typed-buffer `ld` 是"返回 0"占位、无法定位本案；改写**独立逐指令复现脚本**（输入直读 dump 二进制 + 每步 f32 舍入），先证明一组语义能 23064/23064 比特级复现 golden（BGRA 字节序 R=byte2、point 采样 mip=floor(lod)、texel=floor(u·w)、ClampEdge），再反照解释器 `[STMT]` trace 找分歧。发现解释器对每个顶点输出的都是 v0=0 顶点的答案——8/23064 的"通过行"就是 idx=0 的 8 次出现。
+
+**五个 bug（前四 hlsl_interpreter.py，第五 texture.py）**：
+① **`asint(-cbN[i].sw)` 求值顺序**：disasm 的 `-` 是整数源修饰符（iadd 负操作数），3Dmigoto 渲染成 asint(-x)；按字面先浮点取负 → asint(-0.0)=0x80000000=INT_MIN，索引链全毒。正确语义 = 先位重解释后整数取负（一元负号在语法树里是 `binary_op '-'`+空左子）。
+② **asint/asuint 的 cbuffer raw-bit 路径只支持标量**：swizzle 落入浮点求值，CSV 把 denormal 位模式舍成 0.0 → `asint(cb3[0].yx)` 得 [0,0]（应 [1,7]）→ tile 索引全体坍缩到 t0[0]。**event576 曾在索引全错下"全过"纯属数据巧合（t0[0]==t0[6]）**——2651 的小数 LOD tile（t0[9]=1.2318）立即揭穿。
+③ **`rcp()` 未实现**：返回 None → 赋值被跳过 → 寄存器保留旧值（r0.y=63 而非 1/63）。
+④ **typed-buffer Load 越界返回 None**（同样静默保留旧值）→ 改为 D3D robust access 语义返回 [0,0,0,0]。
+⑤ **显式 LOD 被采样器 AddressW 变换**：`sample()` 把 SampleLevel 的 lod 当第三坐标过了 ClampEdge → lod 2.0 被夹成 1.0，所有 morphing 顶点 coarse 采样读错 mip。AddressW 只属于 Texture3D 的 z（sample_volume 已单独处理）。
+
+**结果**：三案全过晋级；**⑤的修复带动 witcher3_event22092 0/414→414/414 全过（同为 VS SampleLevel+ClampEdge），一并晋级**；witcher event21895 错误行 40868→40595 收敛。回归 **138/138 全 PASS 零回归**；Dump triage 逐案与步 168–171 基线持平（剩 35 案）。**教训：某数据分布下的"全过"可能是侥幸，必须换分布验证**（576 全过时 tile 索引仍全错）。
 
 # 173
 ## Prompts
