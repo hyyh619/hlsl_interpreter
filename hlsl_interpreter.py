@@ -12,6 +12,7 @@ from hlsl_syntax_tree import SyntaxTreeNode, SyntaxTreeParser, _COMPILED_PATTERN
 # Sentinel: "this node is not a fusable multiply-add" (distinct from a real
 # None/0 result), returned by _try_fma/_fma so the caller falls back cleanly.
 _NO_FMA = object()
+_MISS = object()
 
 try:
     from texture import Texture, Sampler, TextureDesc, Sampler as SamplerClass
@@ -345,12 +346,19 @@ class HLSLInterpreter:
         self.print_interpreter_result = print_interpreter_result  # 是否打印HLSL Interpreter Result
         self._eval_counter = 0                              # evaluate_syntax_tree执行计数器
         self._should_print = True                           # 当前是否应该打印
+        self._dbg = True                                    # 快速调试打印开关
         self._log_file = None                               # 日志文件句柄
         self._gs_emit = None                                # GS 执行时的 Append 回调（否则 None）
         self._gs_restart = None                             # GS 执行时的 RestartStrip 回调
         self.hlsl_code = None                               # 加载的HLSL代码
         self.max_workers = max_workers                       # 线程池最大工作线程数
         self._parsed_func_cache = {}                         # 解析过的函数体缓存
+        self._stmt_fast = {}                                 # 语句级快派发缓存 {stmt: (kind, ...)}
+        self._block_stmts_cache = {}                         # 语句块 → 切分结果缓存
+        self._cb_static_cache = {}                           # 字面下标 cbuffer 引用值缓存
+        self._static_cb_bases_cache = None                   # 静态 cbuffer 基名集合（惰性）
+        self._if_parts_cache = {}                            # if 语句 → (条件, then, after) 缓存
+        self._while_parts_cache = {}                         # while 语句 → (条件, body, always) 缓存
         self._all_functions = {}                              # 所有解析的函数定义 {func_name: {'ret_type': ..., 'params': {...}, 'body': ...}}
         self.primitive_topology = primitive_topology         # 图元拓扑类型
         # Names of the current VS input attributes (v0, v1, ...). A (uint)/(int)
@@ -465,12 +473,16 @@ class HLSLInterpreter:
             self._log_file = open(self.log_file_path, self.log_file_mode, encoding='utf-8')
 
     def __del__(self):
-        """对象销毁时关闭日志文件"""
-        if self._log_cache:
-            self._flush_log_cache()
-        if self._log_file:
-            self._log_file.close()
-            self._log_file = None
+        """对象销毁时关闭日志文件。进程关停期文件可能已被运行时回收——
+        此处只作尽力而为的兜底，确定性的最终 flush 在 render.py 管线收尾处。"""
+        try:
+            if self._log_cache:
+                self._flush_log_cache()
+            if self._log_file:
+                self._log_file.close()
+                self._log_file = None
+        except Exception:
+            pass
 
     def enable_mesh_view(self, enable: bool = True):
         """
@@ -1222,7 +1234,7 @@ class HLSLInterpreter:
         else:
             result = not bool(val)
         if self.debug and self._should_print:
-            self.debug_print(f"[UNARY OP] operand={self._format_value(val)}, op={op}, result={self._format_value(result)}")
+            if self._dbg: self.debug_print(f"[UNARY OP] operand={self._format_value(val)}, op={op}, result={self._format_value(result)}")
         return result
 
     def execute_binary_op(self, op: str, left: Any, right: Any) -> Any:
@@ -1236,7 +1248,7 @@ class HLSLInterpreter:
             return self.execute_unary_op('-', right)
         if left is None or right is None:
             result = None
-            self.debug_print(f"[BINARY OP] left={self._format_value(left)}, right={self._format_value(right)}, op={op}, result={self._format_value(result)}")
+            if self._dbg: self.debug_print(f"[BINARY OP] left={self._format_value(left)}, right={self._format_value(right)}, op={op}, result={self._format_value(result)}")
             return None
         # Defensive guard: an arithmetic op on a nested list (a matrix where a
         # vector was expected, e.g. an unresolved cbuffer/struct access) would
@@ -1380,7 +1392,7 @@ class HLSLInterpreter:
             result = None
         if self.f32_emulation and op in ('+', '-', '*', '/'):
             result = self._to_f32(result)
-        self.debug_print(f"[BINARY OP] left={self._format_float(left)}, right={self._format_float(right)}, op={op}, result={self._format_float(result)}")
+        if self._dbg: self.debug_print(f"[BINARY OP] left={self._format_float(left)}, right={self._format_float(right)}, op={op}, result={self._format_float(result)}")
         return result
 
     def transpose_matrix(self, m: List[List[float]]) -> List[List[float]]:
@@ -1578,7 +1590,24 @@ class HLSLInterpreter:
         if node.node_type == 'value':
             if node.value is None:
                 return None
-            return self.get_value(node.value, local_vars)
+            # Per-node fast accessor, resolved once (trees are memoized per
+            # statement): numeric literals become constants; `name` /
+            # `name.swz` for plain locals skip get_value's string dissection.
+            # Anything else (cbuffers, buffers, struct members) keeps the full
+            # get_value path.
+            ev = getattr(node, '_ev', None)
+            if ev is None:
+                ev = self._build_value_accessor(node.value)
+                node._ev = ev
+            if ev is not False:
+                hit, result = ev(local_vars)
+                if hit:
+                    return result
+            result = self.get_value(node.value, local_vars)
+            if ev is not False and getattr(ev, '_cbc', False):
+                self._cb_static_cache[node.value.strip()] = (
+                    list(result) if isinstance(result, list) else result)
+            return result
 
         elif node.node_type == 'binary_op':
             if node.value in self._BITWISE_OPS:
@@ -1723,7 +1752,7 @@ class HLSLInterpreter:
             if val is None:
                 return None
             result = self.transpose_matrix(val)
-            self.debug_print(f"[FUNC] transpose(\n{self._format_value(val)}) =\n{self._format_value(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] transpose(\n{self._format_value(val)}) =\n{self._format_value(result)}")
             return result
 
         # normalize: 向量归一化函数
@@ -1737,7 +1766,7 @@ class HLSLInterpreter:
                 return None
             if isinstance(val, list):
                 result = self.normalize_vec(val)
-                self.debug_print(f"[FUNC] normalize({self._format_float(val)}) = {self._format_float(result)}")
+                if self._dbg: self.debug_print(f"[FUNC] normalize({self._format_float(val)}) = {self._format_float(result)}")
                 return result
             return val
 
@@ -1751,7 +1780,7 @@ class HLSLInterpreter:
             if val is None:
                 return None
             result = self.length_vec(val)
-            self.debug_print(f"[FUNC] length({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] length({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # dot: 向量点积函数
@@ -1765,7 +1794,7 @@ class HLSLInterpreter:
             if a is None or b is None:
                 return None
             result = self.dot_product(a, b)
-            self.debug_print(f"[FUNC] dot({self._format_float(a)}, {self._format_float(b)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] dot({self._format_float(a)}, {self._format_float(b)}) = {self._format_float(result)}")
             return result
 
         # reflect: 反射向量函数
@@ -1779,7 +1808,7 @@ class HLSLInterpreter:
             if I is None or N is None:
                 return None
             result = self.reflect_vec(I, N)
-            self.debug_print(f"[FUNC] reflect({self._format_float(I)}, {self._format_float(N)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] reflect({self._format_float(I)}, {self._format_float(N)}) = {self._format_float(result)}")
             return result
 
         # max: 最大值函数 (支持标量和向量)
@@ -1799,7 +1828,7 @@ class HLSLInterpreter:
                 result = [max(a, y) for y in b]
             else:
                 result = max(a, b)
-            self.debug_print(f"[FUNC] max({self._format_float(a)}, {self._format_float(b)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] max({self._format_float(a)}, {self._format_float(b)}) = {self._format_float(result)}")
             return result
 
         # min: 最小值函数 (支持标量和向量)
@@ -1819,7 +1848,7 @@ class HLSLInterpreter:
                 result = [min(a, y) for y in b]
             else:
                 result = min(a, b)
-            self.debug_print(f"[FUNC] min({self._format_float(a)}, {self._format_float(b)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] min({self._format_float(a)}, {self._format_float(b)}) = {self._format_float(result)}")
             return result
 
         # rsqrt: 倒数平方根函数 1/sqrt(x)
@@ -1833,7 +1862,7 @@ class HLSLInterpreter:
                 result = [1.0 / math.sqrt(max(v, 1e-30)) if v > 0 else 0.0 for v in val]
             else:
                 result = 1.0 / math.sqrt(max(val, 1e-30)) if val > 0 else 0.0
-            self.debug_print(f"[FUNC] rsqrt({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] rsqrt({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # sqrt: 平方根函数
@@ -1847,7 +1876,7 @@ class HLSLInterpreter:
                 result = [math.sqrt(max(v, 0.0)) for v in val]
             else:
                 result = math.sqrt(max(val, 0.0))
-            self.debug_print(f"[FUNC] sqrt({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] sqrt({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # log2: 以2为底的对数
@@ -1861,7 +1890,7 @@ class HLSLInterpreter:
                 result = [math.log2(max(v, 1e-30)) for v in val]
             else:
                 result = math.log2(max(val, 1e-30)) if val > 0 else -1e30
-            self.debug_print(f"[FUNC] log2({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] log2({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # exp2: 2的幂次方
@@ -1875,7 +1904,7 @@ class HLSLInterpreter:
                 result = [self._safe_pow(2.0, v) for v in val]
             else:
                 result = self._safe_pow(2.0, val)
-            self.debug_print(f"[FUNC] exp2({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] exp2({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # rcp: 倒数 (1/x)。D3D 的 rcp 是近似指令，但硬件误差 << 容差；按精确
@@ -1899,7 +1928,7 @@ class HLSLInterpreter:
                 return self._f32(1.0 / x)
 
             result = [_rcp1(v) for v in val] if isinstance(val, list) else _rcp1(val)
-            self.debug_print(f"[FUNC] rcp({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] rcp({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # floor/ceil/round/trunc/frac: 取整与小数部分函数
@@ -1934,7 +1963,7 @@ class HLSLInterpreter:
             else:
                 result = float(op(val))
             result = self._f32(result)
-            self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # clamp: 限制范围函数
@@ -2011,7 +2040,7 @@ class HLSLInterpreter:
             else:
                 result = a * b + c
             result = self._f32(result)
-            self.debug_print(f"[FUNC] mad(...) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] mad(...) = {self._format_float(result)}")
             return result
 
         # int2/int3/int4: 整数向量构造
@@ -2023,7 +2052,7 @@ class HLSLInterpreter:
                     result.extend(int(v) for v in val)
                 elif val is not None:
                     result.append(int(val))
-            self.debug_print(f"[FUNC] {func_name}(...) = {result}")
+            if self._dbg: self.debug_print(f"[FUNC] {func_name}(...) = {result}")
             return result
 
         # pow: 幂函数
@@ -2045,7 +2074,7 @@ class HLSLInterpreter:
                 result = [self._safe_pow(_c(base, i), _c(exp, i)) for i in range(n)]
             else:
                 result = self._safe_pow(base, exp)
-            self.debug_print(f"[FUNC] pow({self._format_float(base)}, {self._format_float(exp)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] pow({self._format_float(base)}, {self._format_float(exp)}) = {self._format_float(result)}")
             return result
 
         # abs: 绝对值函数
@@ -2061,7 +2090,7 @@ class HLSLInterpreter:
                 result = [abs(v) for v in val]
             else:
                 result = abs(val)
-            self.debug_print(f"[FUNC] abs({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] abs({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # asint/asuint/asfloat: bit-pattern reinterpretation (no value conversion).
@@ -2107,7 +2136,7 @@ class HLSLInterpreter:
                         result = -raw if int_negate else raw
                         if func_name == 'asuint':
                             result &= 0xFFFFFFFF
-                    self.debug_print(f"[FUNC] {func_name}(cbuffer raw) = {result}")
+                    if self._dbg: self.debug_print(f"[FUNC] {func_name}(cbuffer raw) = {result}")
                     return result
             val = self.evaluate_syntax_tree(arg0, local_vars)
             if val is None:
@@ -2136,7 +2165,7 @@ class HLSLInterpreter:
                     result = -result
                     if func_name == 'asuint':
                         result &= 0xFFFFFFFF
-            self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # f16tof32 / f32tof16: half-float (un)packing. 3Dmigoto packs two halfs
@@ -2167,7 +2196,7 @@ class HLSLInterpreter:
                     return 0.0 if func_name == 'f16tof32' else 0
             result = [_conv(v) for v in val] if isinstance(val, list) else _conv(val)
             result = self._f32(result) if func_name == 'f16tof32' else result
-            self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] {func_name}({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # sin: 正弦函数
@@ -2183,7 +2212,7 @@ class HLSLInterpreter:
                 result = [math.sin(v) for v in val]
             else:
                 result = math.sin(val)
-            self.debug_print(f"[FUNC] sin({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] sin({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # cos: 余弦函数
@@ -2199,7 +2228,7 @@ class HLSLInterpreter:
                 result = [math.cos(v) for v in val]
             else:
                 result = math.cos(val)
-            self.debug_print(f"[FUNC] cos({self._format_float(val)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] cos({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
         # mul: 矩阵乘法函数
@@ -2215,11 +2244,11 @@ class HLSLInterpreter:
             if isinstance(left, list) and isinstance(right, list):
                 if len(left) == 4 and len(right) == 4:
                     result = self.mul_matrix_vector(right, left)
-                    self.debug_print(f"[FUNC] mul(\nleft={self._format_value(left)},\nright={self._format_value(right)}) =\n{self._format_value(result)}")
+                    if self._dbg: self.debug_print(f"[FUNC] mul(\nleft={self._format_value(left)},\nright={self._format_value(right)}) =\n{self._format_value(result)}")
                     return result
                 elif len(left) == 3 and len(right) == 3:
                     result = self.mul_matrix_vector(right, left)
-                    self.debug_print(f"[FUNC] mul(\nleft={self._format_value(left)},\nright={self._format_value(right)}) =\n{self._format_value(result)}")
+                    if self._dbg: self.debug_print(f"[FUNC] mul(\nleft={self._format_value(left)},\nright={self._format_value(right)}) =\n{self._format_value(result)}")
                     return result
             return None
 
@@ -2234,7 +2263,7 @@ class HLSLInterpreter:
                     result.extend(val)
                 else:
                     result.append(val)
-            self.debug_print(f"[FUNC] {func_name}(args={self._format_float(args)}) = {self._format_float(result)}")
+            if self._dbg: self.debug_print(f"[FUNC] {func_name}(args={self._format_float(args)}) = {self._format_float(result)}")
             return result
 
         # Texture.Sample: 纹理采样函数
@@ -2266,7 +2295,7 @@ class HLSLInterpreter:
                             sampler = self._resolve_sampler(sampler_name, reg_id)
                             ddx_uv, ddy_uv = self._compute_uv_derivatives(coords_node, local_vars)
                             result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=texture_name, array_slice=array_slice)
-                            self.debug_print(f"[FUNC] {texture_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
+                            if self._dbg: self.debug_print(f"[FUNC] {texture_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                             return result
             return None
 
@@ -2315,7 +2344,7 @@ class HLSLInterpreter:
                             return result
                         ddx_uv, ddy_uv = self._compute_uv_derivatives(args[1], local_vars)
                         result = self._texture_exec.sample(u, v, w, texture_desc, sampler, ddx_uv, ddy_uv, name=obj_name, array_slice=array_slice)
-                        self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
+                        if self._dbg: self.debug_print(f"[METHOD] {obj_name}.Sample({sampler_name}, ({u:.4f}, {v:.4f})) = {self._format_float(result)}")
                         return result
             return None
 
@@ -2419,7 +2448,7 @@ class HLSLInterpreter:
                 idx = location[0] if isinstance(location, list) else location
                 idx = self._load_coord_to_int(idx)
                 result = self._typed_buffer_load(self.typed_buffers[obj_name], idx)
-                self.debug_print(f"[METHOD] {obj_name}.Load({idx}) = {self._format_float(result)}")
+                if self._dbg: self.debug_print(f"[METHOD] {obj_name}.Load({idx}) = {self._format_float(result)}")
                 return result
             if not isinstance(location, list):
                 location = [location]
@@ -2640,6 +2669,83 @@ class HLSLInterpreter:
         return result
 
     _SWIZZLE_MAP = {'x': 0, 'y': 1, 'z': 2, 'w': 3}
+
+    _SWZ_IDX = {'x': 0, 'y': 1, 'z': 2, 'w': 3, 'r': 0, 'g': 1, 'b': 2, 'a': 3}
+
+    def _build_value_accessor(self, name: str):
+        """Build a fast accessor for a value-node name, or False when the name
+        needs the full get_value path. The accessor returns (hit, value); a
+        miss (base var absent / shape mismatch) falls back to get_value."""
+        name = name.strip()
+        # Numeric literal → constant (rounding matches get_value's _f32 path).
+        try:
+            const = self._f32(float(name))
+            return lambda lv, _c=const: (True, _c)
+        except (ValueError, TypeError):
+            pass
+        if re.match(r'^[A-Za-z_]\w*$', name):
+            def _plain(lv, _n=name):
+                v = lv.get(_n, _MISS)
+                if v is _MISS:
+                    return (False, None)
+                return (True, v)
+            return _plain
+        m = re.match(r'^([A-Za-z_]\w*)\.([xyzwrgba]{1,4})$', name)
+        if m:
+            base = m.group(1)
+            idxs = tuple(self._SWZ_IDX[c] for c in m.group(2).lower())
+            single = len(idxs) == 1
+
+            def _swz(lv, _b=base, _i=idxs, _s=single):
+                v = lv.get(_b, _MISS)
+                if v is _MISS or not isinstance(v, list):
+                    return (False, None)
+                n = len(v)
+                if _s:
+                    i = _i[0]
+                    return (True, v[i]) if i < n else (False, None)
+                if _i[-1] < n and max(_i) < n:
+                    return (True, [v[i] for i in _i])
+                return (False, None)
+            return _swz
+        # Literal-indexed cbuffer reference (cb0[24].xyzw / MyField[3].x):
+        # constant for the whole draw — first resolution goes through
+        # get_value and is stored into _cb_static_cache by the caller (the
+        # value-node eval sees the _cbc marker); later hits serve COPIES
+        # (lists must not be shared: swizzle-assignment writes in place).
+        # NOTE: the closure captures only the cache dict, NOT self — a
+        # self-capturing closure stored on parser-cached nodes creates a
+        # reference cycle that delays __del__ past runtime file teardown
+        # and loses the final log flush (empty output.log).
+        m = re.match(r'^([A-Za-z_]\w*)\[(\d+)\](?:\.([xyzw]{1,4}))?$', name)
+        if m and m.group(1) in self._static_cb_bases():
+            def _cb(lv, _n=name, _cache=self._cb_static_cache):
+                v = _cache.get(_n, _MISS)
+                if v is _MISS:
+                    return (False, None)
+                if isinstance(v, list):
+                    return (True, list(v))
+                return (True, v)
+            _cb._cbc = True
+            return _cb
+        return False
+
+    def _static_cb_bases(self):
+        """Names that resolve to per-draw-constant cbuffer data (raw cbN
+        aliases and named cbuffer fields, excluding struct instances whose
+        member access needs locals for subscripts)."""
+        bases = self._static_cb_bases_cache
+        if bases is None:
+            bases = set()
+            for cb_def in self.cbuffers.values():
+                if not isinstance(cb_def, CbufferDefinition):
+                    continue
+                bases.add(f'cb{cb_def.register}')
+                for f in cb_def.fields:
+                    if getattr(f, 'field_type', '') != '__struct__':
+                        bases.add(f.name)
+            self._static_cb_bases_cache = bases
+        return bases
 
     def get_value(self, name: str, local_vars: Dict[str, Any]) -> Any:
         """
@@ -3011,7 +3117,35 @@ class HLSLInterpreter:
         if not stmt:
             return None
 
-        self.debug_print(f"\n[STMT] Executing: {stmt}")
+        dbg = self.debug and self._should_print and not self._in_derivative_eval
+        if dbg:
+            self.debug_print(f"\n[STMT] Executing: {stmt}")
+
+        # Fast dispatch: assignment statements classified once (first vertex)
+        # skip the whole special-case regex cascade on every later vertex.
+        # Only plain assignments are cached, so a cache hit can never shadow
+        # the GS-stream / if / while / intrinsic-statement handling below.
+        fast = self._stmt_fast.get(stmt)
+        if fast is not None:
+            kind = fast[0]
+            if kind == 1:      # var.swz = expr
+                value = self.evaluate_expression(fast[3], local_vars)
+                self._apply_swizzle_assign(fast[1], fast[2], value, local_vars)
+                if dbg:
+                    self.debug_print(f"[STMT] {stmt} => {fast[1]}.{fast[2]} = {self._format_float(value)}")
+                return None
+            if kind == 2:      # var = expr
+                value = self.evaluate_expression(fast[1], local_vars)
+                local_vars[fast[2]] = value
+                if dbg:
+                    self.debug_print(f"[STMT] {stmt} => {fast[2]} = {value}")
+                return None
+            if kind == 3:      # <type> var = expr
+                value = self.evaluate_expression(fast[1], local_vars)
+                local_vars[fast[2]] = value
+                if dbg:
+                    self.debug_print(f"[STMT] {stmt} => {fast[2]} = {self._format_value(value)}")
+                return None
 
         # Geometry-shader stream ops (only active during GS execution, when
         # self._gs_emit is set). `<stream>.Append(...)` emits the current output
@@ -3173,9 +3307,12 @@ class HLSLInterpreter:
         match = self.patterns['variable_declaration'].match(stmt)
         if match:
             var_name = match.group(2)
-            value = self.evaluate_expression(match.group(3), local_vars)
+            rhs = match.group(3)
+            self._stmt_fast[stmt] = (3, rhs, var_name)
+            value = self.evaluate_expression(rhs, local_vars)
             local_vars[var_name] = value
-            self.debug_print(f"[STMT] {stmt} => {var_name} = {self._format_value(value)}")
+            if dbg:
+                self.debug_print(f"[STMT] {stmt} => {var_name} = {self._format_value(value)}")
             return None
 
         # output字段赋值: output.Color = ...; 或 output.Color.r = ...;
@@ -3220,9 +3357,12 @@ class HLSLInterpreter:
             if match:
                 var_name = match.group(1)
                 swizzle = match.group(2)
-                value = self.evaluate_expression(match.group(3).rstrip(';').strip(), local_vars)
+                rhs = match.group(3).rstrip(';').strip()
+                self._stmt_fast[stmt] = (1, var_name, swizzle, rhs)
+                value = self.evaluate_expression(rhs, local_vars)
                 self._apply_swizzle_assign(var_name, swizzle, value, local_vars)
-                self.debug_print(f"[STMT] {stmt} => {var_name}.{swizzle} = {self._format_float(value)}")
+                if dbg:
+                    self.debug_print(f"[STMT] {stmt} => {var_name}.{swizzle} = {self._format_float(value)}")
                 return None
 
         # 一般赋值语句: var = ...;
@@ -3230,9 +3370,12 @@ class HLSLInterpreter:
             match = self.patterns['simple_assignment'].match(stmt)
             if match:
                 var_name = match.group(1)
-                value = self.evaluate_expression(match.group(2), local_vars)
+                rhs = match.group(2)
+                self._stmt_fast[stmt] = (2, rhs, var_name)
+                value = self.evaluate_expression(rhs, local_vars)
                 local_vars[var_name] = value
-                self.debug_print(f"[STMT] {stmt} => {var_name} = {value}")
+                if dbg:
+                    self.debug_print(f"[STMT] {stmt} => {var_name} = {value}")
                 return None
 
         self.debug_print(f"[STMT] {stmt} => (no assignment)")
@@ -3244,58 +3387,68 @@ class HLSLInterpreter:
         stmt: if语句字符串
         local_vars: 局部变量字典
         """
-        stmt = stmt.strip()
-        if not stmt.startswith('if'):
-            return
-
-        # 条件表达式: 用括号配对提取, 兼容条件内的嵌套括号(如 cmp() 预处理后的 -(...))
-        paren_start = stmt.find('(')
-        if paren_start < 0:
-            return
-        depth = 0
-        cond_end = None
-        for k in range(paren_start, len(stmt)):
-            if stmt[k] == '(':
-                depth += 1
-            elif stmt[k] == ')':
-                depth -= 1
-                if depth == 0:
-                    cond_end = k
-                    break
-        if cond_end is None:
-            return
-        condition_expr = stmt[paren_start + 1:cond_end].strip()
-        rest = stmt[cond_end + 1:].strip()
-
-        # then 分支与可选的 else 分支: then 用大括号配对切出, 其后剩余部分作为 else 候选
-        if rest.startswith('{'):
+        parts = self._if_parts_cache.get(stmt)
+        if parts is None:
+            s = stmt.strip()
+            if not s.startswith('if'):
+                self._if_parts_cache[stmt] = ()
+                return
+            # 条件表达式: 用括号配对提取, 兼容条件内的嵌套括号(如 cmp() 预处理后的 -(...))
+            paren_start = s.find('(')
+            if paren_start < 0:
+                self._if_parts_cache[stmt] = ()
+                return
             depth = 0
-            tb_end = None
-            for k in range(len(rest)):
-                if rest[k] == '{':
+            cond_end = None
+            for k in range(paren_start, len(s)):
+                if s[k] == '(':
                     depth += 1
-                elif rest[k] == '}':
+                elif s[k] == ')':
                     depth -= 1
                     if depth == 0:
-                        tb_end = k
+                        cond_end = k
                         break
-            if tb_end is None:
-                then_branch = rest
-                after = ''
+            if cond_end is None:
+                self._if_parts_cache[stmt] = ()
+                return
+            condition_expr = s[paren_start + 1:cond_end].strip()
+            rest = s[cond_end + 1:].strip()
+
+            # then 分支与可选的 else 分支: then 用大括号配对切出, 其后剩余部分作为 else 候选
+            if rest.startswith('{'):
+                depth = 0
+                tb_end = None
+                for k in range(len(rest)):
+                    if rest[k] == '{':
+                        depth += 1
+                    elif rest[k] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            tb_end = k
+                            break
+                if tb_end is None:
+                    then_branch = rest
+                    after = ''
+                else:
+                    then_branch = rest[:tb_end + 1]
+                    after = rest[tb_end + 1:].strip()
             else:
-                then_branch = rest[:tb_end + 1]
-                after = rest[tb_end + 1:].strip()
-        else:
-            else_pos = self.find_else_branch(rest)
-            if else_pos >= 0:
-                then_branch = rest[:else_pos].strip()
-                after = rest[else_pos:].strip()
-            else:
-                then_branch = rest
-                after = ''
+                else_pos = self.find_else_branch(rest)
+                if else_pos >= 0:
+                    then_branch = rest[:else_pos].strip()
+                    after = rest[else_pos:].strip()
+                else:
+                    then_branch = rest
+                    after = ''
+            parts = (condition_expr, then_branch, after)
+            self._if_parts_cache[stmt] = parts
+        elif parts == ():
+            return
+        condition_expr, then_branch, after = parts
 
         cond_value = self.evaluate_expression(condition_expr, local_vars)
-        self.debug_print(f"[IF] condition: {condition_expr} => {cond_value}")
+        if self.debug and self._should_print and not self._in_derivative_eval:
+            self.debug_print(f"[IF] condition: {condition_expr} => {cond_value}")
 
         if cond_value:
             if then_branch.startswith('{'):
@@ -3318,25 +3471,33 @@ class HLSLInterpreter:
         continue arrive as _LoopBreak/_LoopContinue exceptions from any nesting
         depth. A hard iteration cap guards against a condition that never turns
         false under interpreted semantics."""
-        stmt = stmt.strip()
-        paren_start = stmt.find('(')
-        if paren_start < 0:
+        parts = self._while_parts_cache.get(stmt)
+        if parts is None:
+            s = stmt.strip()
+            paren_start = s.find('(')
+            if paren_start < 0:
+                self._while_parts_cache[stmt] = ()
+                return
+            depth = 0
+            cond_end = None
+            for k in range(paren_start, len(s)):
+                if s[k] == '(':
+                    depth += 1
+                elif s[k] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        cond_end = k
+                        break
+            if cond_end is None:
+                self._while_parts_cache[stmt] = ()
+                return
+            condition_expr = s[paren_start + 1:cond_end].strip()
+            body = s[cond_end + 1:].strip()
+            parts = (condition_expr, body, condition_expr == 'true')
+            self._while_parts_cache[stmt] = parts
+        elif parts == ():
             return
-        depth = 0
-        cond_end = None
-        for k in range(paren_start, len(stmt)):
-            if stmt[k] == '(':
-                depth += 1
-            elif stmt[k] == ')':
-                depth -= 1
-                if depth == 0:
-                    cond_end = k
-                    break
-        if cond_end is None:
-            return
-        condition_expr = stmt[paren_start + 1:cond_end].strip()
-        body = stmt[cond_end + 1:].strip()
-        always = condition_expr == 'true'
+        condition_expr, body, always = parts
 
         iters = 0
         while iters < self._MAX_LOOP_ITERS:
@@ -3389,15 +3550,15 @@ class HLSLInterpreter:
         block: 语句块字符串
         local_vars: 局部变量字典
         """
-        block = block.strip()
-        if not block.startswith('{') or not block.endswith('}'):
-            return
-
-        inner = block[1:-1].strip()
-        if not inner:
-            return
-
-        statements = self.GenerateStmts(inner)
+        statements = self._block_stmts_cache.get(block)
+        if statements is None:
+            b = block.strip()
+            if not b.startswith('{') or not b.endswith('}'):
+                self._block_stmts_cache[block] = ()
+                return
+            inner = b[1:-1].strip()
+            statements = tuple(self.GenerateStmts(inner)) if inner else ()
+            self._block_stmts_cache[block] = statements
         for stmt in statements:
             self.execute_statement(stmt, local_vars)
 
@@ -3582,6 +3743,7 @@ class HLSLInterpreter:
 
         self._eval_counter += 1
         self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._dbg = self.debug and self._should_print and not self._in_derivative_eval
 
         self.debug_print(f"******************************************************")
         self.debug_print(f"**************Begin {self._eval_counter}**************")
@@ -6319,6 +6481,7 @@ class HLSLInterpreter:
 
         self._eval_counter += 1
         self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._dbg = self.debug and self._should_print and not self._in_derivative_eval
         self._sb_index_burst = None
 
         self.debug_print(f"\n=== ROW {row_index} (void main) ===")
@@ -6585,6 +6748,7 @@ class HLSLInterpreter:
                 else self._default_value_for_type(param['type']))
         self._eval_counter += 1
         self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._dbg = self.debug and self._should_print and not self._in_derivative_eval
         self._sb_index_burst = None
         cache_key = f'void_{main_func}_{id(code)}'
         if cache_key in self._parsed_func_cache:
@@ -6797,6 +6961,7 @@ class HLSLInterpreter:
                 else self._default_value_for_type(param['type']))
         self._eval_counter += 1
         self._should_print = ((self._eval_counter - 1) % self.print_sequence == 0)
+        self._dbg = self.debug and self._should_print and not self._in_derivative_eval
         self._sb_index_burst = None
         statements = self._collect_function_statements(main_func)
         for stmt in statements:

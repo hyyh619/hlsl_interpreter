@@ -68,6 +68,13 @@ def print_and_compare_results(interpreter, results, output_struct_name, float_to
     interpreter.log_output(f"Total execution time:               {total_time:.4f}s")
 
 
+# Interpreters created for the current run — flushed explicitly at pipeline
+# end. Relying on __del__ is unsafe: caches/closures can keep an interpreter
+# in a reference cycle until Python's shutdown, after the runtime has already
+# torn the log file down (the final flush then fails and the log is empty).
+_live_interpreters = []
+
+
 def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log_file_path: str = None, primitive_topology: int = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
                     texture_exec=None, texture_desc_list=None, sampler_list=None) -> HLSLInterpreter:
     """Create an HLSLInterpreter from config dict."""
@@ -75,7 +82,7 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
     if shader_stage != d3d.SHADER_STAGE_VS and shader_stage != d3d.SHADER_STAGE_CS:
         config_log_file_mode = 'a'
 
-    return HLSLInterpreter(
+    interp = HLSLInterpreter(
         log_to_file=config.get('log_to_file', True),
         log_file_path=log_file_path or config.get('log_file_path', 'hlsl_interpreter.log'),
         log_file_mode=config_log_file_mode,
@@ -93,6 +100,8 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
         f32_emulation=(config.get('float32_emulation', False)
                        and shader_stage == d3d.SHADER_STAGE_VS),
     )
+    _live_interpreters.append(interp)
+    return interp
 
 
 # 3Dmigoto dumps shader-resource textures as
@@ -908,6 +917,13 @@ def _run_zip_workflow(config: dict, data_path: str, config_path: str):
 
         _execute_pipeline(config, config_path, data_folder)
     finally:
+        # Deterministic final log flush — see _live_interpreters above.
+        for _it in _live_interpreters:
+            try:
+                _it._flush_log_cache()
+            except Exception:
+                pass
+        _live_interpreters.clear()
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 

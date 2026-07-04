@@ -205,11 +205,18 @@ class SyntaxTreeParser:
     支持: 类型转换、括号表达式、二元运算符、函数调用、变量引用
     """
     def __init__(self):
-        pass
+        # Memoized trees: shader statements are a small fixed set re-evaluated
+        # once per vertex — re-parsing dominated the hot path (162k parses for
+        # a 3000-vertex OldWorld slice). Trees are read-only during evaluation.
+        self._parse_cache = {}
 
     def parse(self, expr: str) -> SyntaxTreeNode:
         expr = expr.strip()
-        return self._parse_expression(expr)
+        tree = self._parse_cache.get(expr)
+        if tree is None:
+            tree = self._parse_expression(expr)
+            self._parse_cache[expr] = tree
+        return tree
 
     def _find_top_level_operator(self, expr: str) -> Optional[Tuple[int, str]]:
         return _find_top_level_operator_cached(expr)

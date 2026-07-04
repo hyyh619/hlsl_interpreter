@@ -3300,8 +3300,11 @@ Notice:
 
 **结果**：2 案晋级（回归表 **144 案全过零回归**），Dump 剩 29 案；3207/9493 因风力循环开销并发下超时（独跑完成）归入慢案。**Denormal 三入口家族收官**（步 173 Load 坐标 + 本步 struct 成员、int 强转）：trace 见 `(uint)x=0` 且"循环不跑/索引恒 0"→ 先查原始位。
 
-# 175
+# 175 优化性能
 ## Prompts
+1. 针对OldWorld_event1034/2767（203,328 顶点，纯 Python >300s）； 新增慢案 sekiro2_event3207/9493请优化执行性能
+2. 语句级预编译——语法树已缓存，但赋值目标解析、swizzle 字符串处理仍每次重做， 可预解析为闭包；
+3. 确认 max_workers 顶点级并行在 vs_only 路径吃满；
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3312,8 +3315,11 @@ Notice:
 
 ## Claude Code Session
 
-# 176
+# 176 性能优化：语句级预编译
 ## Prompts
+1. 针对OldWorld_event1034/2767（203,328 顶点，纯 Python >300s）； 新增慢案 sekiro2_event3207/9493请优化执行性能
+2. 语句级预编译——语法树已缓存，但赋值目标解析、swizzle 字符串处理仍每次重做， 可预解析为闭包；
+3. 确认 max_workers 顶点级并行在 vs_only 路径吃满；
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3323,6 +3329,18 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**六项零语义优化（3.9×/6.5×），两个 203k 超时案 203328/203328 全过并晋级，回归 144/144→146 案。** 详见 `Sessions/hlsl-interpreter-step176-performance-statement-precompilation.md`。
+
+**画像揭示的真相**："语法树已缓存"的旧认知有误——`SyntaxTreeParser.parse` **完全无缓存**（3000 顶点切片 16.2 万次重解析）；debug f-string 即使不打印也在构建；块/if/while 每次调用（循环体每迭代！）重做 GenerateStmts/括号配对。
+
+**六项优化**：① parse 记忆化（`_parse_cache`）；② value 节点访问器缓存（`_ev` 挂节点：字面量→常量、`r0`/`r0.xyz`→预解析下标闭包、字面下标 cbuffer→每 draw 静态值+副本语义，miss 回退 get_value）；③ 语句级快派发（`_stmt_fast`：swizzle/简单/声明三类赋值首顶点分类一次，跳过特例正则级联）；④ 块/if/while 结构缓存；⑤ `self._dbg` 快标志 + 31 处单行 debug_print 守卫；⑥ 管线尾部确定性日志 flush。
+
+**优化引出的隐蔽回归（已修）**：`_cb` 闭包捕获 self 挂到解析器缓存节点上 → 引用循环 → 解释器析构延迟到进程关停期、文件已被回收 → 小案日志整体丢失（首轮回归 143/144，witcher22420 日志 0 字节）。修复：闭包只捕获缓存字典（求值侧回填）+ render.py 登记全部解释器在 finally 里显式 flush + `__del__` 兜底。**教训：捕获 self 的闭包挂上长生命周期缓存会改变析构时机，依赖 `__del__` 做 I/O 收尾必炸。**
+
+**max_workers 核查（任务 3）**：线程池只存在于 legacy struct 路径；当前 `executeVS_with_params` 是单线程循环。纯 Python CPU 密集下 GIL 使线程并行无效；真并行需进程池分块但解释器状态不可 pickle，收益不及已有单线程优化，暂不实施（结论写入 session 文档）。
+
+**结果**：OldWorld 切片 21.2s→5.4s（3.9×）、sekiro 风力案→3.3s（~6.5×）；**OldWorld_event1034/2767 全量 203328/203328 双双 PASS**（~7 分钟/案）晋级回归表（**146 案**）；sekiro2_3207/9493 一分钟级完成（44341/45576 维持精度墙定性）；回归 144/144 零回归、输出逐位一致。Dump 剩 **27 案**，**超时类清零**。
 
 # 177
 ## Prompts
