@@ -780,13 +780,51 @@ class Texture:
         'R16G16B16A16_FLOAT': ('float16', 'RGBA'),
         'R16G16B16A16_UNORM': ('unorm16', 'RGBA'),
         'R16G16_FLOAT': ('float16', 'RG'),
+        'R16G16_UNORM': ('unorm16', 'RG'),
         'R16_FLOAT': ('float16', 'R'),
+        'R16_UNORM': ('unorm16', 'R'),
         'R32G32B32A32_FLOAT': ('float32', 'RGBA'),
         'R32G32B32_FLOAT': ('float32', 'RGB'),
         'R32G32_FLOAT': ('float32', 'RG'),
         'R32_FLOAT': ('float32', 'R'),
     }
     _COMP_SIZE = {'unorm8': 1, 'snorm8': 1, 'float16': 2, 'unorm16': 2, 'float32': 4}
+
+    @staticmethod
+    def _decode_r11g11b10(data: bytes, width: int,
+                          height: int) -> Optional[List[List[List[float]]]]:
+        """R11G11B10_FLOAT: one uint32 per texel — R = bits 0..10, G = bits
+        11..21 (float11: 5-bit exp, 6-bit mantissa), B = bits 22..31
+        (float10: 5-bit exp, 5-bit mantissa). No sign bits."""
+        if len(data) < width * height * 4:
+            return None
+
+        def _small_float(bits: int, mant_bits: int) -> float:
+            exp = (bits >> mant_bits) & 0x1F
+            mant = bits & ((1 << mant_bits) - 1)
+            if exp == 0:
+                if mant == 0:
+                    return 0.0
+                return (mant / (1 << mant_bits)) * 2.0 ** -14
+            if exp == 31:
+                return math.inf if mant == 0 else math.nan
+            return (1.0 + mant / (1 << mant_bits)) * 2.0 ** (exp - 15)
+
+        grid = []
+        off = 0
+        for _ in range(height):
+            row = []
+            for _ in range(width):
+                packed = struct.unpack_from('<I', data, off)[0]
+                off += 4
+                row.append([
+                    _small_float(packed & 0x7FF, 6),
+                    _small_float((packed >> 11) & 0x7FF, 6),
+                    _small_float((packed >> 22) & 0x3FF, 5),
+                    1.0,
+                ])
+            grid.append(row)
+        return grid
 
     def _decode_raw_texels(self, data: bytes, fmt: str, width: int,
                            height: int) -> Optional[List[List[List[float]]]]:
@@ -799,6 +837,8 @@ class Texture:
             name = name[len('DXGI_FORMAT_'):]
         if name.startswith('BC7_UNORM'):
             return decode_bc7_image(data, width, height, 0)
+        if name == 'R11G11B10_FLOAT':
+            return self._decode_r11g11b10(data, width, height)
         spec = self._FMT_SPECS.get(name)
         if spec is None and name.endswith('_TYPELESS'):
             spec = self._FMT_SPECS.get(name[:-len('_TYPELESS')] + '_FLOAT') \
@@ -1026,6 +1066,75 @@ class Texture:
     def _sample_mip_point(self, mip_level: List[List[List[float]]], u: float, v: float) -> List[float]:
         return self._sample_nearest(mip_level, u, v)
 
+    def sample_cmp_lz(self, u: float, v: float, ref: float,
+                      texture_desc: TextureDesc, sampler: Sampler,
+                      array_slice: int = 0) -> float:
+        """SampleCmpLevelZero: hardware PCF on mip 0. Each of the 4 bilinear
+        neighbours' R channel is compared against `ref` with the sampler's
+        ComparisonFunc (1 on pass), and the 0/1 results are bilinearly
+        blended — NOT the texel values (shadow-map depth compare)."""
+        mip_levels = self._get_mip_levels(texture_desc, array_slice)
+        if not mip_levels:
+            return 1.0
+        level = mip_levels[0]
+        h = len(level)
+        w = len(level[0])
+        if not math.isfinite(u):
+            u = 0.0
+        if not math.isfinite(v):
+            v = 0.0
+        tu = sampler._address_mode_to_func(sampler.AddressU)(u)
+        tv = sampler._address_mode_to_func(sampler.AddressV)(v)
+
+        cmpf = sampler.ComparisonFunc
+
+        def _passes(texel: float) -> float:
+            if cmpf == D3D11_COMPARISON_LESS:
+                ok = ref < texel
+            elif cmpf == D3D11_COMPARISON_LESS_EQUAL:
+                ok = ref <= texel
+            elif cmpf == D3D11_COMPARISON_GREATER:
+                ok = ref > texel
+            elif cmpf == D3D11_COMPARISON_GREATER_EQUAL:
+                ok = ref >= texel
+            elif cmpf == D3D11_COMPARISON_EQUAL:
+                ok = ref == texel
+            elif cmpf == D3D11_COMPARISON_NOT_EQUAL:
+                ok = ref != texel
+            elif cmpf == D3D11_COMPARISON_ALWAYS:
+                ok = True
+            else:  # NEVER
+                ok = False
+            return 1.0 if ok else 0.0
+
+        min_filter, _, _ = sampler._get_filter_mode()
+        if min_filter == FILTER_POINT:
+            x = max(0, min(w - 1, int(tu * w)))
+            y = max(0, min(h - 1, int(tv * h)))
+            return _passes(level[y][x][0])
+
+        fu = tu * w - 0.5
+        fv = tv * h - 0.5
+        u0 = int(math.floor(fu))
+        v0 = int(math.floor(fv))
+        s = fu - u0
+        t = fv - v0
+
+        def _nb(i, n, mode):
+            if mode == D3D11_TEXTURE_ADDRESS_WRAP:
+                return i % n
+            return max(0, min(n - 1, i))
+        u1 = _nb(u0 + 1, w, sampler.AddressU)
+        v1 = _nb(v0 + 1, h, sampler.AddressV)
+        u0 = _nb(u0, w, sampler.AddressU)
+        v0 = _nb(v0, h, sampler.AddressV)
+        p00 = _passes(level[v0][u0][0])
+        p10 = _passes(level[v0][u1][0])
+        p01 = _passes(level[v1][u0][0])
+        p11 = _passes(level[v1][u1][0])
+        return (p00 * (1 - s) * (1 - t) + p10 * s * (1 - t)
+                + p01 * (1 - s) * t + p11 * s * t)
+
     def load(self, x: int, y: int, mip: int, texture_desc: TextureDesc) -> List[float]:
         """HLSL Texture2D.Load: fetch the texel at integer coords (x, y) on mip
         level `mip`, with NO filtering or address wrapping. Out-of-bounds reads
@@ -1184,9 +1293,10 @@ class Texture:
         # blend (s == 0 collapses to a single level anyway when LOD is integral).
         color0 = _within(level0)
         color1 = _within(level1)
-        result = [color0[i] * (1 - s) + color1[i] * s for i in range(4)]
-
-        out = [max(0.0, min(1.0, c)) for c in result]
+        # No [0,1] clamp: the GPU returns the stored value as-is — a signed
+        # R16G16_FLOAT detail normal (x = -0.083) or an HDR R11G11B10 probe
+        # (> 1) must survive. UNORM/SNORM decodes are range-limited already.
+        out = [color0[i] * (1 - s) + color1[i] * s for i in range(4)]
         if TRACE.texture_lod:
             TRACE.texture_sample(u, v, lod, ddx_uv, ddy_uv, out, name)
         return out

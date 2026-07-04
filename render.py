@@ -829,7 +829,12 @@ def _load_stage_textures(data_folder, stage, log=None):
             ArraySize=array_size,
             DataPath=mip_paths[0],
             MipDataPaths=mip_paths,
-            FormatStr=(row.get('Format') or '').strip(),
+            # Decode by the SRV's VIEW format when present — the resource
+            # format may be TYPELESS (witcher CSM: R16_TYPELESS resource,
+            # R16_UNORM view; guessing FLOAT read shadow depths as negative
+            # half-float denormals).
+            FormatStr=((row.get('ViewFormat') or '').strip()
+                       or (row.get('Format') or '').strip()),
             ArrayMipDataPaths=array_slices or None,
             Depth=_as_int(row.get('Depth'), 1) or 1,
             Kind=(row.get('Type') or '').strip(),

@@ -3241,8 +3241,10 @@ Notice:
 
 **结果**：三案全过晋级；**⑤的修复带动 witcher3_event22092 0/414→414/414 全过（同为 VS SampleLevel+ClampEdge），一并晋级**；witcher event21895 错误行 40868→40595 收敛。回归 **138/138 全 PASS 零回归**；Dump triage 逐案与步 168–171 基线持平（剩 35 案）。**教训：某数据分布下的"全过"可能是侥幸，必须换分布验证**（576 全过时 tile 索引仍全错）。
 
-# 173
+# 173 VS 纹理采样精确性	11	部分可收敛
 ## Prompts
+修复下列问题
+VS 纹理采样精确性	11	部分可收敛
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3252,6 +3254,25 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**类⑧（11 案）大扫除：十项通用基础设施缺陷一次修通，5 案 PASS、6 案大幅收敛，回归 142/142 零回归。** 详见 `Sessions/hlsl-interpreter-step173-vs-texture-sampling-family.md`。
+
+**方法**：9 个 witcher 案 shader 各不相同但共享基础设施；从 12 行的最小案（22229）trace 反照开刀，每个分歧追到基础设施层修通用缺陷。十项修复：
+
+hlsl_interpreter.py——
+① **while 循环完全未实现**（整块被当未知语句跳过：CSM 级联/灯光循环从未执行、阴影恒全亮）→ `execute_while_statement` + break/continue 异常穿透 + 迭代护栏；
+② **向量条件三元式不逐分量选择**（movc 语义，级联掩码 [−1,−1,−1,0] 被整体折叠）；
+③ **SampleCmpLevelZero/SampleCmp 未实现**（阴影 PCF）→ texture.py `sample_cmp_lz`（先逐邻域比较、后双线性混合比较结果）；
+④ **SamplerComparisonState 不被采样器绑定正则识别** → s9_s 回退默认 NEVER 采样器（恒 0 全阴影）；
+⑤ **GetDimensions（resinfo）未实现** → 0.5/0=inf 传染（event16834）；
+⑥ **Load 坐标 denormal 位模式**：3Dmigoto 把 int 1 写成 `1.40129846e-45`，按值转 int 得 0 → `_load_coord_to_int` 对 denormal 范围按位重解释。
+
+texture.py / render.py——
+⑦ **sample() 末尾 [0,1] clamp 摧毁带符号/HDR 纹理值**（多年"细节法线 R≈0"谜团真相：R16G16_FLOAT 的 x=−0.083 被夹成 0；HDR R11G11B10 探针被削顶）→ 删除；
+⑧ **按资源格式而非 SRV ViewFormat 解码**（R16_TYPELESS→猜 FLOAT，CSM 深度 0.508 读成 −3.2e-5 → PCF 全败）→ ViewFormat 优先；
+⑨ 补 R16_UNORM/R16G16_UNORM 解码；⑩ 补 R11G11B10_FLOAT（float11/float10）解码。
+
+**结果**：witcher 16215（0/30→**PASS**）、16834（0/30→**PASS**，GetDimensions+denormal 坐标）、22201（0/18→**PASS**）、Octopath3601（0/96→**PASS** 搭车）4 案晋级（含步 172 的 22092，类⑧已灭 5/11）；回归表 **142 案全过零回归**，Dump 其余各类逐案持平。收敛未过线：22229 10/12（余 2 行 diff=0.005075 恰超容差 1.5%，灯光解析衰减精度临界，不放宽容差）、22260 54/108、21719 368/1728、21895 1057/6360、21979/22049 132/840、ES2991 1464/1536（golden TEXCOORD1 与我们完全一致 → 几何/SB 全对，仅剩宽度曲线图集的单纹素差异）。Dump 剩 31 案。
 
 # 174
 ## Prompts

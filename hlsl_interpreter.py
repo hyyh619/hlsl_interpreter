@@ -303,6 +303,15 @@ class VertexPool:
         return len(self.vertices)
 
 
+class _LoopBreak(Exception):
+    """`break` inside a while loop — unwinds through nested if/blocks to the
+    innermost executing loop."""
+
+
+class _LoopContinue(Exception):
+    """`continue` inside a while loop."""
+
+
 class HLSLInterpreter:
     """
     HLSL解释器 - 解析和执行HLSL着色器代码
@@ -438,7 +447,9 @@ class HLSLInterpreter:
                 r'(Texture(?:1D|2D|3D|Cube)(?:Array)?(?:MS)?)(?:<[^>]+>)?\s+(\w+)\s*:\s*register\(t(\d+)\)\s*;?'),
 
             # parse_sampler_binding: 采样器绑定，如 "SamplerState LinearSampler : register(s0);"
-            'sampler_binding': re.compile(r'SamplerState\s+(\w+)(?:_s)?\s*:\s*register\(s(\d+)\)\s*;?'),
+            # SamplerComparisonState (shadow PCF, e.g. witcher s9_s) declares
+            # the same s-register binding as a plain SamplerState.
+            'sampler_binding': re.compile(r'Sampler(?:Comparison)?State\s+(\w+)(?:_s)?\s*:\s*register\(s(\d+)\)\s*;?'),
 
             # multi-variable declaration without initializer: "float4 r0,r1,r2;"
             'multi_var_decl': re.compile(rf'^({type_pattern})\s+([\w][\w\s,]*)\s*;?$'),
@@ -1618,6 +1629,24 @@ class HLSLInterpreter:
 
         elif node.node_type == 'ternary':
             cond = self.evaluate_syntax_tree(node.left, local_vars)
+            # HLSL movc: a VECTOR condition selects PER COMPONENT — e.g.
+            # r5 = [-1,-1,-1,0] picks the true-branch value for xyz and the
+            # false-branch value for w. Collapsing it through _to_bool took
+            # one branch for all lanes (witcher CSM cascade masks broke).
+            if isinstance(cond, list):
+                tv = self.evaluate_syntax_tree(node.right, local_vars)
+                fv = self.evaluate_syntax_tree(node.third_child, local_vars)
+
+                def _lane(src, i):
+                    if isinstance(src, list):
+                        if i < len(src):
+                            return src[i]
+                        return src[-1] if src else 0.0
+                    return src
+                return [
+                    _lane(tv, i) if self._to_bool(c) else _lane(fv, i)
+                    for i, c in enumerate(cond)
+                ]
             if self._to_bool(cond):
                 return self.evaluate_syntax_tree(node.right, local_vars)
             else:
@@ -2330,6 +2359,42 @@ class HLSLInterpreter:
                         return result
             return None
 
+        # SampleCmp / SampleCmpLevelZero: shadow-map PCF compare sample.
+        # Format: tex.SampleCmpLevelZero(cmp_sampler, coords, ref). For a
+        # Texture2DArray the trailing coord component is the array slice.
+        # Returns the bilinear blend of per-neighbour compare results.
+        if method_name in ('SampleCmpLevelZero', 'SampleCmp') and len(args) >= 3:
+            if obj_node is None:
+                return None
+            obj_name = obj_node.value if obj_node.node_type == 'value' else None
+            if obj_name is None:
+                return None
+            sampler_node = args[0]
+            sampler_name = (sampler_node.value
+                            if sampler_node is not None and sampler_node.node_type == 'value'
+                            else None)
+            coords = self.evaluate_syntax_tree(args[1], local_vars)
+            ref = self.evaluate_syntax_tree(args[2], local_vars)
+            if isinstance(ref, list):
+                ref = ref[0] if ref else 0.0
+            if coords and isinstance(coords, list) and len(coords) >= 2:
+                u, v = coords[0], coords[1]
+                binding = self._find_texture_binding(obj_name)
+                if binding and self._texture_exec and self._texture_desc_list:
+                    reg_id = binding.register_id
+                    if reg_id < len(self._texture_desc_list) and self._texture_desc_list[reg_id]:
+                        texture_desc = self._texture_desc_list[reg_id]
+                        sampler = self._resolve_sampler(sampler_name, reg_id)
+                        array_slice = self._array_slice_for(binding, coords)
+                        result = self._texture_exec.sample_cmp_lz(
+                            u, v, float(ref or 0.0), texture_desc, sampler,
+                            array_slice=array_slice)
+                        self.debug_print(
+                            f"[METHOD] {obj_name}.{method_name}({sampler_name}, "
+                            f"({u:.4f}, {v:.4f}), ref={ref}) = {result:.4f}")
+                        return result
+            return None
+
         # Texture2D.Load: integer texel fetch, no filtering.
         # Format: t1.Load(int3(x, y, mip)).  location.xy = texel coords,
         # location.z = mip level.
@@ -2343,15 +2408,15 @@ class HLSLInterpreter:
             # Typed buffer (Buffer<T>): Load(int index) -> element[index].
             if obj_name in self.typed_buffers:
                 idx = location[0] if isinstance(location, list) else location
-                idx = int(idx) if idx is not None else 0
+                idx = self._load_coord_to_int(idx)
                 result = self._typed_buffer_load(self.typed_buffers[obj_name], idx)
                 self.debug_print(f"[METHOD] {obj_name}.Load({idx}) = {self._format_float(result)}")
                 return result
             if not isinstance(location, list):
                 location = [location]
-            x = int(location[0]) if len(location) > 0 and location[0] is not None else 0
-            y = int(location[1]) if len(location) > 1 and location[1] is not None else 0
-            mip = int(location[2]) if len(location) > 2 and location[2] is not None else 0
+            x = self._load_coord_to_int(location[0]) if len(location) > 0 else 0
+            y = self._load_coord_to_int(location[1]) if len(location) > 1 else 0
+            mip = self._load_coord_to_int(location[2]) if len(location) > 2 else 0
             binding = self._find_texture_binding(obj_name)
             if binding and self._texture_exec and self._texture_desc_list:
                 reg_id = binding.register_id
@@ -2940,6 +3005,49 @@ class HLSLInterpreter:
             self.execute_if_statement(stmt, local_vars)
             return None
 
+        # while循环: 3Dmigoto 反编译大量输出 `while (true) { ... if (c) break; }`
+        # (灯光遍历/CSM 级联选择)。未实现时整块被当作未知语句跳过——阴影因子
+        # 恒为全亮。break/continue 以异常穿透任意嵌套的 if/块。
+        if re.match(r'while\s*\(', stmt):
+            self.execute_while_statement(stmt, local_vars)
+            return None
+        if stmt in ('break', 'break;'):
+            raise _LoopBreak()
+        if stmt in ('continue', 'continue;'):
+            raise _LoopContinue()
+
+        # GetDimensions (resinfo): statement-level method with OUT params —
+        # `t0.GetDimensions(0, fDest.x, fDest.y, fDest.z, fDest.w);`.
+        # Unimplemented it left fDest = 0 and 0.5/width divided by zero
+        # (witcher event16834 → inf positions). Values: per-mip width/height,
+        # then array-size/depth, then mip count — assigned to the out-args in
+        # order via the normal assignment machinery (swizzle-safe).
+        mdim = re.match(r'^(\w+)\s*\.\s*GetDimensions\s*\((.*)\)\s*;?$', stmt)
+        if mdim:
+            obj_name = mdim.group(1)
+            arg_list = [a.strip() for a in mdim.group(2).split(',') if a.strip()]
+            binding = self._find_texture_binding(obj_name)
+            if binding and self._texture_desc_list and len(arg_list) >= 2:
+                reg_id = binding.register_id
+                desc = (self._texture_desc_list[reg_id]
+                        if reg_id < len(self._texture_desc_list) else None)
+                if desc is not None:
+                    mip = 0
+                    try:
+                        mv = self.evaluate_expression(arg_list[0], local_vars)
+                        mip = int(mv[0] if isinstance(mv, list) else (mv or 0))
+                    except Exception:
+                        mip = 0
+                    w = max(1, int(desc.Width or 1) >> mip)
+                    h = max(1, int(desc.Height or 1) >> mip)
+                    third = max(int(getattr(desc, 'ArraySize', 1) or 1),
+                                int(getattr(desc, 'Depth', 1) or 1))
+                    nmips = int(getattr(desc, 'MipLevels', 1) or 1)
+                    vals = [float(w), float(h), float(third), float(nmips)]
+                    for target, val in zip(arg_list[1:], vals):
+                        self.execute_statement(f"{target} = {val!r}", local_vars)
+                    return None
+
         # 3Dmigoto emits raw-buffer loads as a bare DXBC instruction it "could not
         # decompile":  ld_raw[_indexable](raw_buffer)(...) DST, ADDR, tN.xxxx
         # Execute it as DST = bufferAtRegisterN.Load(ADDR). Pervasive in GPU
@@ -3173,6 +3281,56 @@ class HLSLInterpreter:
             elif else_branch:
                 # `else if (...)` 链: 作为语句递归处理
                 self.execute_statement(else_branch, local_vars)
+
+    _MAX_LOOP_ITERS = 65536
+
+    def execute_while_statement(self, stmt: str, local_vars: Dict[str, Any]):
+        """Execute `while (cond) { body }`. 3Dmigoto emits `while (true)` with
+        conditional breaks (light traversal, CSM cascade selection). break /
+        continue arrive as _LoopBreak/_LoopContinue exceptions from any nesting
+        depth. A hard iteration cap guards against a condition that never turns
+        false under interpreted semantics."""
+        stmt = stmt.strip()
+        paren_start = stmt.find('(')
+        if paren_start < 0:
+            return
+        depth = 0
+        cond_end = None
+        for k in range(paren_start, len(stmt)):
+            if stmt[k] == '(':
+                depth += 1
+            elif stmt[k] == ')':
+                depth -= 1
+                if depth == 0:
+                    cond_end = k
+                    break
+        if cond_end is None:
+            return
+        condition_expr = stmt[paren_start + 1:cond_end].strip()
+        body = stmt[cond_end + 1:].strip()
+        always = condition_expr == 'true'
+
+        iters = 0
+        while iters < self._MAX_LOOP_ITERS:
+            if not always:
+                cond_value = self.evaluate_expression(condition_expr, local_vars)
+                if not self._to_bool(cond_value):
+                    break
+            try:
+                if body.startswith('{'):
+                    self.execute_block(body, local_vars)
+                elif body:
+                    self.execute_statement(body, local_vars)
+                else:
+                    break
+            except _LoopBreak:
+                break
+            except _LoopContinue:
+                pass
+            iters += 1
+        if iters >= self._MAX_LOOP_ITERS:
+            self.log_output(
+                f"Warning: while loop hit iteration cap ({self._MAX_LOOP_ITERS})")
 
     def find_else_branch(self, stmt: str) -> int:
         """
@@ -4448,6 +4606,26 @@ class HLSLInterpreter:
             if binding.variable_name == sampler_name:
                 return binding
         return None
+
+    def _load_coord_to_int(self, v) -> int:
+        """Convert a Load coordinate/index to int. 3Dmigoto writes raw integer
+        register values as float literals — int 1 becomes the denormal
+        1.40129846e-45 (`float2(0,1.40129846e-45)`), which value-truncates to
+        0. A float in the denormal range is therefore reinterpreted by its
+        bit pattern; everything else is a genuine value (round toward zero)."""
+        if v is None:
+            return 0
+        if isinstance(v, int):
+            return v
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0
+        if math.isnan(f) or math.isinf(f):
+            return 0
+        if 0.0 < abs(f) < 1.1754943508222875e-38:
+            return self._bitcast_to_int(f, True)
+        return int(f)
 
     def _resolve_sampler(self, sampler_name: Optional[str], texture_reg_id: int):
         """解析纹理采样使用的 Sampler。
@@ -6140,19 +6318,24 @@ class HLSLInterpreter:
             if self._sb_index_burst is not None and self._sb_index_burst['token'] not in stmt_stripped:
                 self._sb_index_burst = None
 
-            if stmt_stripped.startswith('if'):
-                next_i = i + 1
-                while next_i < len(statements) and statements[next_i] is None:
-                    next_i += 1
-                if (next_i < len(statements) and statements[next_i] and
-                        statements[next_i].strip().startswith('else')):
-                    full_stmt = stmt + '\n' + statements[next_i]
-                    self.execute_if_statement(full_stmt, local_vars)
-                    statements[next_i] = None
+            try:
+                if stmt_stripped.startswith('if'):
+                    next_i = i + 1
+                    while next_i < len(statements) and statements[next_i] is None:
+                        next_i += 1
+                    if (next_i < len(statements) and statements[next_i] and
+                            statements[next_i].strip().startswith('else')):
+                        full_stmt = stmt + '\n' + statements[next_i]
+                        self.execute_if_statement(full_stmt, local_vars)
+                        statements[next_i] = None
+                    else:
+                        self.execute_if_statement(stmt_stripped, local_vars)
                 else:
-                    self.execute_if_statement(stmt_stripped, local_vars)
-            else:
-                self.execute_statement(stmt_stripped, local_vars)
+                    self.execute_statement(stmt_stripped, local_vars)
+            except (_LoopBreak, _LoopContinue):
+                # A stray break/continue outside any loop (decompiler artifact)
+                # must not abort the whole shader invocation.
+                self.debug_print("[WARN] break/continue outside a loop — ignored")
             i += 1
 
         # Collect output param values
