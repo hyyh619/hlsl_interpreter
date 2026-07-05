@@ -6211,7 +6211,17 @@ class HLSLInterpreter:
         if not disasm_text or '>>' not in code:
             return code
         shrs = re.findall(r'\b([iu])shr\b', disasm_text)
-        occ = [m.start() for m in re.finditer(r'>>', code)]
+        occ = []
+        for m in re.finditer(r'>>', code):
+            # Skip `>>` inside 3Dmigoto's ubfe/ibfe expansion lines
+            # (`... << (32-(A + B)); ... >> (32-C); } else ... >> D;`) —
+            # those come from a bitfield-extract instruction, not a shr,
+            # and would break the 1:1 pairing below.
+            ls = code.rfind('\n', 0, m.start()) + 1
+            le = code.find('\n', m.start())
+            if '<< (32-' in code[ls:le if le >= 0 else len(code)]:
+                continue
+            occ.append(m.start())
         if not shrs or len(occ) != len(shrs):
             return code
         out = code

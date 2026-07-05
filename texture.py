@@ -266,6 +266,87 @@ def _bc7_decode_block(block: bytes):
     return texels
 
 
+def _bc1_block_colors(data: bytes, off: int, always4: bool):
+    """The two RGB565 endpoints and derived palette of a BC1 color block.
+    `always4` (BC2/BC3 color blocks) forces 4-color mode regardless of
+    endpoint order."""
+    c0 = data[off] | (data[off + 1] << 8)
+    c1 = data[off + 2] | (data[off + 3] << 8)
+
+    def expand(c):
+        r = (c >> 11) & 31
+        g = (c >> 5) & 63
+        b = c & 31
+        return ((r << 3 | r >> 2) / 255.0,
+                (g << 2 | g >> 4) / 255.0,
+                (b << 3 | b >> 2) / 255.0)
+    r0, g0, b0 = expand(c0)
+    r1, g1, b1 = expand(c1)
+    pal = [(r0, g0, b0, 1.0), (r1, g1, b1, 1.0)]
+    if always4 or c0 > c1:
+        pal.append(((2*r0 + r1)/3, (2*g0 + g1)/3, (2*b0 + b1)/3, 1.0))
+        pal.append(((r0 + 2*r1)/3, (g0 + 2*g1)/3, (b0 + 2*b1)/3, 1.0))
+    else:
+        pal.append(((r0 + r1)/2, (g0 + g1)/2, (b0 + b1)/2, 1.0))
+        pal.append((0.0, 0.0, 0.0, 0.0))
+    return pal
+
+
+def _bc1_decode_block(data: bytes, off: int, always4: bool = False):
+    pal = _bc1_block_colors(data, off, always4)
+    bits = int.from_bytes(data[off + 4:off + 8], 'little')
+    return [list(pal[(bits >> (2*i)) & 3]) for i in range(16)]
+
+
+def _bc4_decode_channel(data: bytes, off: int):
+    """One BC4 (alpha) block → 16 floats."""
+    a0, a1 = data[off], data[off + 1]
+    f0, f1 = a0 / 255.0, a1 / 255.0
+    if a0 > a1:
+        pal = [f0, f1] + [((7 - i)*f0 + i*f1) / 7 for i in range(1, 7)]
+    else:
+        pal = [f0, f1] + [((5 - i)*f0 + i*f1) / 5 for i in range(1, 5)] + [0.0, 1.0]
+    bits = int.from_bytes(data[off + 2:off + 8], 'little')
+    return [pal[(bits >> (3*i)) & 7] for i in range(16)]
+
+
+def _decode_bc_image(data: bytes, width: int, height: int, kind: str):
+    """Decode a BC1/BC3/BC4/BC5 surface into a top-left RGBA float grid."""
+    bsize = 8 if kind in ('BC1', 'BC4') else 16
+    bw, bh = (width + 3) // 4, (height + 3) // 4
+    if bw * bh * bsize > len(data):
+        return None
+    pixels = [[[0.0, 0.0, 0.0, 1.0] for _ in range(width)] for _ in range(height)]
+    for by in range(bh):
+        for bx in range(bw):
+            off = (by * bw + bx) * bsize
+            if kind == 'BC1':
+                texels = _bc1_decode_block(data, off)
+            elif kind == 'BC3':
+                alpha = _bc4_decode_channel(data, off)
+                texels = _bc1_decode_block(data, off + 8, always4=True)
+                for i in range(16):
+                    texels[i][3] = alpha[i]
+            elif kind == 'BC4':
+                ch = _bc4_decode_channel(data, off)
+                texels = [[v, 0.0, 0.0, 1.0] for v in ch]
+            else:  # BC5: two BC4 channels (r, g)
+                rc = _bc4_decode_channel(data, off)
+                gc = _bc4_decode_channel(data, off + 8)
+                texels = [[rc[i], gc[i], 0.0, 1.0] for i in range(16)]
+            for ty in range(4):
+                y = by * 4 + ty
+                if y >= height:
+                    break
+                row = pixels[y]
+                for tx in range(4):
+                    x = bx * 4 + tx
+                    if x >= width:
+                        break
+                    row[x] = texels[ty * 4 + tx]
+    return pixels
+
+
 def decode_bc7_image(data: bytes, width: int, height: int, offset: int = 0):
     """Decode a BC7 image (one 2D surface) into a top-left-origin RGBA float
     grid. Returns None if `data` is too short."""
@@ -837,6 +918,12 @@ class Texture:
             name = name[len('DXGI_FORMAT_'):]
         if name.startswith('BC7_UNORM'):
             return decode_bc7_image(data, width, height, 0)
+        # BC1/BC3/BC4/BC5 (block compression). _SRGB variants decode to the
+        # same stored values (matching the previous BMP-fallback behaviour —
+        # golden comparisons are calibrated to sRGB-space values).
+        for bck in ('BC1', 'BC3', 'BC4', 'BC5'):
+            if name.startswith(bck + '_'):
+                return _decode_bc_image(data, width, height, bck)
         if name == 'R11G11B10_FLOAT':
             return self._decode_r11g11b10(data, width, height)
         spec = self._FMT_SPECS.get(name)
