@@ -65,6 +65,7 @@ class DXBCInterpreter:
         """
         self.cb = cbuffers
         self.res = resources or {}
+        self.icb = []             # dcl_immediateConstantBuffer rows
         self.ntemps = 0
         self.instrs = []          # list of (line_no, opcode, sat, [operand strs])
         self.log_trace = log_trace
@@ -74,6 +75,31 @@ class DXBCInterpreter:
 
     # ------------------------------------------------------------------ parse
     def _parse(self, text):
+        # immediate constant buffer: dcl_immediateConstantBuffer { {a,b,c,d}, ... }
+        mpos = text.find('dcl_immediateConstantBuffer')
+        if mpos >= 0:
+            depth = 0
+            start = end = -1
+            for i in range(mpos, len(text)):
+                if text[i] == '{':
+                    if depth == 0:
+                        start = i
+                    depth += 1
+                elif text[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if start >= 0 and end > start:
+                for row in re.findall(r'\{([^{}]*)\}', text[start + 1:end]):
+                    vals = []
+                    for tok in row.split(','):
+                        tok = tok.strip()
+                        try:
+                            vals.append(float(tok))
+                        except ValueError:
+                            vals.append(0.0)
+                    self.icb.append((vals + [0.0] * 4)[:4])
         for raw in text.splitlines():
             line = raw.strip()
             if not line:
@@ -156,6 +182,12 @@ class DXBCInterpreter:
             rows = self.cb.get(slot, [])
             if 0 <= idx < len(rows):
                 return list(rows[idx])
+            return [0.0, 0.0, 0.0, 0.0]
+        m = re.match(r'icb\[(.+)\]$', name)
+        if m:
+            idx = self._eval_index(m.group(1), regs, inp, out)
+            if 0 <= idx < len(self.icb):
+                return list(self.icb[idx])
             return [0.0, 0.0, 0.0, 0.0]
         if name.startswith('r'):
             return regs[int(name[1:])]
@@ -334,6 +366,10 @@ class DXBCInterpreter:
                          and not math.isnan(v) else v for p, v in lane_vals.items()}
         if name.startswith('r'):
             target = regs[int(name[1:])]
+        elif name.startswith('o['):
+            # dynamic output index (HS fork: mov o[r0.x + 0].x, ...)
+            idx = self._eval_index(name[2:-1], regs, {}, out)
+            target = out.setdefault(f'o{idx}', [0.0, 0.0, 0.0, 0.0])
         elif name.startswith('o'):
             target = out.setdefault(name, [0.0, 0.0, 0.0, 0.0])
         else:
@@ -585,6 +621,15 @@ class DXBCInterpreter:
         if op in ('sample_l', 'sample_c_lz', 'ld_structured', 'ld_raw',
                   'ld', 'ld_indexable', 'ld_structured_indexable'):
             return self._exec_mem(pc, lineno, op, sat, ops, regs, inp, out, emit)
+        if op in ('resinfo', 'resinfo_indexable'):
+            # resinfo dst, mipLevel, tN.swz -> (w, h, depth/elems, mips)
+            mip = f2i(self.read_src(ops[1], [0], regs, inp, out)[0])
+            tslot = _res_slot(ops[2])
+            fn = self.res.get('resinfo')
+            dims = fn(tslot, mip) if fn else [0.0, 0.0, 0.0, 0.0]
+            dims = _swizzle_result(dims, ops[2])
+            emit(dest, {p: dims[i] for i, p in enumerate(lanes)})
+            return nxt
 
         raise NotImplementedError(f"opcode '{op}' (line {lineno}) not implemented")
 
@@ -626,7 +671,17 @@ class DXBCInterpreter:
             vals = fn(tslot, addr, len(lanes)) if fn else [0.0] * len(lanes)
             emit(dest, {p: vals[i] for i, p in enumerate(lanes)})
             return nxt
-        # ld / ld_indexable from a texture: approximate as 0
+        if op in ('ld', 'ld_indexable'):
+            # ld dst, coords(int4: x,y[,slice],mip), tN.swz
+            coords = self.read_src_n(ops[1], 4, regs, inp, out)
+            tslot = _res_slot(ops[2])
+            fn = self.res.get('ld')
+            if fn is not None:
+                rgba = fn(tslot, [f2i(c) for c in coords])
+                rgba = _swizzle_result(rgba, ops[2])
+                emit(dest, {p: rgba[i] for i, p in enumerate(lanes)})
+                return nxt
+        # unknown texture op: approximate as 0
         emit(dest, {p: 0.0 for p in lanes})
         return nxt
 

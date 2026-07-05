@@ -1,6 +1,7 @@
 import os
 import re
 import csv
+import struct
 import sys
 import time
 import json
@@ -1087,6 +1088,156 @@ def _parse_tess_params(data_folder: str) -> dict:
     return params
 
 
+_SIV_FACTOR_NAMES = {
+    'finalQuadUeq0EdgeTessFactor': ('edge', 0),
+    'finalQuadVeq0EdgeTessFactor': ('edge', 1),
+    'finalQuadUeq1EdgeTessFactor': ('edge', 2),
+    'finalQuadVeq1EdgeTessFactor': ('edge', 3),
+    'finalQuadUInsideTessFactor': ('inside', 0),
+    'finalQuadVInsideTessFactor': ('inside', 1),
+    'finalTriUeq0EdgeTessFactor': ('edge', 0),
+    'finalTriVeq0EdgeTessFactor': ('edge', 1),
+    'finalTriWeq0EdgeTessFactor': ('edge', 2),
+    'finalTriInsideTessFactor': ('inside', 0),
+    'finalLineDensityTessFactor': ('edge', 0),
+    'finalLineDetailTessFactor': ('edge', 1),
+}
+
+
+def _run_hs_patch_phases(data_folder, hs_patches, hs_sig, hs_interp, log):
+    """Execute the HS fork/join (patch-constant) phases straight from the DXBC
+    disassembly — the 3Dmigoto decompiler DROPS these phases entirely, but the
+    instructions are all still in HS_shader_disasm.txt. Returns per patch:
+      {'factors': {'edge': [...], 'inside': [...]}, 'vpc': [ [x,y,z,w] rows ]}
+    or None when there are no fork/join phases / the VM fails.
+
+    The witcher DS reads vpc0.y (a fork-phase output); without this the DS ran
+    with vpc*=0 and its LOD/morph logic collapsed."""
+    from dxbc_interp import DXBCInterpreter, f2i
+    dis_path = os.path.join(data_folder, 'HS_shader_disasm.txt')
+    if not os.path.exists(dis_path):
+        return None
+    with open(dis_path, 'r', encoding='utf-8', errors='replace') as f:
+        dis = f.read()
+    # ---- split phases -----------------------------------------------------
+    marks = [(m.start(), m.group(1)) for m in
+             re.finditer(r'\b(hs_control_point_phase|hs_fork_phase|hs_join_phase)\b', dis)]
+    if not any(k in ('hs_fork_phase', 'hs_join_phase') for _, k in marks):
+        return None
+    header = dis[:marks[0][0]]
+    phases = []
+    for i, (pos, kind) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(dis)
+        if kind == 'hs_control_point_phase':
+            continue
+        body = dis[pos:end]
+        minst = re.search(r'dcl_hs_(?:fork|join)_phase_instance_count\s+(\d+)', body)
+        icount = int(minst.group(1)) if minst else 1
+        sivs = {}
+        for msiv in re.finditer(r'dcl_output_siv\s+o(\d+)\.([xyzw]),\s*(\w+)', body):
+            sivs[(int(msiv.group(1)), msiv.group(2))] = msiv.group(3)
+        phases.append({'kind': kind, 'count': icount, 'sivs': sivs,
+                       'text': header + '\n' + body})
+    if not phases:
+        return None
+    # ---- cbuffers ---------------------------------------------------------
+    cb = {}
+    info = os.path.join(data_folder, 'HS_constant_buffer_info.csv')
+    if os.path.exists(info):
+        import csv as _csv
+        with open(info, newline='', encoding='utf-8-sig') as f:
+            for row in _csv.DictReader(f):
+                try:
+                    slot = int(row['Slot'])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                binf = (row.get('BinFile') or '').strip()
+                path = os.path.join(data_folder, binf)
+                if not binf or not os.path.exists(path):
+                    continue
+                data = open(path, 'rb').read()
+                cb[slot] = [list(struct.unpack_from('<4f', data, k * 16))
+                            for k in range(len(data) // 16)]
+    # ---- resources (texture Loads / resinfo in the fork phase) -------------
+    resources = {}
+    try:
+        tex_exec, desc_list, _samp = _load_stage_textures(data_folder, 'HS', log)
+        if tex_exec is not None:
+            def _ld(slot, coords):
+                d = desc_list[slot] if slot < len(desc_list) else None
+                if d is None:
+                    return [0.0, 0.0, 0.0, 0.0]
+                arr = getattr(d, 'ArraySize', 1) or 1
+                if arr > 1 and len(coords) >= 4:
+                    # texture2darray: (x, y, slice, mip)
+                    return tex_exec.load(coords[0], coords[1], coords[3], d,
+                                         array_slice=coords[2])
+                return tex_exec.load(coords[0], coords[1],
+                                     coords[2] if len(coords) > 2 else 0, d)
+
+            def _resinfo(slot, mip):
+                d = desc_list[slot] if slot < len(desc_list) else None
+                if d is None:
+                    return [0.0, 0.0, 0.0, 0.0]
+                w = max(1, int(d.Width or 1) >> mip)
+                h = max(1, int(d.Height or 1) >> mip)
+                third = max(int(getattr(d, 'ArraySize', 1) or 1),
+                            int(getattr(d, 'Depth', 1) or 1))
+                return [float(w), float(h), float(third),
+                        float(getattr(d, 'MipLevels', 1) or 1)]
+            resources = {'ld': _ld, 'resinfo': _resinfo}
+    except Exception as e:
+        log(f"HS phase textures unavailable ({e}); texture Loads return 0")
+    # ---- per-patch execution ----------------------------------------------
+    results = []
+    sem_map = hs_interp._get_output_semantic_to_key_map()
+    slot_keys = [(r['slot'], (f"{r['semantic'].upper()}{r['index']}"
+                              if r['index'] > 0 else r['semantic'].upper()))
+                 for r in sorted(hs_sig['outputs'], key=lambda r: r['slot'])]
+    vms = [DXBCInterpreter(ph['text'], cb, resources=resources) for ph in phases]
+    for patch in hs_patches:
+        inputs = {}
+        for cp_i, cp in enumerate(patch):
+            for slot, sk in slot_keys:
+                key = sem_map.get(sk, sk)
+                v = cp.get(key, cp.get(sk, [0.0, 0.0, 0.0, 0.0]))
+                v = v if isinstance(v, list) else [v]
+                inputs[f'vicp[{cp_i}][{slot}]'] = (list(v) + [0.0] * 4)[:4]
+                inputs[f'vocp[{cp_i}][{slot}]'] = inputs[f'vicp[{cp_i}][{slot}]']
+        out_all = {}
+        try:
+            for ph, vm in zip(phases, vms):
+                for inst in range(ph['count']):
+                    pin = dict(inputs)
+                    pin['vForkInstanceID'] = [float(inst)] * 4
+                    pin['vJoinInstanceID'] = [float(inst)] * 4
+                    o = vm.run(pin)
+                    # each fork/join instance writes its own o registers;
+                    # later writes win per register
+                    for k, v in o.items():
+                        out_all[k] = list(v)
+        except Exception as e:
+            log(f"HS fork/join VM failed: {e}")
+            return None
+        factors = {'edge': [1.0, 1.0, 1.0, 1.0], 'inside': [1.0, 1.0]}
+        vpc = []
+        max_o = -1
+        for k in out_all:
+            m = re.match(r'o(\d+)$', k)
+            if m:
+                max_o = max(max_o, int(m.group(1)))
+        for oi in range(max_o + 1):
+            vpc.append(list(out_all.get(f'o{oi}', [0.0, 0.0, 0.0, 0.0])))
+        for ph in phases:
+            for (oi, lane), siv in ph['sivs'].items():
+                tgt = _SIV_FACTOR_NAMES.get(siv)
+                if tgt and oi < len(vpc):
+                    kind, idx = tgt
+                    factors[kind][idx] = vpc[oi]['xyzw'.index(lane)]
+        results.append({'factors': factors, 'vpc': vpc})
+    return results
+
+
 def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
                   idx_list, float_tolerance):
     """If the draw has a hull + domain shader (HS_shader.hlsl + DS_shader.hlsl)
@@ -1147,14 +1298,117 @@ def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
         log(f"HS produced {len(hs_patches)} patches "
             f"({tess['output_cp']} control point(s) each)")
 
+        # ---- point-sprite patches: golden is the HS control-point stream ----
+        # For 1-CP-in/1-CP-out patches (sekiro4 particle sprites) the captured
+        # `_ds_mesh` golden is NOT a DS domain evaluation: every varying golden
+        # column equals a control-point attribute, and the stream is the FLAT
+        # CP floats re-sliced by the DS-output layout (e.g. golden TEXCOORD8
+        # spans v10.y,v11.x,v11.y because v10 is a float2). Compare the CP
+        # passthrough directly.
+        if tess['input_cp'] == 1 and tess['output_cp'] == 1:
+            golden = vs_interp.load_mesh_output_golden(ds_bin, ds_layout)
+            if golden and len(golden) == len(hs_patches):
+                log("Point-sprite patches (in_cp=out_cp=1): comparing the HS "
+                    "control-point stream against the _ds_mesh golden "
+                    "(flat CP floats sliced by the DS-out layout).")
+                # Group signature rows by slot: several semantics may PACK one
+                # slot (witcher: TESS_BLOCK_CORNER.xy + SIZE.z + CM_LEVEL.w);
+                # concatenate their CP values in signature order.
+                slot_groups = {}
+                for r in hs_sig['outputs']:
+                    key = (f"{r['semantic'].upper()}{r['index']}"
+                           if r['index'] > 0 else r['semantic'].upper())
+                    slot_groups.setdefault(r['slot'], []).append(key)
+                slot_keys = sorted(slot_groups.items())
+                # True per-slot stream widths come from the HS DISASM's
+                # control-point dcl_input masks (v[1][9].xyz -> 3): the
+                # decompiled HLSL pads everything to float4.
+                width_by_slot = {}
+                hs_disasm_path = os.path.join(data_folder, 'HS_shader_disasm.txt')
+                if os.path.exists(hs_disasm_path):
+                    with open(hs_disasm_path, 'r', encoding='utf-8',
+                              errors='replace') as fdis:
+                        for mm in re.finditer(
+                                r'dcl_input\s+v\[\d+\]\[(\d+)\]\.([xyzw]+)',
+                                fdis.read()):
+                            slot_ = int(mm.group(1))
+                            width_by_slot[slot_] = max(
+                                width_by_slot.get(slot_, 0), len(mm.group(2)))
+                sem_map = vs_interp._get_output_semantic_to_key_map()
+                npass = 0
+                nerr_logged = 0
+                for i, (patch, grow) in enumerate(zip(hs_patches, golden)):
+                    cp = patch[0]
+                    flat = []
+                    for slot_i, keys in slot_keys:
+                        vec = []
+                        for sk in keys:
+                            key = sem_map.get(sk, sk)
+                            v = cp.get(key, cp.get(sk, 0.0))
+                            vec.extend(v if isinstance(v, list) else [v])
+                        w = width_by_slot.get(slot_i, len(vec))
+                        flat.extend((vec + [0.0] * w)[:w])
+                    ok = True
+                    pos = 0
+                    for gkey, gvals in grow.items():
+                        n = len(gvals) if isinstance(gvals, list) else 1
+                        gv = gvals if isinstance(gvals, list) else [gvals]
+                        ours = (flat[pos:pos + n] + [0.0] * n)[:n]
+                        pos += n
+                        for c in range(n):
+                            a, b = ours[c], gv[c]
+                            if isinstance(b, int) and not isinstance(a, int):
+                                # UInt/SInt golden column: compare raw bits
+                                try:
+                                    abits = struct.unpack('<I', struct.pack('<f', float(a)))[0]
+                                except (struct.error, ValueError, OverflowError):
+                                    abits = None
+                                bad = (abits != (b & 0xFFFFFFFF))
+                                if bad and nerr_logged < 200:
+                                    ok = False
+                                    log(f"Error: Row {i} {gkey}[{c}]: "
+                                        f"output=bits({a}) golden=bits({b}) diff=raw")
+                                    nerr_logged += 1
+                                if bad:
+                                    ok = False
+                                continue
+                            try:
+                                bad = abs(float(a) - float(b)) > float_tolerance
+                            except (TypeError, ValueError):
+                                bad = True
+                            if bad and not (a != a and b != b):
+                                ok = False
+                                if nerr_logged < 200:
+                                    log(f"Error: Row {i} {gkey}[{c}]: "
+                                        f"output={float(a):.6f} golden={float(b):.6f} "
+                                        f"diff={abs(float(a) - float(b)):.6f}")
+                                    nerr_logged += 1
+                    if ok:
+                        npass += 1
+                log(f"\nTotal PASSED rows: {npass}/{len(golden)}")
+                if npass == len(golden):
+                    log("Comparison PASSED: All output data matches golden data within tolerance")
+                return
+
+        # ---- HS fork/join phases (patch constants + real tess factors) -----
+        # The 3Dmigoto decompiler drops these phases, but the DXBC VM can run
+        # them straight from the disasm — the witcher DS reads vpc0.y from
+        # here (previously always 0, collapsing its LOD/morph logic).
+        patch_phase = _run_hs_patch_phases(
+            data_folder, hs_patches, hs_sig, hs_interp, log)
+        patch_constants = None
+        if patch_phase:
+            patch_constants = [p['vpc'] for p in patch_phase]
+            f0 = patch_phase[0]['factors']
+            log(f"HS fork/join phases executed per patch (vpc rows: "
+                f"{len(patch_constants[0])}); patch0 factors edge="
+                f"{[round(v, 3) for v in f0['edge']]} inside="
+                f"{[round(v, 3) for v in f0['inside']]}")
+
         # ---- tessellator: domain points (DS runs once per point per patch) --
-        # The HS fork/join (patch-constant) phase that computes SV_TessFactor is
-        # dropped by the 3Dmigoto decompiler, so the true factors are unknown. We
-        # tessellate at the minimal patch (integer factor 1 -> quad = 4 corners,
-        # tri = 3): when all factors are 1.0 D3D produces this minimal patch
-        # regardless of the declared partitioning mode. The captured golden's
-        # DS-out count therefore only matches when the real runtime factors were
-        # also 1 (see the step-167 session notes).
+        # The captured golden's DS-out count equals patches x out_cp, so the
+        # DS is evaluated at the first out_cp minimal-patch corners (see the
+        # step-167 session notes).
         points, _prims = tessellator.tessellate(
             tess['domain'], None, None, 'integer')
         # RenderDoc's `_ds_mesh` dump evaluates the DS once per output control
@@ -1199,7 +1453,8 @@ def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
         ds_in, ds_out = ds_params['inputs'], ds_params['outputs']
         ds_interp.map_params_to_signature(ds_out, ds_sig['outputs'])
         emitted = ds_interp.executeDS_with_params(
-            'main', ds_in, ds_out, ds_sig['inputs'], hs_patches, points)
+            'main', ds_in, ds_out, ds_sig['inputs'], hs_patches, points,
+            patch_constants=patch_constants)
         log(f"DS emitted {len(emitted)} output vertices "
             f"({len(hs_patches)} patches x {len(points)} domain points)")
 

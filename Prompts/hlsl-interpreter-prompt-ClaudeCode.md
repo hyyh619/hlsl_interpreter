@@ -3461,17 +3461,34 @@ Notice:
 
 **方法论**：`frac(sin(a)·k)` 哈希放大链是反解 vendor 超越函数真实误差分布的天然探针——k 越大约束越精，无需任何硬件文档。
 
-# 181
+# 181 修复HS/DS问题
 ## Prompts
+修复下列问题
+witcher3_countryside_event16803/16817/21346：DS 读 HS fork/join（patch 常量） 相位输出 vpc0.y，该相位被 3Dmigoto 反编译器整体丢弃，HLSL 源里不存在。 意见：给 DXBC VM 增加 HS fork/join 相位执行（disasm 里指令还在），由 VM 生成 vpc* 喂给 DS，绕过反编译。工作量大但路线清晰。
+
+sekiro4_event19857/20244：两个独立小缺陷：
+
+StructuredBuffer<PointLight> stride 被误判 16B —— 可修：从 struct 成员布局 推断真实 stride（与步 169 _captured_sb_strides 同思路）；
+point-sprite golden 的 SV_POSITION xyz≡0 惯例 —— 可修：比较器特判。
+建议先做 sekiro4 两案，有望转正。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-
 ## Git commit: 
 
 ## Claude Code Session
+
+**sekiro4_19857/20244 双双转正（5/5、7/7），HS fork/join 相位执行基建落地（witcher 的 464 条 fork 指令可完整跑通、vpc 真值可供 DS），回归 148/148 零回归。** 详见 `Sessions/hlsl-interpreter-step181-hs-fork-join-vm-sekiro4-pass.md`。
+
+**sekiro4 定案推翻步 167 两个旧判断**：① SB stride 已被步 169 的 `_captured_sb_strides` 机制修复（g_LightBuffer 208B 正确装载）；② `_ds_mesh` golden 根本不是 DS 域求值——逐列比对证实每个变化列都等于**控制点属性**（COLOR.w=v1.w、SV_POSITION=(0,0,0,v0.w)），流为**控制点扁平 float 按 DS 输出布局重切片**（golden TEXCOORD8 跨 v10.y,v11.x,v11.y）。实现 CP 直通比较：`in_cp==out_cp==1` 时按 HS 签名 slot 分组拼接（多语义共享 slot），**宽度取自 HS disasm 的 dcl_input 掩码**（反编译 HLSL 全填 float4），UInt 列按原始位比较。
+
+**HS fork/join 相位 VM（按步 175 路线）**：dxbc_interp.py 扩展 icb 表/`icb[expr]`、动态输出 `o[r0.x+0].x`、真 `ld/ld_indexable`（含 Texture2DArray 切片）与 `resinfo` 钩子；render.py `_run_hs_patch_phases` 切分 disasm 相位、逐 patch×实例运行（vicp/vocp/vForkInstanceID）、经 `dcl_output_siv` 收集 SV_TessFactor（`_SIV_FACTOR_NAMES`）与 vpc 常量行，注入 `executeDS_with_params(patch_constants=...)`（步 167 预留形参首次启用）。
+
+**witcher 16803/16817/21346 留档**：vpc 打通后仍 0/4——取证发现其 golden 是**多域角点打包的复合行**（sv_position=域(0,0)角点+size、TexCoord=域(1,0)角点、UInt 位模式列），与"每行=一次 DS 求值"模型不符；需专门取证 dump 布局后重排比较。
+
+**结果**：2 案晋级（回归表 **150 案**、Dump 剩 **23 案**）；Dump 其余逐案持平。
 
 # 182
 ## Prompts

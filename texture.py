@@ -1222,12 +1222,13 @@ class Texture:
         return (p00 * (1 - s) * (1 - t) + p10 * s * (1 - t)
                 + p01 * (1 - s) * t + p11 * s * t)
 
-    def load(self, x: int, y: int, mip: int, texture_desc: TextureDesc) -> List[float]:
+    def load(self, x: int, y: int, mip: int, texture_desc: TextureDesc,
+             array_slice: int = 0) -> List[float]:
         """HLSL Texture2D.Load: fetch the texel at integer coords (x, y) on mip
         level `mip`, with NO filtering or address wrapping. Out-of-bounds reads
         return 0 (D3D returns 0 for Load outside the resource). The decoded grid
         is top-left origin, so [y][x] maps directly to D3D texel coords."""
-        mip_levels = self._get_mip_levels(texture_desc)
+        mip_levels = self._get_mip_levels(texture_desc, array_slice)
         if not mip_levels:
             return [0.0, 0.0, 0.0, 0.0]
         if mip < 0 or mip >= len(mip_levels):
