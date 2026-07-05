@@ -3538,8 +3538,11 @@ Notice:
 
 **结果**：2 案晋级（回归表 **152 案**、Dump 剩 **21 案**）；其余逐案持平。
 
-# 184
+# 184 创建html界面
 ## Prompts
+1. 请模仿MeshView的显示，创建一个类似的html页面的展示
+2. html页面展示的数据窗口与MeshView一样
+3. 提供选择机制，让用户选择不做任何显示，也可以选择MeshView或者html页面显示
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3561,6 +3564,16 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**HTML 网格视图 + 三态显示选择机制（none/tk/html），回归 152/152 零回归。** 详见 `Sessions/hlsl-interpreter-step185-html-mesh-view.md`。
+
+**同 API 双实现**：新增 `html_mesh_view.py` 的 `HtmlMeshView`，暴露与 `mesh_view.MeshView` **完全相同的公开方法**（管线调用的 set_input_data/set_output_data/set_rasterizer_pixels/set_pixel_shader_output/set_output_merger_pixels/set_pipeline_stats/set_primitive_topology/clear/show/close + _draw_* 空钩子）——管线无需区分。不画 tk canvas，改累积数据 + `show()` 时序列化为 JSON 注入自包含 HTML 模板（内联 canvas 渲染 JS，零外部依赖、file:// 直开）并开浏览器。
+
+**数据窗口与 MeshView 一致（JS 复刻）**：统计栏（顶点数/拓扑/管线统计，字段措辞同 `_update_info`）、Input Vertices 3D 投影拓扑线框（复刻旋转变换 + 缩放居中投影，三角形列表/带+线+点全支持）、Output 四选项卡（VS 线框 + Rasterizer/PS/OM 像素图，复刻 `_prim_color` 与 ps_output_color 优先）、Selected Vertex Info 面板（右键选点显示 Position/Normal/Color/TexCoord）；交互拖拽旋转/滚轮缩放/右键选点。像素压成 `[x,y,prim_id,psR,psG,psB]`。
+
+**选择机制**：config 新增 `mesh_view_mode`（none/tk/html），无则回退旧布尔 `mesh_view_enabled`（true→tk、false→none）——既有配置零改动。`render._resolve_mesh_view_mode` 统一解析、两工作流据此调 `enable_mesh_view(mode=..., html_path=...)`；`HLSLInterpreter.enable_mesh_view` 三态分派（缺失依赖安全降级），旧签名保留。HTML 写到日志同目录 `mesh_view.html`。
+
+**验证**：合成数据生成 HTML（11.8KB、doctype/占位替换/payload 注入/JSON 9 键/计数全对）；接线单测（模式解析 7 例 + 分派 3 例全对）；回归 152/152 全过（默认 none 路径零影响）。
 
 # 186
 ## Prompts

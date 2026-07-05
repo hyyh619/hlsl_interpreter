@@ -71,6 +71,24 @@ def print_and_compare_results(interpreter, results, output_struct_name, float_to
 
 _MISS_CP = object()
 
+
+def _resolve_mesh_view_mode(config: dict) -> str:
+    """Pick the mesh-view mode: config 'mesh_view_mode' ('none'|'tk'|'html')
+    wins; otherwise fall back to the legacy boolean 'mesh_view_enabled'
+    (True -> 'tk', False -> 'none')."""
+    mode = config.get('mesh_view_mode')
+    if mode:
+        m = str(mode).strip().lower()
+        return m if m in ('none', 'tk', 'html') else 'none'
+    return 'tk' if config.get('mesh_view_enabled', False) else 'none'
+
+
+def _mesh_view_html_path(log_file_path: str, config_path: str) -> str:
+    """Where the HTML mesh view is written: next to the log (or the config)."""
+    base = log_file_path or config_path
+    d = os.path.dirname(os.path.abspath(base)) if base else os.getcwd()
+    return os.path.join(d, 'mesh_view.html')
+
 # Interpreters created for the current run — flushed explicitly at pipeline
 # end. Relying on __del__ is unsafe: caches/closures can keep an interpreter
 # in a reference cycle until Python's shutdown, after the runtime has already
@@ -1536,7 +1554,8 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # PS dominate wall-clock for those) and is what the triage/regression
     # workflows ultimately grade on.
     vs_only = config.get('vs_only', False)
-    mesh_view_enabled = config.get('mesh_view_enabled', False)
+    mesh_view_mode = _resolve_mesh_view_mode(config)
+    mesh_view_enabled = mesh_view_mode != 'none'
     primitive_topology = config.get('primitive_topology', D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
     # Tolerance for the golden output-merger pixel comparison (color + depth).
     pixel_tolerance = config.get('pixel_tolerance', 0.01)
@@ -1594,7 +1613,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     vs_interp = _make_interpreter(config, d3d.SHADER_STAGE_VS, log_file_path, primitive_topology)
 
     if mesh_view_enabled:
-        vs_interp.enable_mesh_view(True)
+        vs_interp.enable_mesh_view(
+            mode=mesh_view_mode,
+            html_path=_mesh_view_html_path(log_file_path, config_path))
 
     if not os.path.exists(vs_hlsl):
         print(f"Error: VS shader not found: {vs_hlsl}")
@@ -2168,7 +2189,8 @@ def _run_legacy_workflow(config: dict, config_path: str):
     execute_count = config.get('execute_count', None)
     max_workers = config.get('max_workers', 1)
     primitive_topology = config.get('primitive_topology', D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
-    mesh_view_enabled = config.get('mesh_view_enabled', False)
+    mesh_view_mode = _resolve_mesh_view_mode(config)
+    mesh_view_enabled = mesh_view_mode != 'none'
     texture_desc_path = resolve(config.get('texture_desc', ''))
     sampler_config_path = resolve(config.get('sampler_config', ''))
     depth_stencil_config_path = resolve(config.get('depth_stencil_config', ''))
@@ -2203,7 +2225,9 @@ def _run_legacy_workflow(config: dict, config_path: str):
         sampler_list=sampler_list)
 
     if mesh_view_enabled:
-        interpreter.enable_mesh_view(True)
+        interpreter.enable_mesh_view(
+            mode=mesh_view_mode,
+            html_path=_mesh_view_html_path(log_file_path, config_path))
 
     total_start = time.time()
 
@@ -2299,7 +2323,8 @@ def main():
         config = json.load(f)
 
     data_path = config.get('data_path', '')
-    mesh_view_enabled = config.get('mesh_view_enabled', False)
+    mesh_view_mode = _resolve_mesh_view_mode(config)
+    mesh_view_enabled = mesh_view_mode != 'none'
 
     if mesh_view_enabled and sys.platform == 'darwin':
         # On macOS, tkinter's Cocoa backend requires the event loop to run on the

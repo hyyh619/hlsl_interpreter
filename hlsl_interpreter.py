@@ -118,6 +118,12 @@ try:
 except ImportError:
     MESHVIEW_AVAILABLE = False
 
+try:
+    from html_mesh_view import HtmlMeshView
+    HTML_MESHVIEW_AVAILABLE = True
+except ImportError:
+    HTML_MESHVIEW_AVAILABLE = False
+
 
 DATA_TYPE_LIST = [
     'float4x4', 'float3x3',  # 矩阵类型
@@ -582,19 +588,43 @@ class HLSLInterpreter:
         except Exception:
             pass
 
-    def enable_mesh_view(self, enable: bool = True):
-        """
-        启用或禁用MeshView
-        enable: 是否启用MeshView
-        """
-        if enable and not MESHVIEW_AVAILABLE:
-            self.log_output("Warning: MeshView not available (tkinter may not be installed)")
-            return
-        self._mesh_view_enabled = enable
-        if enable and self._mesh_view is None:
-            self._mesh_view = MeshView(title="HLSL Interpreter - Input/Output Mesh")
+    def enable_mesh_view(self, enable=True, mode: str = None, html_path: str = None):
+        """启用/禁用网格视图。
 
-        self.log_output(f"MeshView {'enabled' if enable else 'disabled'}")
+        mode: 'none' 不显示 | 'tk' tkinter MeshView | 'html' 浏览器 HtmlMeshView。
+        兼容旧签名 enable_mesh_view(True/False)：True→'tk'、False→'none'
+        （若 mode 显式给出则以 mode 为准）。
+        """
+        if mode is None:
+            mode = 'tk' if enable else 'none'
+        mode = (mode or 'none').lower()
+
+        if mode == 'none':
+            self._mesh_view_enabled = False
+            self.log_output("Mesh view disabled")
+            return
+
+        if mode == 'html':
+            if not HTML_MESHVIEW_AVAILABLE:
+                self.log_output("Warning: HtmlMeshView not available")
+                self._mesh_view_enabled = False
+                return
+            self._mesh_view_enabled = True
+            if self._mesh_view is None or not isinstance(self._mesh_view, HtmlMeshView):
+                self._mesh_view = HtmlMeshView(
+                    title="HLSL Interpreter - Mesh View (HTML)", out_path=html_path)
+            self.log_output("Mesh view enabled (HTML)")
+            return
+
+        # mode == 'tk'
+        if not MESHVIEW_AVAILABLE:
+            self.log_output("Warning: MeshView not available (tkinter may not be installed)")
+            self._mesh_view_enabled = False
+            return
+        self._mesh_view_enabled = True
+        if self._mesh_view is None:
+            self._mesh_view = MeshView(title="HLSL Interpreter - Input/Output Mesh")
+        self.log_output("Mesh view enabled (tk)")
 
     def set_texture_and_sampler(self, texture_exec, texture_desc_list, sampler_list):
         """
