@@ -3363,6 +3363,18 @@ Notice:
 
 ## Claude Code Session
 
+**类 E 攻坚：witcher 整数噪声哈希的原始位语义——21979 132/840 → PASS 840/840 晋级，22049 搭车 132→790/840，回归 146/146 零回归。** 详见 `Sessions/hlsl-interpreter-step177-witcher-noise-hash-raw-bits.md`。
+
+**方法**：先给 21979（纯程序化草地摆动，时间驱动整数格点哈希，无纹理）写逐指令复现器，以 golden TEXCOORD2（世界坐标直接暴露噪声值）为 oracle 达到 **840/840 比特级复现**，确证 GPU 语义后移植解释器。**关键教训：容差边缘的 pass 数在错误语义变体间随机涨落（132/87/66/57），绝不能当方向信号**——只有对 golden 中间值的精确比对可靠。
+
+**确证的 GPU 语义（disasm 对照）**：① `iadd`/`bfrev` 直接消费 round_ni 结果的**原始 float32 位**（disasm 全程无 ftoi/ftou；反编译的 `(int)x` 是位记号）；② `ishr` 是**算术右移**，但 3Dmigoto 把 ishr/ushr 都渲染成 `(uint)x>>n`（22229 的 ubfe 展开需逻辑移位、文本相同！）；③ imul/imad 按 32 位回绕。
+
+**六项解释器修复**：① `reversebits`（bfrev）实现，返回 `_RawBits`（int 子类标记寄存器位模式）；② `_RawBits` 伙伴取位规则（+,−,* 一侧 raw 时 float 伙伴按位重解释；贪婪解析使 `(int)a+(int)b` 变 `(int)(a+(int)b)`、cast 标记不可靠故凡 float 皆取位；内联 32 位回绕**绕过 f32_emulation 舍入**）；③ `fix_shift_signedness`（disasm 的 ishr/ushr 与 HLSL `>>` 按程序序 1:1 配对修正 cast，数目不符整体不动——ubfe 展开天然自保护）；④ `_apply_swizzle_assign` 整数保型（原先标量强转 float，位模式存取即坏）；⑤ ftou 负数→0（D3D 规范）；⑥ `_eval_bitwise_operand` 放宽为位操作上下文一律取位——**但数字字面量除外**（首轮回归 5 个 Octopath 四元数案清零：`(uint)1 & mask` 的字面量 1 求值为 float 1.0 被位转成 0x3F800000；加字面量守卫后全恢复）。
+
+**22260 定性（不可修）**：golden 所需雾混合因子 0.1424 与 dump 的 cb12[190] **数学上不可达**（同一 r0.z 的其它消费者全过）→ 帧级共享 cbuffer 的捕获时机与 draw 不一致（ES2991 家族）。
+
+**结果**：21979 晋级（回归表 **147 案**、Dump 剩 **26 案**）；Dump 其余各类逐案持平。类 E 存量：22049 余 50 行、21719/21895 另有缺陷、22229 容差边缘、22260 定性结构。
+
 # 178
 ## Prompts
 
