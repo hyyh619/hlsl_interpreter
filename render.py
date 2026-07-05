@@ -1332,6 +1332,7 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         with open(vs_disasm_path, 'r', encoding='utf-8', errors='replace') as f:
             vs_disasm = f.read()
     vs_code = vs_interp.recover_struct_array_matrix_selectors(vs_code, vs_disasm)
+    vs_code = vs_interp.fix_shift_signedness(vs_code, vs_disasm)
     vs_interp.hlsl_code = vs_code
     vs_interp.parse_all_functions(vs_code)
 

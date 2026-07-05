@@ -14,6 +14,13 @@ from hlsl_syntax_tree import SyntaxTreeNode, SyntaxTreeParser, _COMPILED_PATTERN
 _NO_FMA = object()
 _MISS = object()
 
+
+class _RawBits(int):
+    """An int that is known to be a REGISTER BIT PATTERN (bfrev result).
+    Marks integer-op partners so `(int)float` operands are bit-reinterpreted
+    (DXBC iadd/imul consume raw bits) instead of value-converted."""
+    __slots__ = ()
+
 try:
     from texture import Texture, Sampler, TextureDesc, Sampler as SamplerClass
     TEXTURE_AVAILABLE = True
@@ -1618,6 +1625,24 @@ class HLSLInterpreter:
                 # conversion (e.g. `(int2)v1.zw` used as a texture coordinate).
                 left = self._eval_bitwise_operand(node.left, local_vars)
                 right = self._eval_bitwise_operand(node.right, local_vars)
+                # DXBC ishr is an ARITHMETIC shift. 3Dmigoto renders both
+                # ishr and ushr as `(cast)x >> n`; fix_shift_signedness
+                # repairs the cast from the disasm, so an (int)-cast left
+                # operand selects the sign-extending path here.
+                if (node.value == '>>'
+                        and getattr(node.left, 'node_type', None) == 'cast'
+                        and str(node.left.value).startswith('int')):
+                    def _sar(a, b):
+                        ia = self._bitcast_to_int(a, True)
+                        ia = ((ia & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000
+                        return ia >> (int(b) & 31)
+                    if isinstance(left, list):
+                        rl = right if isinstance(right, list) else [right] * len(left)
+                        result = [_sar(l, r) for l, r in zip(left, rl)]
+                    else:
+                        result = _sar(left, right)
+                    if self._dbg: self.debug_print(f"[BINARY OP] left={self._format_float(left)}, right={self._format_float(right)}, op=>> (arith), result={self._format_float(result)}")
+                    return result
             else:
                 # Fused multiply-add: the GPU runs `a*b + c` as one `mad` with a
                 # SINGLE float32 rounding. Under float32 emulation, evaluating
@@ -1630,6 +1655,53 @@ class HLSLInterpreter:
                         return fused
                 left = self.evaluate_syntax_tree(node.left, local_vars)
                 right = self.evaluate_syntax_tree(node.right, local_vars)
+                # Integer-op raw-bits rule: DXBC int arithmetic consumes
+                # register raw bits, and 3Dmigoto renders the operands as
+                # `(int)x`. When one side is a _RawBits value (bfrev result —
+                # a genuine bit pattern) the other side's (int)float cast must
+                # ALSO be the float's bit pattern, not ftoi(value): witcher's
+                # noise hash iadds bfrev results with round_ni raw bits. The
+                # partner cast already value-converted, so re-evaluate its
+                # inner and bitcast (pure read, no side effects).
+                if node.value in ('+', '-', '*'):
+                    lraw = isinstance(left, _RawBits)
+                    rraw = isinstance(right, _RawBits)
+                    if lraw or rraw:
+                        if lraw != rraw:
+                            # The partner of a raw-bits operand in an int op is
+                            # ALSO raw register bits. The decompiled `(int)`
+                            # cast marking it is unreliable (the leading cast
+                            # parses greedily around the whole sum), so any
+                            # float partner is bit-reinterpreted; the partner
+                            # cast may have already ftoi'd it, so re-read the
+                            # inner expression when the partner is a cast.
+                            onode = node.right if lraw else node.left
+                            oval = right if lraw else left
+                            if (getattr(onode, 'node_type', None) == 'cast'
+                                    and str(onode.value) in self._INT_CAST_TYPES):
+                                oval = self.evaluate_syntax_tree(onode.left, local_vars)
+                            if isinstance(oval, float):
+                                bits = self._bitcast_to_int(oval, True)
+                                if lraw:
+                                    right = bits
+                                else:
+                                    left = bits
+                        # Pure 32-bit integer op — bypass execute_binary_op,
+                        # whose f32_emulation rounding would turn the bit
+                        # pattern into a float and break the raw chain.
+                        try:
+                            a, b = int(left), int(right)
+                        except (TypeError, ValueError):
+                            return self.execute_binary_op(node.value, left, right)
+                        if node.value == '+':
+                            res = a + b
+                        elif node.value == '-':
+                            res = a - b
+                        else:
+                            res = a * b
+                        res = _RawBits(self._wrap_i32(res))
+                        if self._dbg: self.debug_print(f"[BINARY OP] left={left}, right={right}, op={node.value} (raw i32), result={res}")
+                        return res
             return self.execute_binary_op(node.value, left, right)
 
         elif node.node_type == 'unary_op':
@@ -1701,6 +1773,11 @@ class HLSLInterpreter:
             # (_eval_bitwise_operand), so here we always value-convert — matching
             # `(int2)v1.zw` used directly as e.g. a texture coordinate.
             if cast_type in self._INT_CAST_TYPES:
+                # D3D ftou clamps negative floats to 0 (witcher's noise hash
+                # feeds reversebits((uint)floor(x)) with negative x — the GPU
+                # sees 0 there, not the two's-complement pattern).
+                is_unsigned = cast_type.startswith(('uint', 'dword'))
+
                 def _to_int(v):
                     if v is None:
                         return 0
@@ -1719,6 +1796,8 @@ class HLSLInterpreter:
                     # give 2, not 0, or the wind loop never runs.
                     if 0.0 < abs(f) < 1.1754943508222875e-38:
                         return self._bitcast_to_int(f, True)
+                    if is_unsigned and f < 0.0:
+                        return 0
                     return int(f)
                 if isinstance(inner, list):
                     return [_to_int(v) for v in inner]
@@ -2201,6 +2280,29 @@ class HLSLInterpreter:
 
         # sin: 正弦函数
         # 计算弧度的正弦值，对列表则对每个元素计算
+        elif func_name == 'reversebits':
+            # DXBC bfrev: reverse the 32 RAW BITS of the register. The disasm
+            # applies it directly to a float register (round_ni result) with
+            # NO ftou — 3Dmigoto's `reversebits((uint)rX)` cast is a BITCAST
+            # notation, not a value conversion. So strip an int-cast argument
+            # and reverse the float32 bit pattern of the inner value (an int
+            # value is already raw bits). Unimplemented, the statement
+            # silently kept the register's OLD value and the witcher noise
+            # hash decorrelated from golden.
+            arg_node = args[0] if args else None
+            if (arg_node is not None and arg_node.node_type == 'cast'
+                    and str(arg_node.value) in self._INT_CAST_TYPES):
+                arg_node = arg_node.left
+            val = self.evaluate_syntax_tree(arg_node, local_vars)
+
+            def _brev(v):
+                iv = self._bitcast_to_int(v, False) & 0xFFFFFFFF
+                r = int(('{:032b}'.format(iv))[::-1], 2)
+                return _RawBits(r - 0x100000000 if r >= 0x80000000 else r)
+            result = [_brev(v) for v in val] if isinstance(val, list) else _brev(val)
+            if self._dbg: self.debug_print(f"[FUNC] reversebits({self._format_value(val)}) = {result}")
+            return result
+
         elif func_name == 'sin':
             if len(args) != 1:
                 self.debug_print(f"[ERROR] sin requires 1 arg, got {len(args)} at line {node.line_number}")
@@ -5290,9 +5392,13 @@ class HLSLInterpreter:
                 if ch in swizzle_map and i < len(value):
                     current[swizzle_map[ch]] = value[i]
         elif isinstance(value, (int, float)):
+            # Keep ints as ints: an integer register (hash/bit-pattern values,
+            # e.g. a _RawBits bfrev result) must not be float-coerced or the
+            # raw-bits chain breaks (float(559779) reads back as float bits).
+            v = value if (isinstance(value, int) and not isinstance(value, bool)) else float(value)
             for ch in swizzle.lower():
                 if ch in swizzle_map:
-                    current[swizzle_map[ch]] = float(value)
+                    current[swizzle_map[ch]] = v
         local_vars[var_name] = current
 
     def preprocess_hlsl(self, code: str) -> str:
@@ -6050,13 +6156,16 @@ class HLSLInterpreter:
         return base in self._vertex_input_names
 
     def _eval_bitwise_operand(self, node, local_vars):
-        """Evaluate a bit-operation operand. A (int/uint) cast of a float vertex
-        input here reinterprets the register's raw bits (packed-attribute
-        extraction such as `(uint2)v1.zw >> 16`); everywhere else such a cast is
-        a plain ftoi/ftou value conversion (see the cast branch)."""
+        """Evaluate a bit-operation operand. In a bit-operation context the
+        DXBC instruction consumes the register's RAW BITS, so an (int/uint)
+        cast of a FLOAT value reinterprets its float32 bit pattern (e.g. the
+        packed-attribute `(uint2)v1.zw >> 16`, or witcher's noise hash where
+        `(int)floor(x)` feeds iadd/xor as bits). An int value passes through
+        (already raw bits); anything not wrapped in an int cast evaluates
+        normally."""
         if (node is not None and getattr(node, 'node_type', None) == 'cast'
                 and node.value in self._INT_CAST_TYPES
-                and self._cast_operand_is_vertex_input(node.left)):
+                and not self._is_numeric_literal_node(node.left)):
             inner = self.evaluate_syntax_tree(node.left, local_vars)
             if inner is not None:
                 signed = node.value.startswith('int')
@@ -6064,6 +6173,60 @@ class HLSLInterpreter:
                     return [self._bitcast_to_int(v, signed) for v in inner]
                 return self._bitcast_to_int(inner, signed)
         return self.evaluate_syntax_tree(node, local_vars)
+
+    @staticmethod
+    def _is_numeric_literal_node(node) -> bool:
+        """True for a literal number node (e.g. the `1` in `(uint)1 & mask`).
+        Literals are genuine VALUES — bit-reinterpreting them (our numeric
+        literals evaluate as floats) would turn 1 into 0x3F800000."""
+        if node is None or getattr(node, 'node_type', None) != 'value':
+            return False
+        s = str(node.value).strip().lstrip('+-')
+        if not s:
+            return False
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return bool(re.match(r'^(0[xX][0-9a-fA-F]+|\d+)[uUlL]*$', s))
+
+    @staticmethod
+    def _wrap_i32(v: int) -> int:
+        """Wrap an int to signed 32-bit two's complement (DXBC iadd/imul)."""
+        v &= 0xFFFFFFFF
+        return v - 0x100000000 if v >= 0x80000000 else v
+
+    def fix_shift_signedness(self, code: str, disasm_text: str) -> str:
+        """Repair `>>` cast signedness from the disasm.
+
+        DXBC has two right shifts: ishr (arithmetic) and ushr (logical), but
+        3Dmigoto can render BOTH as `(uint)x >> n` — the witcher noise hash's
+        ishr came out as (uint), losing the sign extension. The disasm is
+        unambiguous: pair the HLSL `>>` occurrences with the disasm's
+        ishr/ushr in program order (1:1 or don't touch anything) and rewrite
+        the left-operand cast of each ishr instance to (int), which selects
+        the arithmetic path in the evaluator. HLSL `>>` lines that come from
+        non-shift instructions (ubfe expansions) break the 1:1 pairing and
+        leave the source unchanged — those need the logical shift."""
+        if not disasm_text or '>>' not in code:
+            return code
+        shrs = re.findall(r'\b([iu])shr\b', disasm_text)
+        occ = [m.start() for m in re.finditer(r'>>', code)]
+        if not shrs or len(occ) != len(shrs):
+            return code
+        out = code
+        # rewrite from the end so positions stay valid
+        for pos, kind in reversed(list(zip(occ, shrs))):
+            if kind != 'i':
+                continue
+            head = out[:pos]
+            m = re.search(r'\(uint[1-4]?\)(\s*[\w.\[\]]+\s*)$', head)
+            if m:
+                out = (head[:m.start()] + '(int)' + m.group(1) + out[pos:])
+        if out is not code:
+            self.log_output("Repaired ishr cast signedness from disasm "
+                            f"({shrs.count('i')} arithmetic shift(s)).")
+        return out
 
     @staticmethod
     def _bitcast_to_int(v, signed: bool):
