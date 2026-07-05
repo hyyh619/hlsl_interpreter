@@ -192,7 +192,16 @@ class DXBCInterpreter:
         if name.startswith('r'):
             return regs[int(name[1:])]
         if name.startswith('v'):
-            return inp.get(name, [0.0, 0.0, 0.0, 0.0])
+            direct = inp.get(name)
+            if direct is not None:
+                return direct
+            # dynamic 2D control-point input: v[r0.x + 0][2] (HS CP phase)
+            m2 = re.match(r'(vicp|vocp|v)\[(.+?)\]\[(\d+)\]$', name)
+            if m2:
+                idx = self._eval_index(m2.group(2), regs, inp, out)
+                return inp.get(f'{m2.group(1)}[{idx}][{m2.group(3)}]',
+                               [0.0, 0.0, 0.0, 0.0])
+            return [0.0, 0.0, 0.0, 0.0]
         if name.startswith('o'):
             return out.get(name, [0.0, 0.0, 0.0, 0.0])
         # bare immediate index target like 'l(..)' shouldn't reach here

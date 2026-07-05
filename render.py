@@ -69,6 +69,8 @@ def print_and_compare_results(interpreter, results, output_struct_name, float_to
     interpreter.log_output(f"Total execution time:               {total_time:.4f}s")
 
 
+_MISS_CP = object()
+
 # Interpreters created for the current run — flushed explicitly at pipeline
 # end. Relying on __del__ is unsafe: caches/closures can keep an interpreter
 # in a reference cycle until Python's shutdown, after the runtime has already
@@ -1305,84 +1307,129 @@ def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
         # CP floats re-sliced by the DS-output layout (e.g. golden TEXCOORD8
         # spans v10.y,v11.x,v11.y because v10 is a float2). Compare the CP
         # passthrough directly.
-        if tess['input_cp'] == 1 and tess['output_cp'] == 1:
+        if tess['input_cp'] == tess['output_cp'] and tess['output_cp'] >= 1:
             golden = vs_interp.load_mesh_output_golden(ds_bin, ds_layout)
-            if golden and len(golden) == len(hs_patches):
-                log("Point-sprite patches (in_cp=out_cp=1): comparing the HS "
+            ocp = tess['output_cp']
+            if golden and len(golden) == len(hs_patches) * ocp:
+                log(f"CP-stream golden (in_cp=out_cp={ocp}): comparing the HS "
                     "control-point stream against the _ds_mesh golden "
-                    "(flat CP floats sliced by the DS-out layout).")
+                    "(rows are CP records under the DS-out layout stride).")
+                # The CP-stream golden stores the VS OUTPUT stream (= HS input
+                # control points) at the VS-output dcl mask widths — verified
+                # on witcher 21346 where o1 is declared int4 in HLSL but
+                # dcl_output o1.x (width 1, value -1 = the golden NaN bits),
+                # and the HS CP-phase slot remap does NOT affect the golden.
                 # Group signature rows by slot: several semantics may PACK one
                 # slot (witcher: TESS_BLOCK_CORNER.xy + SIZE.z + CM_LEVEL.w);
                 # concatenate their CP values in signature order.
+                # Keys: the HS INPUT signature (= VS output semantics, which
+                # also key the passthrough CP dicts).
                 slot_groups = {}
-                for r in hs_sig['outputs']:
+                for r in hs_sig['inputs']:
                     key = (f"{r['semantic'].upper()}{r['index']}"
                            if r['index'] > 0 else r['semantic'].upper())
                     slot_groups.setdefault(r['slot'], []).append(key)
                 slot_keys = sorted(slot_groups.items())
-                # True per-slot stream widths come from the HS DISASM's
-                # control-point dcl_input masks (v[1][9].xyz -> 3): the
-                # decompiled HLSL pads everything to float4.
+                in_by_slot = slot_groups
+                # True per-slot stream widths: the UNION of the VS disasm's
+                # dcl_output masks (o1.x -> 1; o0.xy + o0.z + o0.w -> 4).
+                # The decompiled HLSL pads everything to float4. Fallback:
+                # the HS disasm's CP dcl_input masks.
                 width_by_slot = {}
-                hs_disasm_path = os.path.join(data_folder, 'HS_shader_disasm.txt')
-                if os.path.exists(hs_disasm_path):
-                    with open(hs_disasm_path, 'r', encoding='utf-8',
+                masks_by_slot = {}
+                vs_disasm_p = os.path.join(data_folder, 'VS_shader_disasm.txt')
+                if os.path.exists(vs_disasm_p):
+                    with open(vs_disasm_p, 'r', encoding='utf-8',
                               errors='replace') as fdis:
                         for mm in re.finditer(
-                                r'dcl_input\s+v\[\d+\]\[(\d+)\]\.([xyzw]+)',
+                                r'dcl_output(?:_siv)?\s+o(\d+)\.([xyzw]+)',
                                 fdis.read()):
-                            slot_ = int(mm.group(1))
-                            width_by_slot[slot_] = max(
-                                width_by_slot.get(slot_, 0), len(mm.group(2)))
+                            masks_by_slot.setdefault(
+                                int(mm.group(1)), []).append(mm.group(2))
+                    width_by_slot = {
+                        s: len(set(''.join(m))) for s, m in masks_by_slot.items()}
+                if not width_by_slot:
+                    hs_disasm_path = os.path.join(data_folder, 'HS_shader_disasm.txt')
+                    if os.path.exists(hs_disasm_path):
+                        with open(hs_disasm_path, 'r', encoding='utf-8',
+                                  errors='replace') as fdis:
+                            for mm in re.finditer(
+                                    r'dcl_input\s+v\[\d+\]\[(\d+)\]\.([xyzw]+)',
+                                    fdis.read()):
+                                slot_ = int(mm.group(1))
+                                width_by_slot[slot_] = max(
+                                    width_by_slot.get(slot_, 0), len(mm.group(2)))
                 sem_map = vs_interp._get_output_semantic_to_key_map()
+                # The dump writes each row with the DS-OUT layout stride, but
+                # the underlying buffer holds CP records of cp_width floats —
+                # rows OVERRUN into neighbouring records (witcher: stride 60B
+                # over 16B records; the tail 11 floats of each row are the
+                # next 2.75 CPs). Only the first cp_width floats of each row
+                # are this patch's data. When cp_width == the row width
+                # (sekiro4) this compares everything, unchanged.
+                cp_width = sum(width_by_slot.get(s, 4) for s, _ in slot_keys) \
+                    if width_by_slot else None
+
+                def _row_flat(grow):
+                    vals = []
+                    for gvals in grow.values():
+                        gv = gvals if isinstance(gvals, list) else [gvals]
+                        for b in gv:
+                            if isinstance(b, int):
+                                # UInt/SInt layout column: raw register bits
+                                b = struct.unpack('<f', struct.pack(
+                                    '<I', b & 0xFFFFFFFF))[0]
+                            vals.append(b)
+                    return vals
                 npass = 0
                 nerr_logged = 0
-                for i, (patch, grow) in enumerate(zip(hs_patches, golden)):
-                    cp = patch[0]
+                all_cps = [(p_i, k) for p_i in range(len(hs_patches))
+                           for k in range(ocp)]
+                for i, ((p_i, k), grow) in enumerate(zip(all_cps, golden)):
+                    cp = hs_patches[p_i][k] if k < len(hs_patches[p_i]) else {}
                     flat = []
+                    _lanepos = {'x': 0, 'y': 1, 'z': 2, 'w': 3}
                     for slot_i, keys in slot_keys:
-                        vec = []
-                        for sk in keys:
-                            key = sem_map.get(sk, sk)
-                            v = cp.get(key, cp.get(sk, 0.0))
-                            vec.extend(v if isinstance(v, list) else [v])
-                        w = width_by_slot.get(slot_i, len(vec))
-                        flat.extend((vec + [0.0] * w)[:w])
+                        masks = masks_by_slot.get(slot_i)
+                        w = width_by_slot.get(slot_i, 4)
+                        if masks and len(masks) == len(keys):
+                            # slot shared by several semantics: place each
+                            # value at its dcl mask lanes (CORNER@.xy,
+                            # SIZE@.z, CM_LEVEL@.w)
+                            vec4 = [0.0] * 4
+                            for sk, mask in zip(keys, masks):
+                                key = sem_map.get(sk, sk)
+                                v = cp.get(key, cp.get(sk, 0.0))
+                                v = v if isinstance(v, list) else [v]
+                                for ci, lane in enumerate(mask):
+                                    if ci < len(v):
+                                        vec4[_lanepos[lane]] = v[ci]
+                            lanes = sorted(set(''.join(masks)), key=_lanepos.get)
+                            flat.extend(vec4[_lanepos[l]] for l in lanes)
+                        else:
+                            vec = []
+                            for sk in keys:
+                                key = sem_map.get(sk, sk)
+                                v = cp.get(key, cp.get(sk, 0.0))
+                                vec.extend(v if isinstance(v, list) else [v])
+                            flat.extend((vec + [0.0] * w)[:w])
+                    gflat = _row_flat(grow)
+                    ncmp = min(len(gflat), cp_width or len(gflat), len(flat))
                     ok = True
-                    pos = 0
-                    for gkey, gvals in grow.items():
-                        n = len(gvals) if isinstance(gvals, list) else 1
-                        gv = gvals if isinstance(gvals, list) else [gvals]
-                        ours = (flat[pos:pos + n] + [0.0] * n)[:n]
-                        pos += n
-                        for c in range(n):
-                            a, b = ours[c], gv[c]
-                            if isinstance(b, int) and not isinstance(a, int):
-                                # UInt/SInt golden column: compare raw bits
-                                try:
-                                    abits = struct.unpack('<I', struct.pack('<f', float(a)))[0]
-                                except (struct.error, ValueError, OverflowError):
-                                    abits = None
-                                bad = (abits != (b & 0xFFFFFFFF))
-                                if bad and nerr_logged < 200:
-                                    ok = False
-                                    log(f"Error: Row {i} {gkey}[{c}]: "
-                                        f"output=bits({a}) golden=bits({b}) diff=raw")
-                                    nerr_logged += 1
-                                if bad:
-                                    ok = False
-                                continue
-                            try:
-                                bad = abs(float(a) - float(b)) > float_tolerance
-                            except (TypeError, ValueError):
-                                bad = True
-                            if bad and not (a != a and b != b):
-                                ok = False
-                                if nerr_logged < 200:
-                                    log(f"Error: Row {i} {gkey}[{c}]: "
-                                        f"output={float(a):.6f} golden={float(b):.6f} "
-                                        f"diff={abs(float(a) - float(b)):.6f}")
-                                    nerr_logged += 1
+                    for c in range(ncmp):
+                        a, b = flat[c], gflat[c]
+                        try:
+                            fa, fb = float(a), float(b)
+                        except (TypeError, ValueError):
+                            fa, fb = 0.0, 1.0
+                        if fa != fa and fb != fb:
+                            continue           # both NaN: agree
+                        if abs(fa - fb) > float_tolerance:
+                            ok = False
+                            if nerr_logged < 200:
+                                log(f"Error: Row {i} cp[{c}]: output={fa:.6f} "
+                                    f"golden={fb:.6f} diff={abs(fa - fb):.6f}")
+                                nerr_logged += 1
                     if ok:
                         npass += 1
                 log(f"\nTotal PASSED rows: {npass}/{len(golden)}")

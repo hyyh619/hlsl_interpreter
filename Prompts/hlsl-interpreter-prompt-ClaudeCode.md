@@ -3514,8 +3514,10 @@ Notice:
 
 **类 F 作为独立类清空**：两案分别并入"帧级动态资源"与"精度墙"两个既有类。Dump 23 案格局不变。
 
-# 183
+# 183 witcher HS/DS golden 复合布局
 ## Prompts
+调查修复下列问题
+witcher HS/DS golden 复合布局
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3525,6 +3527,16 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**witcher HS/DS golden 复合布局彻底破案：16803/16817 双双 4/4 全过晋级、21346 至 855/1024（余为帧级资源），回归 150/150 零回归。HS/DS 作为解释器缺陷类清空。** 详见 `Sessions/hlsl-interpreter-step183-witcher-ds-golden-layout-solved.md`。
+
+**布局取证（直读 bin 原始浮点，决定性）**：所谓"多角点复合行"是 dump 写入器伪影——bin 本体是 **VS 输出流**（=HS 输入控制点），记录宽度=**VS disasm 的 dcl_output 掩码**（o1 在 HLSL 声明 int4 但 dcl_output o1.x → 宽 1，其 int −1 位模式即 golden 中的 NaN）；写入器却按 DS 输出布局的大 stride 拷贝 → **每行滑动窗口越读**后续记录（16803：16B 记录×60B 行，`rows[i][4:]==rows[i+1][:11]` 逐位成立）。
+
+**修复**：① CP-stream 比较截断到 cp_width（VS dcl_output 掩码宽度和），越读尾巴忽略；② 门槛泛化 `in_cp==out_cp`（21346 的 4×4 纳入）；③ 共享 slot 多语义按各自掩码 lane 放置（CORNER@.xy、SIZE@.z、CM@.w）；④ **`_dedupe_duplicate_out_params`（解释器级通用修复）**：3Dmigoto 把共享 slot 的额外输出全命名 `pN`，16803 的 SIZE 与 CM_LEVEL 同名 p0、第二次赋值覆盖第一次——按程序序改名 `p0__dupK` 并重定向赋值（数目一致才动）。**注**：步 181 的 16803"4/4"是旧宽度只比 corner.xy 的弱通过，本步为完整记录比较。
+
+**21346 余 169 行定性**：全部集中在 cp[4]（clipmap 页索引）；trace 证实顶点确实在 dump 的 t17 页表 page0 矩形之外、我们的包含判定正确 → **t17 页表（逐帧随相机更新）是帧级动态资源家族第四证据**（t22/cb12/t1/t17）。
+
+**结果**：2 案晋级（回归表 **152 案**、Dump 剩 **21 案**）；其余逐案持平。
 
 # 184
 ## Prompts

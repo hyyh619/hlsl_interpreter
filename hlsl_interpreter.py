@@ -5492,8 +5492,46 @@ class HLSLInterpreter:
                     current[swizzle_map[ch]] = v
         local_vars[var_name] = current
 
+    def _dedupe_duplicate_out_params(self, code: str) -> str:
+        """3Dmigoto names every slot-shared EXTRA output component `pN` — two
+        different semantics on one slot collide (witcher's
+        `out float p0 : TESS_BLOCK_SIZE0` and `out float p0 :
+        TESS_BLOCK_CM_LEVEL0`): the second body assignment overwrites the
+        first and the first semantic's value is silently lost. Rename the
+        duplicate declarations p0 -> p0__dup1.. and re-target the body
+        assignments to them IN PROGRAM ORDER (the decompiler emits the
+        writes in declaration order). Only applies when the assignment
+        count matches the declaration count — otherwise the source is left
+        untouched."""
+        decls = list(re.finditer(r'\bout\s+\w+\s+(p\d+)\s*:\s*(\w+)', code))
+        by_name = {}
+        for m in decls:
+            by_name.setdefault(m.group(1), []).append(m)
+        for pname, ms in by_name.items():
+            if len(ms) < 2:
+                continue
+            assigns = [a for a in re.finditer(
+                r'\b%s(\.\w+)?\s*=' % re.escape(pname), code)
+                if a.start() > ms[-1].end()]
+            if len(assigns) != len(ms):
+                continue
+            # rewrite from the end so positions stay valid; index 0 keeps pname
+            for k in range(len(ms) - 1, 0, -1):
+                newname = f'{pname}__dup{k}'
+                a = assigns[k]
+                code = (code[:a.start()] + newname +
+                        code[a.start() + len(pname):])
+                d = ms[k]
+                s = d.group(0).replace(pname, newname, 1)
+                code = code[:d.start()] + s + code[d.end():]
+            self.log_output(
+                f"Renamed {len(ms) - 1} duplicate '{pname}' out-param "
+                f"declaration(s) (slot-shared semantics collision).")
+        return code
+
     def preprocess_hlsl(self, code: str) -> str:
         """Preprocess HLSL code: expand #define macros, strip preprocessor directives."""
+        code = self._dedupe_duplicate_out_params(code)
         defines = {}
         result_lines = []
         for line in code.split('\n'):
