@@ -15,6 +15,90 @@ _NO_FMA = object()
 _MISS = object()
 
 
+def _f32s(x):
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
+
+_TWO_PI = 6.283185307179586
+_INV_2PI_F32 = 0.15915493667125702        # float32(1/2π) as a double
+# float32 split of 2π: hi = f32(2π), lo = f32(2π − hi)
+_PI2_HI_F32 = 6.2831854820251465
+_PI2_LO_F32 = 4.866440936774252e-08
+
+
+def _sin_libm(x):
+    return math.sin(x)
+
+
+def _cos_libm(x):
+    return math.cos(x)
+
+
+def _sin_f32red(x):
+    """Naive f32 revolution reduction (step 174 — historically net negative)."""
+    if not math.isfinite(x) or abs(x) < _TWO_PI:
+        return math.sin(x) if math.isfinite(x) else math.nan
+    r = _f32s(x * _INV_2PI_F32)
+    r = _f32s(r - math.floor(r))
+    return math.sin(_TWO_PI * r)
+
+
+def _cos_f32red(x):
+    if not math.isfinite(x) or abs(x) < _TWO_PI:
+        return math.cos(x) if math.isfinite(x) else math.nan
+    r = _f32s(x * _INV_2PI_F32)
+    r = _f32s(r - math.floor(r))
+    return math.cos(_TWO_PI * r)
+
+
+def _cw2_reduce(x):
+    """Cody-Waite 2-term reduction with float32 arithmetic per step:
+    k = round(x/2π); r = (x − k·hi) − k·lo (each op f32-rounded)."""
+    k = _f32s(round(_f32s(x * _INV_2PI_F32)))
+    r = _f32s(x - _f32s(k * _PI2_HI_F32))
+    return _f32s(r - _f32s(k * _PI2_LO_F32))
+
+
+def _sin_cw2(x):
+    if not math.isfinite(x) or abs(x) < _TWO_PI:
+        return math.sin(x) if math.isfinite(x) else math.nan
+    return math.sin(_cw2_reduce(x))
+
+
+def _cos_cw2(x):
+    if not math.isfinite(x) or abs(x) < _TWO_PI:
+        return math.cos(x) if math.isfinite(x) else math.nan
+    return math.cos(_cw2_reduce(x))
+
+
+def _cw2fma_reduce(x):
+    """Cody-Waite 2-term with FMA-style single rounding per mad
+    (product kept exact in double, one rounding at the subtract)."""
+    k = _f32s(round(_f32s(x * _INV_2PI_F32)))
+    r = _f32s(x - k * _PI2_HI_F32)
+    return _f32s(r - k * _PI2_LO_F32)
+
+
+def _sin_cw2fma(x):
+    if not math.isfinite(x) or abs(x) < _TWO_PI:
+        return math.sin(x) if math.isfinite(x) else math.nan
+    return math.sin(_cw2fma_reduce(x))
+
+
+def _cos_cw2fma(x):
+    if not math.isfinite(x) or abs(x) < _TWO_PI:
+        return math.cos(x) if math.isfinite(x) else math.nan
+    return math.cos(_cw2fma_reduce(x))
+
+
+_TRIG_MODELS = {
+    'libm': (_sin_libm, _cos_libm),
+    'f32red': (_sin_f32red, _cos_f32red),
+    'cw2': (_sin_cw2, _cos_cw2),
+    'cw2fma': (_sin_cw2fma, _cos_cw2fma),
+}
+
+
 class _RawBits(int):
     """An int that is known to be a REGISTER BIT PATTERN (bfrev result).
     Marks integer-op partners so `(int)float` operands are bit-reinterpreted
@@ -339,7 +423,8 @@ class HLSLInterpreter:
                 texture_list: List['Texture'] = None,
                 texture_desc_list: List['TextureDesc'] = None,
                 sampler_list: List['Sampler'] = None,
-                f32_emulation: bool = False):
+                f32_emulation: bool = False,
+                trig_model: str = 'libm'):
         self.structs: Dict[str, StructDefinition] = {}      # 解析的结构体定义
         self.cbuffers: Dict[str, CbufferDefinition] = {}    # 解析的cbuffer定义
         self.variables: Dict[str, Any] = {}                 # 全局变量
@@ -378,6 +463,12 @@ class HLSLInterpreter:
         # result to float32. Needed for hash-style outputs like frac(K*x*x)
         # where float64 intermediates diverge after amplification.
         self.f32_emulation = f32_emulation
+        # GPU trig reduction model for sin/cos/sincos ('libm' = math.sin).
+        # Vendor hardware reduces large phases differently from libm; the
+        # model is selected per run to fit against golden (step 180).
+        self.trig_model = trig_model
+        self._sin = _TRIG_MODELS.get(trig_model, _TRIG_MODELS['libm'])[0]
+        self._cos = _TRIG_MODELS.get(trig_model, _TRIG_MODELS['libm'])[1]
         self._mesh_view = None                               # MeshView实例(用于显示输入和输出)
         self._mesh_view_enabled = False                      # 是否启用MeshView
         self.vertex_pool = VertexPool()                       # 顶点池
@@ -2311,9 +2402,9 @@ class HLSLInterpreter:
             if val is None:
                 return None
             if isinstance(val, list):
-                result = [math.sin(v) for v in val]
+                result = [self._sin(v) for v in val]
             else:
-                result = math.sin(val)
+                result = self._sin(val)
             if self._dbg: self.debug_print(f"[FUNC] sin({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
@@ -2327,9 +2418,9 @@ class HLSLInterpreter:
             if val is None:
                 return None
             if isinstance(val, list):
-                result = [math.cos(v) for v in val]
+                result = [self._cos(v) for v in val]
             else:
-                result = math.cos(val)
+                result = self._cos(val)
             if self._dbg: self.debug_print(f"[FUNC] cos({self._format_float(val)}) = {self._format_float(result)}")
             return result
 
@@ -3351,10 +3442,10 @@ class HLSLInterpreter:
                     angle = self.evaluate_expression(parts[0].strip(), local_vars)
                     if angle is not None:
                         if isinstance(angle, list):
-                            s = [math.sin(a) for a in angle]
-                            c = [math.cos(a) for a in angle]
+                            s = [self._sin(a) for a in angle]
+                            c = [self._cos(a) for a in angle]
                         else:
-                            s, c = math.sin(angle), math.cos(angle)
+                            s, c = self._sin(angle), self._cos(angle)
                         self._assign_lvalue(parts[1].strip(), s, local_vars)
                         self._assign_lvalue(parts[2].strip(), c, local_vars)
                     self.debug_print(f"[STMT] {stmt} => sincos written")

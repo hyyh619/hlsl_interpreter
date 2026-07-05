@@ -99,6 +99,7 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
         # PS fast on full-screen draws like event7358).
         f32_emulation=(config.get('float32_emulation', False)
                        and shader_stage == d3d.SHADER_STAGE_VS),
+        trig_model=config.get('trig_model', 'libm'),
     )
     _live_interpreters.append(interp)
     return interp

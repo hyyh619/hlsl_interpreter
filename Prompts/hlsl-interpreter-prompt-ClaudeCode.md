@@ -3430,8 +3430,15 @@ Notice:
 
 **22229**：余 2 行 diff=0.005075，维持不放宽容差。**类 E 最终版图（11 案）**：7 消灭 / 3 结构（21719/21895/22260）/ 1 容差边缘（22229）。**对导出侧的建议已写入 session 文档**（转交核实 dx_dump 的 SRV/cbuffer dump 时点）。
 
-# 180
+# 180 修复超越函数问题
 ## Prompts
+修复超越函数问题
+D. GPU 超越函数墙（7 案）
+案例：TombRaider_event2848/7308（827/1548，rsqrt/sincos 程序化顶点动画）； manhattan_event87/124/161/198（各差 1–2 行，frac(sin(≈80000)) 出生粒子哈希）； sekiro2_event3207/9493 残余 1235 行（sin(≈3889 rad) 风力大相位，Parallels GPU）。
+
+共性：大相位/深链条超越函数的硬件近似差异。步 174 已实证 f32 归约模型净负效 （44341→44338，已回滚）——该 GPU 归约精度高于朴素 f32 模型，math.sin 整体更近。
+
+意见：若要继续，正确姿势是数据驱动拟合——批量反解失败顶点 golden 隐含的 sin/rsqrt 输出，与多种归约模型（Cody-Waite 双 f32、Payne-Hanek、查表+插值）比对 残差分布，确认 vendor 实际实现再落地。manhattan 每案只差 1–2 行、TombRaider 已 827/1548，按"已知墙"接受更划算。不放宽全局容差（会掩蔽真 bug）。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3441,6 +3448,18 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+**超越函数墙数据驱动定量收案：libm 即最优近似，7 案归档为已证实的墙；回归 148/148 零扰动。** 详见 `Sessions/hlsl-interpreter-step180-transcendental-wall-quantified.md`。
+
+**基建**：可插拔 trig 归约模型（config 键 `trig_model`：libm/f32red/cw2/cw2fma，默认 libm 与历史逐位一致），sin/cos/sincos 全部经 `self._sin/_cos` 路由——保留作未来 vendor 拟合工具。
+
+**拟合一（sekiro2_3207 全案扫描，Parallels GPU）**：libm 44341 > f32red/cw2/cw2fma 均 44338——任何 f32 级归约模型都是倒退（步 174 净负效由此解释）。
+
+**拟合二（manhattan 哈希反解，nVidia GPU，决定性）**：出生行输出线性可逆 → frac → **隐含硬件 sin 精确到 ~2e-5**（整数部分由 libm 定）。4 案 14 样本（args 1.4e4~1e5 rad）：隐含 sin 与 libm 偏差 max 2.4e-5 / mean 7.5e-6；f32red/cw2/cw2fma 残差 **差 100–1000 倍**（nVidia 用宽位 Payne-Hanek 类 RRO）；归约角偏移符号无规律、dr/arg 非常数 → **硬件定点量化噪声（~2^-15 rad），非解析可建模偏置**。
+
+**结论**：① manhattan 的 `frac(sin·87362)` 把 1e-5 角噪声放大到 O(1)，出生行需比特级复刻 nVidia SFU 的 RRO+二次插值表（未公开）——工程不可行；② TombRaider 同为 nVidia、sekiro 为 Parallels，同理归档；③ **默认保持 libm、不放宽容差**。
+
+**方法论**：`frac(sin(a)·k)` 哈希放大链是反解 vendor 超越函数真实误差分布的天然探针——k 越大约束越精，无需任何硬件文档。
 
 # 181
 ## Prompts
