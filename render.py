@@ -1753,6 +1753,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
                 vertex=config.get('anim_vertex_delay', 0.0),
                 primitive=config.get('anim_primitive_delay', 0.0),
                 pixel=config.get('anim_pixel_delay', 0.0))
+        # Let the "Draw Data" panel browse the extracted zip contents.
+        if _mv0 is not None and hasattr(_mv0, 'set_data_folder'):
+            _mv0.set_data_folder(data_folder)
 
     if not os.path.exists(vs_hlsl):
         print(f"Error: VS shader not found: {vs_hlsl}")

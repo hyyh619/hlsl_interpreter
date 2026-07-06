@@ -114,11 +114,91 @@ class WebMeshView:
         # Pipeline controller (set by render.py) enabling stage replay and
         # per-vertex / per-pixel instruction tracing from the browser.
         self._controller = None
+        # Extracted draw-zip folder, browsed by the "Draw Data" panel.
+        self._data_folder = None
 
     def set_controller(self, controller):
         """Attach a pipeline controller exposing replay(stage) / trace_vertex(i)
         / trace_pixel(x, y). Enables the Replay buttons and Info-panel traces."""
         self._controller = controller
+
+    def set_data_folder(self, path):
+        """Point the 'Draw Data' panel at the extracted zip folder so the browser
+        can list and preview its raw files (CSV / images / raw dumps)."""
+        self._data_folder = path
+
+    # ------------------------------------------------------- draw-data browsing
+    _IMAGE_EXT = ('.bmp', '.png', '.jpg', '.jpeg', '.gif')
+    _TEXT_EXT = ('.hlsl', '.hlsli', '.txt', '.json', '.h', '.log', '.md', '.csv')
+    _CT = {'.bmp': 'image/bmp', '.png': 'image/png', '.jpg': 'image/jpeg',
+           '.jpeg': 'image/jpeg', '.gif': 'image/gif'}
+    _FILE_PREVIEW_CAP = 512 * 1024   # cap non-image previews to keep memory small
+
+    @classmethod
+    def _file_kind(cls, name):
+        ext = os.path.splitext(name)[1].lower()
+        if ext in cls._IMAGE_EXT:
+            return 'image'
+        if ext == '.csv':
+            return 'csv'
+        if ext in cls._TEXT_EXT:
+            return 'text'
+        return 'binary'
+
+    def _list_files(self):
+        root = self._data_folder
+        if not root or not os.path.isdir(root):
+            return []
+        out = []
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                full = os.path.join(dirpath, f)
+                rel = os.path.relpath(full, root).replace(os.sep, '/')
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    size = 0
+                out.append({'name': rel, 'size': size, 'kind': self._file_kind(f)})
+        out.sort(key=lambda d: d['name'])
+        return out
+
+    def _resolve_safe(self, rel):
+        """Resolve a browser-supplied relative path inside the data folder,
+        rejecting anything that escapes it (path-traversal guard)."""
+        if not self._data_folder:
+            return None
+        root = os.path.abspath(self._data_folder)
+        full = os.path.abspath(os.path.join(root, rel))
+        if full != root and not full.startswith(root + os.sep):
+            return None
+        return full if os.path.isfile(full) else None
+
+    def _file_response(self, rel):
+        """(status, content_type, body) for GET /file?name=rel."""
+        full = self._resolve_safe(rel)
+        if full is None:
+            return 404, 'text/plain', b'not found'
+        ext = os.path.splitext(full)[1].lower()
+        kind = self._file_kind(full)
+        try:
+            if kind == 'image':
+                with open(full, 'rb') as fh:
+                    body = fh.read()
+                return 200, self._CT.get(ext, 'application/octet-stream'), body
+            # text / csv / binary: cap the preview size
+            with open(full, 'rb') as fh:
+                body = fh.read(self._FILE_PREVIEW_CAP + 1)
+            truncated = len(body) > self._FILE_PREVIEW_CAP
+            body = body[:self._FILE_PREVIEW_CAP]
+            if kind in ('text', 'csv'):
+                text = body.decode('utf-8', errors='replace')
+                if truncated:
+                    text += '\n... (truncated preview)'
+                return 200, 'text/plain; charset=utf-8', text.encode('utf-8')
+            # binary → send raw bytes; the client hex-dumps them
+            return 200, 'application/octet-stream', body
+        except OSError as e:
+            return 500, 'text/plain', f'read error: {e}'.encode('utf-8')
 
     # ------------------------------------------------------------ bookkeeping
     def _bump(self):
@@ -519,6 +599,17 @@ class WebMeshView:
                     if which not in ('rast', 'ps', 'om'):
                         which = 'rast'
                     self._send(200, view._pixels_body(which), 'application/json')
+                elif path == '/files':
+                    body = json.dumps(view._list_files(),
+                                      separators=(',', ':')).encode('utf-8')
+                    self._send(200, body, 'application/json')
+                elif path == '/file':
+                    q = urllib.parse.parse_qs(parts[1] if len(parts) > 1 else '')
+                    rel = q.get('name', [''])[0]
+                    code, ctype, body = view._file_response(rel)
+                    if isinstance(body, str):
+                        body = body.encode('utf-8')
+                    self._send(code, body, ctype)
                 elif path == '/set':
                     # Live animation-delay control: /set?vertex=..&primitive=..&pixel=..
                     # (values in seconds). The pipeline reads these each iteration.
@@ -654,6 +745,23 @@ _PAGE = r"""<!doctype html>
   .replay button:hover{background:#356048;}
   .replay button:disabled{opacity:.5;cursor:default;}
   #replaymsg{color:#9fb;}
+  /* Draw-data browser panel */
+  .datawrap{display:flex;}
+  #filelist{width:280px;max-height:300px;overflow:auto;border-right:1px solid #2a2a44;
+    font-size:11px;padding:2px 0;}
+  #filelist .f{padding:3px 8px;cursor:pointer;display:flex;justify-content:space-between;
+    gap:8px;white-space:nowrap;}
+  #filelist .f:hover{background:#26264a;}
+  #filelist .f.sel{background:#33335a;color:#fff;}
+  #filelist .nm{overflow:hidden;text-overflow:ellipsis;}
+  #filelist .sz{color:#778;font-size:10px;flex:none;}
+  #filelist .kind{color:#5a7;font-size:9px;flex:none;width:42px;text-align:right;}
+  #filepreview{flex:1;min-width:420px;max-height:300px;overflow:auto;padding:8px;font-size:11px;}
+  #filepreview pre{margin:0;white-space:pre;color:#cde;}
+  #filepreview table{border-collapse:collapse;font-size:11px;}
+  #filepreview td,#filepreview th{border:1px solid #2a2a44;padding:1px 5px;white-space:nowrap;}
+  #filepreview th{background:#26264a;color:#cdeeff;position:sticky;top:0;}
+  #filepreview img{image-rendering:pixelated;max-width:100%;background:#000;border:1px solid #2a2a44;}
   #info,#pxinfo{width:340px;padding:8px;white-space:pre-wrap;
     font-size:12px;overflow:auto;max-height:640px;}
   #info{min-height:250px;}
@@ -724,6 +832,13 @@ _PAGE = r"""<!doctype html>
   <div class="panel" id="panel-pixel">
     <div class="titlebar">Selected Pixel Info <span class="grip">&#8942;&#8942;</span></div>
     <div id="pxinfo">Click a pixel (Rasterizer / Pixel Shader / Output Merger tab) to trace its PS instructions.</div>
+  </div>
+  <div class="panel" id="panel-data" style="width:1000px;">
+    <div class="titlebar">Draw Data (raw zip) <span class="grip">&#8942;&#8942;</span></div>
+    <div class="datawrap">
+      <div id="filelist">(loading file list...)</div>
+      <div id="filepreview">Select a file on the left to preview (raw hex / CSV table / image).</div>
+    </div>
   </div>
 </div>
 <script>
@@ -993,7 +1108,7 @@ function refreshHeader(){
 
 // ---- Draggable panels (step 191): free layout, dragged by the titlebar,
 // persisted to localStorage so the arrangement survives reloads. ----
-var LAYOUT_KEY="hlsl_web_layout_v2";  // v2: Selected Info split into two panels
+var LAYOUT_KEY="hlsl_web_layout_v3";  // v3: added the Draw Data panel
 function loadLayout(){ try{return JSON.parse(localStorage.getItem(LAYOUT_KEY));}catch(e){return null;} }
 function saveLayout(){
   var o={};
@@ -1010,16 +1125,24 @@ function fitWrap(){
   w.style.minHeight=(maxB+20)+"px"; w.style.minWidth=(maxR+20)+"px";
 }
 function tileLayout(){
-  // Row-wrapping tile so all panels stay on-screen (now 4 panels: input,
-  // output, vertex info, pixel info).
+  // Row-wrapping tile so all panels stay on-screen. The Draw Data panel is
+  // docked last, on its own row at the bottom (requirement: default at bottom).
   var pad=8, gap=10, x=pad, y=pad, rowH=0;
   var maxW=Math.max((document.documentElement.clientWidth||1400)-pad, 700);
+  var dataPanel=document.getElementById("panel-data");
   document.querySelectorAll(".panel").forEach(function(p){
+    if(p===dataPanel)return;
     var w=p.offsetWidth, h=p.offsetHeight;
     if(x>pad && x+w>maxW){ x=pad; y+=rowH+gap; rowH=0; }
     p.style.left=x+"px"; p.style.top=y+"px";
     x+=w+gap; rowH=Math.max(rowH,h);
   });
+  if(dataPanel){
+    var maxB=pad;
+    document.querySelectorAll(".panel").forEach(function(p){
+      if(p!==dataPanel)maxB=Math.max(maxB,(parseInt(p.style.top)||0)+p.offsetHeight);});
+    dataPanel.style.left=pad+"px"; dataPanel.style.top=(maxB+gap)+"px";
+  }
 }
 function resetLayout(){
   try{ localStorage.removeItem(LAYOUT_KEY); }catch(e){}
@@ -1047,6 +1170,71 @@ function makeDraggable(panel){
     document.addEventListener("mouseup",mu);
   });
 }
+// ---- Draw Data panel: list + preview raw zip files (step 193) ----
+function fmtSize(n){
+  return n<1024?n+" B":(n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(1)+" MB");
+}
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function hexdump(bytes){
+  var lines=[], n=bytes.length, pad=function(s,w){while(s.length<w)s="0"+s;return s;};
+  for(var i=0;i<n;i+=16){
+    var hex="", asc="";
+    for(var j=0;j<16;j++){
+      if(i+j<n){var b=bytes[i+j]; hex+=pad(b.toString(16),2)+" "; asc+=(b>=32&&b<127)?String.fromCharCode(b):".";}
+      else hex+="   ";
+    }
+    lines.push(pad(i.toString(16),8)+"  "+hex+" "+asc);
+  }
+  return esc(lines.join("\n"));
+}
+function csvTable(text){
+  var rows=text.split(/\r?\n/); var out=[];
+  for(var i=0;i<rows.length;i++){ if(rows[i].length) out.push(rows[i]); }
+  var max=Math.min(out.length, 300), html="<table>";
+  for(var i=0;i<max;i++){
+    var cells=out[i].split(","), tag=(i===0?"th":"td");
+    html+="<tr>";
+    for(var j=0;j<cells.length;j++) html+="<"+tag+">"+esc(cells[j])+"</"+tag+">";
+    html+="</tr>";
+  }
+  html+="</table>";
+  if(out.length>max) html+="<div style='color:#778'>... "+(out.length-max)+" more rows</div>";
+  return html;
+}
+function previewFile(f){
+  var el=document.getElementById("filepreview");
+  var url="/file?name="+encodeURIComponent(f.name);
+  if(f.kind==="image"){ el.innerHTML="<img src='"+url+"'>"; return; }
+  el.textContent="loading "+f.name+" ...";
+  if(f.kind==="binary"){
+    fetch(url,{cache:"no-store"}).then(function(r){return r.arrayBuffer();}).then(function(buf){
+      el.innerHTML="<pre>"+hexdump(new Uint8Array(buf))+"</pre>";
+    }).catch(function(){el.textContent="(failed to load)";});
+    return;
+  }
+  fetch(url,{cache:"no-store"}).then(function(r){return r.text();}).then(function(t){
+    if(f.kind==="csv"){ el.innerHTML=csvTable(t); }
+    else { el.innerHTML=""; var pre=document.createElement("pre"); pre.textContent=t; el.appendChild(pre); }
+  }).catch(function(){el.textContent="(failed to load)";});
+}
+function loadFileList(){
+  fetchJSON("/files",function(list){
+    var el=document.getElementById("filelist");
+    if(!list||!list.length){ el.textContent="(no draw data)"; return; }
+    el.innerHTML="";
+    list.forEach(function(f){
+      var d=document.createElement("div"); d.className="f"; d.title=f.name;
+      d.innerHTML="<span class='nm'>"+esc(f.name)+"</span><span class='sz'>"+fmtSize(f.size)+
+        "</span><span class='kind'>"+f.kind+"</span>";
+      d.addEventListener("click",function(){
+        var prev=el.querySelector(".f.sel"); if(prev)prev.classList.remove("sel");
+        d.classList.add("sel"); previewFile(f);
+      });
+      el.appendChild(d);
+    });
+  });
+}
+
 function initPanels(){
   var panels=[].slice.call(document.querySelectorAll(".panel"));
   var saved=loadLayout();
@@ -1180,6 +1368,7 @@ function tracePixel(x,y){
   initPanels();
   document.getElementById("resetlayout").addEventListener("click",resetLayout);
   window.addEventListener("resize", fitWrap);
+  loadFileList();
 
   setTab("vs");
   fitWrap();

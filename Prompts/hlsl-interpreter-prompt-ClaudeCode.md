@@ -3869,9 +3869,13 @@ Notice:
 `panel-info` 已无、布局键为 v2；抽取 `<script>` 跑 `node --check` **语法通过**；服务端不变（顶点追踪仍
 写 `#info`、像素追踪写 `#pxinfo`，元素 id 未变）。**回归 118/123 不变**（headless 回归不实例化该视图）。
 
-# 193
+# 193 动态 web 视图增加窗口显示原始的draw zip data
 ## Prompts
-
+动态 web 视图增加窗口显示当前执行的原始draw zip data
+1. 窗口左边是列表展示zip data内的文件
+2. 窗口右边是预览视图，可以预览raw data/csv文件/image文件
+3. 窗口默认摆放在最下面
+ 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
@@ -3880,6 +3884,31 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+新增可拖动面板 `panel-data`（"Draw Data"）：左列表 + 右预览，读取解压后的 zip 目录。该临时目录在整个
+交互会话期间存在（仅在 `_execute_pipeline` 返回后才 `rmtree`，而它阻塞在 stdin 循环上），故服务端可边浏览边读。
+
+**服务端（`web_mesh_view.py`）**：
+- `set_data_folder(path)`——render.py 在启用视图后（VS 之前）即指向解压目录，页面一打开列表就绪。
+- `GET /files` → `os.walk` 出 `[{name,size,kind}]`，`kind` 按扩展名分 image/csv/text/binary。
+- `GET /file?name=<rel>` → 文件字节：图片带正确 MIME（`image/bmp` 等）；text/csv 以 UTF-8 解码（错误替换）；
+  binary 为 `application/octet-stream`。非图片预览截断到 512KB。`_resolve_safe` 规范化路径并拒绝越界
+  （路径穿越防护 → 404）。
+
+**客户端**：`panel-data`（宽 1000）含 `#filelist`（左）+`#filepreview`（右）。`loadFileList()` 取一次
+`/files` 渲染可点列表（名/大小/类型）；`previewFile(f)` 按 kind 分派：**image**→`<img>`；**csv**→解析成
+HTML `<table>`（前 300 行）；**text**→`<pre>`；**binary**→取 ArrayBuffer 做**十六进制转储**。
+**默认置底**：`tileLayout()` 先行/换行排其余面板，再把 `panel-data` 单独一行停到所有面板下方；布局键
+`v2→v3` 使新面板取默认底部位置。
+
+**改动**：`web_mesh_view.py`（set_data_folder、`_list_files`/`_file_kind`/`_resolve_safe`/`_file_response`、
+`/files`+`/file` 路由、panel-data 标记+CSS+浏览 JS、tileLayout 置底、LAYOUT_KEY v3）；`render.py`
+（启用视图时 `set_data_folder(data_folder)`）。
+
+**验证**：单测——假目录 `/files` 类型正确、hlsl/csv 文本与二进制字节可取、**路径穿越被挡（404）**、页面含
+panel-data/#filelist/#filepreview+浏览 JS、抽取 `<script>` 跑 `node --check` 通过。端到端（`event104`）：
+`/files` 列出 **56 个真实文件**（18 csv/26 binary/4 text/8 image），CSV 预览出表头，`PS_shader.dxbc`
+送 900B 供十六进制、`PS_slot_0_res_88_mip0_arr0.bmp` 送 49206B 供图片预览。**回归 118/123 不变**。
 
 # 194
 ## Prompts
