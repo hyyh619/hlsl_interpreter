@@ -18,7 +18,7 @@
 - **零第三方依赖**：仅用 Python 标准库；可选的 Mesh 可视化界面用内置 `tkinter`。
 - **回归测试套件**：`run_regression.py` 批量验证所有已知正确的抓帧，修改后一键检查有无回退。
 - **Debug Trace**：可配置的逐像素管线数据导出，用于定位 PS / 纹理采样的精度问题。
-- **可视化（可选）**：`tkinter` 界面查看输入/输出网格、光栅化像素、着色像素、动画步进。
+- **可视化（可选）**：三选一显示后端 —— `tkinter` 桌面界面、静态 HTML 导出、或**动态 Web 视图**（浏览器实时跟随 VS/光栅化/PS 执行进度逐顶点/逐图元/逐像素动画，支持 normal 向量显示与每阶段动画延迟调节）。
 
 ---
 
@@ -231,6 +231,8 @@ JSON 配置
 | `d3d.py` | D3D 枚举常量（`SHADER_STAGE_*`、图元拓扑） |
 | `debug_trace.py` | 逐像素管线数据导出（Debug Trace 功能） |
 | `mesh_view.py` | 可选的 tkinter 可视化界面（网格 + 像素 + 动画） |
+| `html_mesh_view.py` | 静态 HTML 网格导出（离线查看，无需 tkinter） |
+| `web_mesh_view.py` | 动态 Web 视图：本地 HTTP 服务，浏览器实时跟随 VS/光栅化/PS 进度动画，含 normal 显示与每阶段动画延迟 |
 | `run_regression.py` | 回归测试套件驱动脚本 |
 
 ---
@@ -249,6 +251,8 @@ hlsl_interpreter/
 ├── pixel.py                   # Pixel 数据类
 ├── d3d.py                     # D3D 枚举常量
 ├── mesh_view.py               # tkinter 可视化界面
+├── html_mesh_view.py          # 静态 HTML 网格导出
+├── web_mesh_view.py           # 动态 Web 视图（实时进度动画 + 延迟调节）
 ├── run_regression.py          # 回归测试套件
 ├── Cases/
 │   ├── Default.json           # 标准运行配置（入口）
@@ -257,7 +261,7 @@ hlsl_interpreter/
 │   ├── regression_test_zip_files.csv   # 回归测试用例列表
 │   └── regression_logs/       # 每个测试用例的独立日志
 ├── Prompts/                   # 开发需求 / 规格记录（驱动开发的提示词历史）
-└── Sessions/                  # 91+ 份逐步开发会话日志（hlsl-stepN-*.md）
+└── Sessions/                  # 188+ 份逐步开发会话日志（hlsl-stepN-*.md）
 ```
 
 ---

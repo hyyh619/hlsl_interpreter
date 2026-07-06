@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 177 — witcher 采样家族残余（类 E）：整数噪声哈希的原始位语义</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step177-witcher-noise-hash-raw-bits</span></div>
+<div class="wrap">
+<h1>Step 177 — witcher 采样家族残余（类 E）：整数噪声哈希的原始位语义</h1>
+<h2>任务</h2>
+<p>E 类 6 案：21719（368/1728）、21895（1057/6360）、21979/22049（132/840）、<br>22260（54/108）、22229（10/12）。按步 175 优先级从 22260 开刀，后转 21979。</p>
+<h2>22260 调查（未修，定性移交）</h2>
+<p>失败行仅 o2（雾景深色），golden 的 o2.w 与我们<b>完全一致</b>（0.02359）——<br>即雾光学深度 r0.z 正确；只有 xyz 的混合因子<br><code>saturate(r0.z·cb12[190].x + cb12[190].y)</code> 差异（我们 0，golden 需 0.1424）。<br>以 dump 的 cb12[190]=[0.2625, −0.2416] 反解：需要 r0.z≈1.46，而该量由<br>saturate/u^k 构造<b>数学上无法超过 1</b>——golden 所需值与 dump 常量不可调和，<br>且同一 r0.z 的其它消费者（o2.w、o0.w）全部通过。定性：**cb12（帧级共享<br>cbuffer）捕获时机与 draw 时值不一致**的嫌疑最大（同 ES2991 家族），留待<br>导出侧核实。</p>
+<h2>21979 定案：整数噪声哈希的三层语义缺失（修复后 840/840 全 PASS）</h2>
+<p>shader 是纯程序化草地摆动：时间驱动的<b>整数格点哈希噪声</b><br>（bfrev + xorshift + imul/imad 二次哈希 + smoothstep 插值），无纹理。<br>复现器（replica21979.py）通过逐 disasm 指令对照，以 golden TEXCOORD2<br>（世界坐标，直接暴露噪声值）为 oracle，<b>840/840 比特级复现</b>后确证 GPU 语义：</p>
+<ol>
+<li><b><code>iadd</code>/<code>bfrev</code> 直接消费 round_ni 结果寄存器的原始 float32 位</b> （disasm 无任何 ftoi/ftou！）——3Dmigoto 渲染成 <code>(int)x</code>/<code>(uint)x</code> 的强转实为<b>位记号</b>。floor(−3345.0) 参与 iadd 的是 0xC5511000，不是 −3345。</li>
+<li><b><code>ishr</code> 是算术右移</b>，而 3Dmigoto 把 ishr 和 ushr <b>都</b>渲染成 <code>(uint)x &gt;&gt; n</code>——文本层无法区分（22229 的 ubfe 展开需要逻辑移位， 同样的文本！），只能 disasm 感知修复。</li>
+<li>imul/imad 按 32 位回绕（Python bigint 需 wrap）。</li>
+</ol>
+<h3>解释器修复（hlsl_interpreter.py + render.py）</h3>
+<ol>
+<li><b><code>reversebits</code>（bfrev）实现</b>：取参数（剥掉 int-cast 记号）的 float32 位模式、32 位反转，返回 <code>_RawBits</code>（int 子类，标记"寄存器位模式"）。 此前整条语句被静默跳过、寄存器留旧值。</li>
+<li><b><code>_RawBits</code> 伙伴取位规则</b>（binary_op 的 +,−,*）：一侧是 _RawBits 时， 另一侧的 float 伙伴按位重解释（DXBC 整型指令吃原始位；反编译的 cast 标记因<b>贪婪解析</b>——<code>(int)a+(int)b</code> 解析成 <code>(int)(a+(int)b)</code>——不可靠， 凡 float 皆取位）；运算内联做 32 位回绕，<b>绕过 execute_binary_op 的 f32_emulation 舍入</b>（否则位模式被转成 float、链条断裂）。</li>
+<li><b><code>fix_shift_signedness(code, disasm)</code></b>（render.py 接线）：HLSL 的 <code>&gt;&gt;</code> 与 disasm 的 ishr/ushr 按程序序 1:1 配对（数目不符则整体不动——ubfe 展开天然错开而自我保护），ishr 实例的 <code>(uint)</code> 改写为 <code>(int)</code>； evaluator 中 <code>(int)x &gt;&gt; n</code> 走算术（符号扩展）路径。</li>
+<li><b><code>_eval_bitwise_operand</code> 放宽</b>：位操作上下文中 int-cast 的 float 操作数 一律位重解释（原先只对顶点输入放行）。</li>
+<li><b><code>_apply_swizzle_assign</code> 整数保型</b>：标量赋值原先强转 float—— <code>_RawBits(559779)</code> 存成 559779.0，读回 <code>(int)</code> 时被(4)位转成 float 位 模式，全链崩坏。现在 int（含 _RawBits）原样存储。</li>
+<li><b>ftou 负数→0</b>（D3D 规范）：<code>(uint)</code> 强转 finite 负 float 值时返回 0 （denormal 位模式优先级更高，不受影响）。</li>
+</ol>
+<h3>排障路径（记录教训）</h3>
+<p>三个中间态——66/840（我第一版 reversebits 按值截断）、414/840<br>（f32_emulation 把原始位转 float）、840/840——每一步都靠"复现器先证明<br>语义、trace 反照找分歧"收敛；**pass 数在容差边缘随机涨落（132/87/66/57），<br>绝不能当作方向信号**，只有对 golden 中间值的精确比对才可靠。</p>
+<h2>家族结果</h2>
+<table>
+<tr><th>案例</th><th>修复前</th><th>修复后</th></tr>
+<tr><td>21979</td><td>132/840</td><td><b>PASS 840/840</b>（晋级）</td></tr>
+<tr><td>22049</td><td>132/840</td><td>790/840（哈希搭车 +658，余 50 行另一层小差）</td></tr>
+<tr><td>21719</td><td>368/1728</td><td>368/1728（不用哈希，另有缺陷）</td></tr>
+<tr><td>21895</td><td>1057/6360</td><td>1057/6360（同上）</td></tr>
+<tr><td>22260</td><td>54/108</td><td>54/108（cb12 捕获时机嫌疑，见上）</td></tr>
+<tr><td>22229</td><td>10/12</td><td>10/12（容差边缘 0.005075）</td></tr>
+</table>
+<h3>首轮回归暴露的误伤（已修）</h3>
+<p>放宽 <code>_eval_bitwise_operand</code> 后 5 个 Octopath 案清零（2135/2912/3012/1357/1828）：<br><code>(uint)1 &amp; ~bitmask</code> 里的字面量 <code>1</code> 在解释器中求值为 float 1.0，被新规则位转成<br>0x3F800000。修复：<b>数字字面量节点不取位</b>（<code>_is_numeric_literal_node</code> 守卫）——<br>字面量是真值，只有寄存器/变量读才可能是位模式。修后 5 案全恢复、21979 保持 840/840。</p>
+<h2>全量验证</h2>
+<ul>
+<li>Dump triage 27 案：<b>21979 转 PASS（840/840）晋级</b>，22049 132→790/840， 其余各类逐案与基线持平（ES2991 错误行数 216→288 但通过行数不变—— 非通过性变化，来自 ftou 负数语义对本就失败行的影响）。</li>
+<li><b>Cases 回归（字面量修复后重跑）：146/146 全 PASS 零回归。</b></li>
+</ul>
+</div></body></html>

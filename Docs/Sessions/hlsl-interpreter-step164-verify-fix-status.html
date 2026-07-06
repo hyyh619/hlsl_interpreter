@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 164 — 验证 7 类问题修复状态（全量复跑 Dump）</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step164-verify-fix-status</span></div>
+<div class="wrap">
+<h1>Step 164 — 验证 7 类问题修复状态（全量复跑 Dump）</h1>
+<h2>任务</h2>
+<blockquote>验证下列问题（A–F2）是不是都已修复完成（除了不能修复的问题）。</blockquote>
+<h2>方法</h2>
+<p><code>python triage_dump.py --vs-only</code>（当前 Dump 48 zip；原 85→删掉已通过的）+ 对照清单逐类核对；已从 Dump 删除的<br>= 已修（其修复机制由回归守护用例验证）。回归当前 <b>132/132</b>（本步新增 Nobu586、ES2_3061 两个转通过用例）。</p>
+<h2>逐类验证结果</h2>
+<h3>A 超时（2）— 不可修（性能），维持</h3>
+<ul>
+<li><code>OldWorld_event1034</code> / <code>event2767</code>：仍 timeout(&gt;240s)，被杀前 0 个 Error（正确但慢）。<b>符合「不可修」判定</b>，非正确性问题。</li>
+</ul>
+<h3>B 无 golden（16）— 结构性不可验证，维持</h3>
+<p>全部 16 仍「no VS-vs-golden comparison」（无可比网格/0 顶点）：ES2_3093、Nobu2894、manhattan(50/87/124/161/198)、<br>sekiro2(13554/13931/14130/14388)、sekiro4(19857/20244)、witcher(16803/16817/21346)。<b>符合「不可验证」判定</b>。</p>
+<h3>C TombRaider 矩阵选择子（37）— <b>已修 35/37</b>（清单的「超 HLSL 源边界」判定被推翻）</h3>
+<ul>
+<li><b>35 个已修并删除</b>（step 160-162：从反汇编恢复选择子 + 按声明主序加载 + NaN==NaN 一致）。修复机制由回归守护： <code>event1018</code>(multi 选择子)、<code>event2129</code>(flat 蒙皮)、<code>event1802</code>(row_major 主序)、<code>event2867</code>(NaN 一致) 均在 132/132 内通过。</li>
+<li><b>2 个残留</b> <code>event2848</code>/<code>event7308</code>：<code>sv_position</code> 精度（diff 0.026），step 163 确证是 <b>GPU 超越函数 (sincos/rsqrt) float32 近似精度墙</b>（FMA 补齐后仍不变、双精度也不符），<b>不可修</b>。</li>
+<li><b>结论：C 已完成</b>（35 修复 + 2 不可修精度墙）。清单说「需 dxbc 才能定位、超出边界」——实际已用 disasm 选择子恢复 直接修好。</li>
+</ul>
+<h3>D Octopath（8）— <b>未修，仍有可修项</b></h3>
+<ul>
+<li><code>event3012</code>(30/51)：half4 修复后残 sv_position。</li>
+<li><code>event2135</code>(0/6) / <code>event2912</code>(0/504)：TEXCOORD10/11 <b>四元数/骨骼基分量置换</b>（解码顺序 bug）——<b>可修，未做</b>。</li>
+<li><code>event664</code>(0/51)：蒙皮 sv_position。</li>
+<li><code>event3601</code>(0/96)：foliage 纹理采样精度（近精度墙）。</li>
+<li><code>event576</code>/<code>event2651</code>/<code>event2682</code>(各 8/23064)：地形 heightmap 退化（cb 全 0 → LOD/索引塌缩，疑数据缺失/不可修）。</li>
+<li><b>结论：D 未完成</b>，其中四元数置换（2135/2912）是明确可修但尚未修的项。</li>
+</ul>
+<h3>E witcher（10）— 未修，主要为墙</h3>
+<p><code>event16215</code>/<code>16834</code>/<code>21719</code>/<code>21895</code>/<code>22049</code>/<code>22092</code>/<code>22201</code>/<code>22229</code>/<code>22260</code>(0/Y) + <code>event21979</code>(132/840,近 F1)。<br>step 157 已补 Texture2DArray 切片采样（采到真实 texel），但失败输出 o2/o3 受 <b>R16G16_FLOAT 细节法线 texel 精确性</b><br>限制；step 161 的 row_major 主序修复不改变这些（witcher 失败在 o2/o3 tangent，非矩阵位置）。<b>主要为 texel 精度墙</b>，<br>16834 的崩溃已在 step 159 修（现为正常 mismatch）。</p>
+<h3>F1 精度边界（2）— 不可修（精度），维持</h3>
+<p><code>sekiro2_event3207</code>/<code>event9493</code>：仍 43329/45576，diff 略超 0.005。step 163 FMA <b>未翻盘</b>（pass 数不变）——<br>属精度边界墙，不放宽全局容差。</p>
+<h3>F2 其它（10）— <b>2 已修，8 残留</b></h3>
+<ul>
+<li><b><code>Nobu15_event586</code>：已修（PASS 2174/2174）</b>——step 161 的 row_major 矩阵主序修复正好解决其 <code>mul(world,M)</code> 转置 问题（清单误判为「与 C/E 同墙」，实为可修，已修）。</li>
+<li><b><code>EndlessSpace2_event3061</code>：已修（PASS 1536/1536）</b>——step 163 的 FMA 融合把精度边缘拉入容差。</li>
+<li>残 8：<code>ES2_2991</code>(1464/1536)、<code>OldWorld_3338</code>(23550/23814)、<code>sekiro2</code>(14998/15481/16052/4833)、 <code>sekiro4</code>(20560/7844)——混合精度/其它，未修。</li>
+</ul>
+<h2>总体结论</h2>
+<p><b>「除不可修外是否都已修复」——否，尚有可修项未做</b>，但已大幅推进：</p>
+<table>
+<tr><th>类</th><th>清单数</th><th>现状</th></tr>
+<tr><td>A 超时</td><td>2</td><td>2 不可修（性能）✓ 维持</td></tr>
+<tr><td>B 无 golden</td><td>16</td><td>16 不可验证 ✓ 维持</td></tr>
+<tr><td>C 选择子</td><td>37</td><td><b>35 已修</b> + 2 不可修（超越函数精度）→ <b>完成</b></td></tr>
+<tr><td>D Octopath</td><td>8</td><td>0 修；含<b>可修未做</b>（四元数置换 2135/2912）+ 蒙皮/foliage/地形退化</td></tr>
+<tr><td>E witcher</td><td>10</td><td>0 修；主要 texel 精度墙 + 主序</td></tr>
+<tr><td>F1 精度</td><td>2</td><td>2 不可修（精度）✓ 维持</td></tr>
+<tr><td>F2 其它</td><td>10</td><td><b>2 已修</b>(Nobu586/ES2_3061) + 8 残留（混合）</td></tr>
+</table>
+<p><b>确认不可修且已正确归类</b>：A(2)、B(16)、C 残 2（超越函数精度）、F1(2)、E 的 texel 精度部分。<br><b>已修（部分超出清单预期）</b>：C 35/37、F2 的 Nobu586 与 ES2_3061。<br><b>仍有可修工作（未做）</b>：D 的四元数/骨骼基置换（event2135/2912，解码顺序 bug）是最明确的下一步；D 蒙皮 event664、<br>F2 部分行错（ES2_2991 等）待查。</p>
+<h2>本步动作</h2>
+<ul>
+<li>全量复跑 Dump（48）；确认 2 个新通过（Nobu586、ES2_3061），拷入 <code>Cases/</code> 并加入回归（<b>132/132 零回归</b>），从 Dump 删除。</li>
+<li>未改解释器代码（纯验证 + 锁定新通过用例）。</li>
+</ul>
+<h2>后续（可修未做，供下一步）</h2>
+<ol>
+<li>D 四元数/骨骼基分量置换（event2135/2912）——解码顺序 bug，最明确可修。</li>
+<li>D 蒙皮 sv_position（event664）；F2 部分行错（ES2_2991/sekiro）。</li>
+<li>其余为墙：A 性能、B 无 golden、C/E 超越函数与 texel 精度、F1 精度边界、D 地形退化（cb 全 0）。</li>
+</ol>
+</div></body></html>

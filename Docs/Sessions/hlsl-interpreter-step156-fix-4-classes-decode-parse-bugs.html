@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 156 — 修可修的 4 类（D/E/F1/F2）：落地 2 个 decode/parse bug，触到结构性墙</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step156-fix-4-classes-decode-parse-bugs</span></div>
+<div class="wrap">
+<h1>Step 156 — 修可修的 4 类（D/E/F1/F2）：落地 2 个 decode/parse bug，触到结构性墙</h1>
+<h2>任务</h2>
+<blockquote>继续修复仍需写代码修的 4 类 (~31 cases): D(9), E(10), F1(2), F2(10)。</blockquote>
+<p>step 155 把 4 类标为「仍需写代码修」。本步动手，结论分两层：<br><b>落地 2 个真实的 decode/parse 层 bug（零回归）</b>；但 4 类的 <b>PASS 阻塞点几乎都落在结构性问题上</b><br>（矩阵主序反编译、golden CSV 列错位、R16/R32 格式歧义），与 B/C/E 同墙。</p>
+<h2>调查方法</h2>
+<p>并行起两个 subagent 深挖 D（Octopath 9 例）与 F2（混合 10 例）的根因；本人同时查 E（Texture2DArray，<br>step 154 已知根因）与 F2-Nobu586。F2 agent 中途 API 断线（ECONNRESET）未回结果，F2 改为本人手查；D agent<br>回了高质量报告。</p>
+<h2>落地的修复（均零回归，回归 125/125）</h2>
+<h3>修复 1 — cbuffer 矩阵主序限定符解析 bug（<code>parse_cbuffer</code>, 约 990 行）</h3>
+<p><code>row_major float4x4 mW2P : packoffset(c0)</code> 被 <code>line.split()</code> 切成 <code>type='row_major'</code> / <code>name='float4x4'</code><br>（限定符没被剥掉，和 <code>_consume_struct</code> 在 951 行的处理不一致）。后果：**每个 <code>row_major</code>/<code>column_major</code><br>声明的 cbuffer 矩阵字段都被错误命名 → CSV 与二进制都加载不到它**（Nobu586 的 <code>mW2P</code>/<code>mW2Pt</code>/<code>mW2S</code><br>全 <code>&lt;not loaded&gt;</code>，VS 输出全 0）。</p>
+<p><b>修复</b>：split 前先 <code>re.sub(r'\b(row_major|column_major)\s+','',line)</code>。修后矩阵正确命名并由<br><code>override_cbuffers_from_binary</code> 加载（Nobu586 输出从全 0 变为真实数值）。</p>
+<h3>修复 2 — R16G16B16A16_FLOAT typed buffer 解码（<code>_typed_buffer_load</code>, 约 3538 行）</h3>
+<p>D agent 定位：<code>Buffer&lt;float4&gt;</code> 且 <code>ElementByteSize=8</code>（<code>esize//comp==2</code>）时旧代码落到 float32 分支只读<br>2 个 float32，把 4 个 half 读成垃圾（Octopath 的逐骨骼矩阵行 / packed 法线）。</p>
+<p><b>关键陷阱（第一版修复回归了 4 个 PASS 用例）</b>：8 字节元素 <b>R16G16B16A16_FLOAT(4 half)</b> 与<br><b>R32G32_FLOAT(2 float)</b> 从字节无法仅靠「half 解码全有限」区分——event1828 的 R32G32 值 <code>(0.4375,0.2031)</code><br>恰好也能解成有限 half <code>(0,1.719,0,1.578)</code>，被误判 → 回归 121/125。<br><b>双信号消歧</b>（<code>_infer_halfN_typed_buffer</code>）：仅当 (a) 全元素 half 解码有限且 <code>|v|&lt;1024</code><br><b>且</b> (b) 同样字节按 float32 解出<b>denormal</b>（~1e-41，证明 float32 视图是垃圾）时才判 half；否则默认<br>float32（保持旧行为，绝不打扰合法 float32 buffer）。8 个样本（4 个要 float32 / 4 个要 half）完美分离：</p>
+<table>
+<tr><th>用例</th><th>half_bad</th><th>f32_denorm</th><th>判定</th></tr>
+<tr><td>1320/1828/1031/283（要 float32）</td><td>混合</td><td><b>False</b></td><td>float32 ✓</td></tr>
+<tr><td>3012/2912/664/2135（要 half）</td><td>False</td><td><b>True</b></td><td>half ✓</td></tr>
+</table>
+<p>修后 event3012 由 0/51 → <b>30/51</b>；event2912/664/2135 的 buffer 值<b>已正确</b>（见下被 golden 错位挡住）。</p>
+<h2>触到的结构性墙（PASS 阻塞，非简单 bug）</h2>
+<h3>D（Octopath）— golden CSV 多 float3 列错位</h3>
+<p>half 修复后 event2135 的值已对：解码 element=<code>(-0.6611,-0.7188,-0.2131)</code>，|·| 正好等于 golden 基向量<br><code>(0.66142,0.71906,0.21323)</code>。但比较仍错——golden CSV 本身整体错位：<code>TEXCOORD10</code> 列装着 SV_POSITION 数据<br><code>[-1966,6752,10,7609]</code>，<code>SV_POSITION</code> 列是 <code>[1,0,0,0]</code>（明显损坏），基向量被挤到后面的列且**逐分量循环<br>移位**（gotcha #1 的多 float3 版）。loader 只补偿了单个 trailing float3。golden 尾部含「下一顶点垃圾」，<br>很可能<b>不可恢复</b> → 即使值对也无法 PASS。</p>
+<h3>F2（Nobu586）— 矩阵主序反编译问题（非 cbuffer 加载）</h3>
+<p>修复 1 让矩阵加载后，发现真正阻塞是主序：golden 需 <code>clip=mul(mW2P,world)</code>（每行点乘 world，验证<br><code>dot(row0,world)=-19.97 ✓</code>、<code>dot(row3,world)=161.44 ✓</code> 命中 golden），但反编译 HLSL 的<br><code>world.x*_m00.. + world.y*_m10.. + ...</code> 实为 <code>mul(world,M)</code>=转置。这是 C/E 同款主序问题，**超出<br>「解释 HLSL 源」边界**。</p>
+<h3>E（witcher）— Texture2DArray 采样缺口（step 154 已定位）</h3>
+<p>o2/o3 依赖 <code>t4.SampleLevel(s, r3.xyz, 0).xy</code>（<code>r3.z</code>=array slice）。两个 loader 都 <code>if arr!=0: continue</code><br>只装 slice 0，<code>sample()</code> 也忽略 slice index → 采样返回 0。即使实现切片采样，命中 0.005 容差仍需精确<br>UV/filter/slice/格式，概率低；且 o2/o3 还叠加主序。未动（高成本低确定性）。</p>
+<h3>F1（sekiro 3207/9493）— 精度容差</h3>
+<p>均 43329/45576，失败行 diff 略超 0.005。属容差/精度策略，未放宽全局容差（会掩盖真错）。</p>
+<h2>结果</h2>
+<ul>
+<li><b>2 个真实 decode/parse bug 已修，零回归（回归 125/125，exit 0）</b>：①cbuffer 矩阵主序限定符解析； ②R16G16B16A16_FLOAT typed buffer 双信号消歧解码。均为正确性改进（Nobu586 输出由全 0→真实值； Octopath event3012 0→30 行；event2912/664/2135 buffer 值由垃圾→正确）。</li>
+<li><b>诚实结论</b>：step 155 的「可修」偏乐观——4 类的 <b>decode/parse 层 bug 确实可修且已修</b>，但 <b>PASS 被结构性墙挡住</b>（golden CSV 多 float3 错位且尾部损坏、矩阵主序反编译、E 类纹理数组+主序、F1 精度）， 与 B/C/E 同源。本步无 Dump 用例转全 PASS，但有真实的正确性推进与一个完整的根因地图。</li>
+<li>未改 golden loader / 未碰主序重建 / 未放宽容差——这些是高风险且很可能不可恢复（golden 尾部垃圾）的 改动，不在「修可修 bug」范围内贸然动它会危及 125 基线。</li>
+</ul>
+<h2>后续（若要继续推 PASS）</h2>
+<ol>
+<li>D：实现 golden CSV「N 个连续 float3 输出」的列重映射（中等难度，且需先确认 golden 尾部是否可恢复—— event2135 的 SV_POSITION 列已是 <code>[1,0,0,0]</code> 损坏，恐不可恢复）。</li>
+<li>F2/C/E：矩阵主序——需要 DXBC 反汇编重建（step 154 的 <code>dxbc_diff</code> 寄存器级 golden 是正路），超出 HLSL 源。</li>
+<li>E：Texture2DArray 切片采样（两 loader 去掉 <code>arr!=0</code> 跳过 + <code>sample()</code> 收 slice index）。</li>
+</ol>
+</div></body></html>

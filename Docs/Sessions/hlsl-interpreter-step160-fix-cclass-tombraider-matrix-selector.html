@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 160 — 修 C 类（TombRaider）矩阵选择子：从反汇编恢复反编译丢失的成员</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step160-fix-cclass-tombraider-matrix-selector</span></div>
+<div class="wrap">
+<h1>Step 160 — 修 C 类（TombRaider）矩阵选择子：从反汇编恢复反编译丢失的成员</h1>
+<h2>任务</h2>
+<blockquote>修复 C 类：TombRaider「主序/选择子」反编译有损，超 HLSL 源边界。</blockquote>
+<p>前几步把 C 类（37 个 TombRaider）判为「反编译丢弃 <code>WorldParameters[]</code> 矩阵成员选择子，超出直接解释 HLSL 源<br>边界」。本步证明：<b>信息确实从 HLSL 源丢了，但能从权威反汇编 <code>VS_shader_disasm.txt</code> 恢复</b>，从而修好绝大多数。</p>
+<h2>两种反编译丢失模式</h2>
+<p>extract 一个 case 看清结构。<code>WorldBuffer</code> 是 <code>struct { row_major float4x4 WorldViewProject, World, ViewProject; } WorldParameters[12]</code>。<br>3Dmigoto 把 <code>WorldParameters[i].World._m10...</code> 反编译成 <code>WorldParameters[i]._m10...</code>——<b>丢了成员名</b>（哪个矩阵？<br>对 struct 直接 <code>._mRC</code> 本身非法）。disasm 不丢：<code>cb0[r0.x + N]</code> 精确给出元素内寄存器偏移。</p>
+<p>发现实际有<b>两种</b>丢失：</p>
+<ol>
+<li><b>multi（多矩阵成员）</b>：<code>struct{float4x4 A,B,C;}Arr[N]</code> → <code>Arr[i]._mR..</code> 丢成员。disasm 的 <code>cb0[reg+N]</code> 给出寄存器偏移 N，成员基址 = <code>N - R</code>（R = <code>_mR.</code> 行号）。</li>
+<li><b>flat（单个矩阵数组成员）</b>：<code>struct{float4x4 M[K];}Arr[N]</code>（蒙皮 <code>SkinningParameters[12].SkinMatrices[42]</code>） → <code>Arr[flat]._mR..</code> 把 <code>.M</code> 和内层下标一起折叠成一个<b>扁平矩阵下标</b>。K*N 个矩阵连续排布，故 <code>Arr[flat] == Arr[flat/K].M[flat%K]</code>。</li>
+</ol>
+<h2>实现</h2>
+<h3>multi（源重写，disasm 驱动）— <code>recover_struct_array_matrix_selectors</code></h3>
+<p>按程序顺序把 HLSL 的 member-less <code>Arr[idx]._mR..</code> 与 disasm 的 <code>cb&lt;slot&gt;[reg+N]</code> <b>位置对齐 1:1</b>（已在<br>event2848 多矩阵情形验证 17↔17），逐个算成员基址 <code>N-R</code>、查成员名，重写为 <code>Arr[idx].World._mR..</code>。之后既有<br>具名成员路径正确解析。带对齐数不符的 guard（数量不匹配则不改，避免误伤）。<code>render.py</code> 在 cbuffer 解析后、函数解析<br>前调用（读 <code>VS_shader_disasm.txt</code>）。</p>
+<h3>flat（运行期，布局驱动）— get_value 派发处</h3>
+<p>源重写对 flat 不可行：<code>Arr[i].M[k]._mRC</code>（带内层下标）触发表达式解析器在 <code>.M</code> 边界断开。改为<b>运行期</b>处理：<br>struct-array 派发时若 struct 仅一个矩阵数组成员且 rest 是裸 <code>._m</code>，则 <code>elem=flat//K, inner=flat%K</code>，直接以字面<br>下标调 <code>_struct_member_access(field, elem, f'.{M}[{inner}]._mR..')</code>（字面下标避开解析器限制）。</p>
+<h2>结果</h2>
+<p><b>TombRaider：0 → 29/37 PASS。</b></p>
+<ul>
+<li>multi（WorldParameters 成员选择子）修复一批；flat（SkinningParameters 扁平蒙皮）再修一批 （event2129 0→4407/4407）。</li>
+<li><b>回归 128/128 PASS（零回归）</b>；新增 2 个代表用例入回归并拷入 <code>Cases/</code>：<code>event1018</code>（multi 选择子）、 <code>event2129</code>（flat 蒙皮），守护两条恢复路径。</li>
+<li>从 Dump 删除 29 个转通过的 TombRaider zip（Dump 85→56；TombRaider 37→8）。</li>
+</ul>
+<h3>仍失败的 8 个（<b>不同问题，非选择子</b>）</h3>
+<ul>
+<li><b>TEXCOORD6 = <code>WorldToPSSM0</code>（7 个：2201/2848/2867/2880/2892/2899/7308）</b>：这是 SceneBuffer 里一个<b>普通 float4x4</b> 的「矩阵主序」问题（disasm <code>r0.x*reg0+..</code> 用寄存器行，与我方 <code>_m00..</code>=field.data 的取法不一致； golden <code>[0,0,-1,1]</code> 来自 reg56=<code>[0,0,-1,1]</code>）。与 step-158 的 Nobu586 <code>mul(world,M)</code> vs <code>mul(M,world)</code> 同类 <b>结构性主序墙</b>，且与正常工作的 ScreenMatrix 走同一加载路径——<b>贸然改普通矩阵转置会危及 128 回归与刚修好的 29 个</b>，故本步不动。</li>
+<li><b>event1802（1 个）</b>：4 顶点 TriangleStrip 的 World=identity 边缘案，golden 为 SV-Position-first 的 uint 列 位重解释布局，sv_position 数值边缘；非选择子问题。</li>
+</ul>
+<h2>本步代码改动</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code>：新增 <code>recover_struct_array_matrix_selectors</code>（multi，disasm 驱动源重写）+ get_value 派发处 flat 单矩阵数组运行期分解。</li>
+<li><code>render.py</code>：cbuffer 解析后、函数解析前调用恢复（读 disasm）。</li>
+<li>回归 +2 TombRaider 代表用例（128/128）。</li>
+</ul>
+<h2>结论</h2>
+<p>C 类「矩阵选择子」是<b>反编译丢失但可从 disasm 恢复</b>的真实可修问题，已修 <b>29/37</b>，零回归。剩 8 个属不同的<br>普通矩阵主序墙（WorldToPSSM0）+ 一个 identity 边缘，非选择子，留待主序专项（需 <code>dxbc_diff</code> 寄存器级 golden /<br>统一矩阵主序策略，风险高）。</p>
+<h2>后续</h2>
+<ul>
+<li>普通矩阵主序（WorldToPSSM0 / Nobu586 / 部分 E 类）：需统一「cbuffer 矩阵寄存器=行，按 disasm <code>cb[reg]</code> 语义乘」的策略，但要保证 ScreenMatrix 等现通过用例不回归——是独立的高风险专项。</li>
+<li>event1802：SV-Position-first + uint 列的 4 顶点边缘，单独核查。</li>
+</ul>
+</div></body></html>

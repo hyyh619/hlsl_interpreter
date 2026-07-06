@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 178 — witcher 家族清尾：22049 全过、BC1/3/4/5 解码器、余案定位</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step178-witcher-family-cleanup</span></div>
+<div class="wrap">
+<h1>Step 178 — witcher 家族清尾：22049 全过、BC1/3/4/5 解码器、余案定位</h1>
+<h2>任务</h2>
+<p>继续修复：22049（790/840）、21719（368/1728）、21895（1057/6360）、<br>22260（54/108）、22229（10/12）。</p>
+<h2>22049：132 → 790 →（本步）<b>PASS 840/840</b></h2>
+<p>余 50 行的根因：<code>fix_shift_signedness</code> 的 1:1 配对被 <b>ubfe 展开</b>打破——<br>22049 的 disasm 有 4 ishr + 4 ushr，但 HLSL 有 20 处 <code>&gt;&gt;</code> 文本（3Dmigoto 把<br>一条 ubfe 展开成 <code>if (1==0) ... else if (1+1&lt;32) { x&lt;&lt;(32-(A+B)); x&gt;&gt;(32-C); } else x&gt;&gt;D;</code><br>的三个 <code>&gt;&gt;</code>）→ 计数不符 → 修复整体跳过 → 噪声哈希的 4 个 ishr 仍按逻辑移位<br>→ 中间值为负的格点（brev+负浮点位模式求和）哈希错 → 50 行小差。</p>
+<p><b>修复</b>：配对前剔除 ubfe 展开行内的 <code>&gt;&gt;</code>（行内含 <code>&lt;&lt; (32-</code> 签名）。<br>剔除后 8 = 8 配对成功（前 4 ushr 对应位域抽取、后 4 ishr 对应噪声哈希，<br>程序序完全吻合）。22049 即刻 840/840。</p>
+<h2>BC1/BC3/BC4/BC5 块解码器（texture.py，基础设施）</h2>
+<p>21719 的 t14 是 **BC1_UNORM Texture2DArray（5 切片 × 8 mip）在 VS 内<br>SampleLevel(lod=1)**——此前只有 BC7 有解码器，BC1 的 .img 回退 BMP，而 BMP<br>只有 mip0 → mip 链截断。补齐 BC1（RGB565 端点 + 2bit 索引、3/4 色模式）、<br>BC4（单通道 3bit 索引 5/7 步插值）、BC3（BC4 alpha + 强制 4 色 BC1）、<br>BC5（双 BC4 通道），接入 <code>_decode_raw_texels</code>（_SRGB 变体按存储值解码，<br>与既有 BMP 回退行为一致）。</p>
+<p><b>结果</b>：21719 数值路径正确性提升（mip1 不再夹到 mip0），但 pass 数未变<br>（368/1728）——其主导残差不在 t14，在更深的探针/光照链（见下）。</p>
+<h2>余案定位（留档）</h2>
+<ul>
+<li><b>21719 / 21895</b>：TEXCOORD4/TEXCOORD6 误差族。trace 显示 o4 链混合 t22 探针（<b>lod=1</b> 采样 48×168 探针图集）、t14 草色、t19 高度场、 SampleCmp 阴影——与 22229 同族的深层光照栈。TEXCOORD6[0] golden 恰为 1/16（0.0625）而我们 0.247——疑似图集行/列索引推导差一层。 下一步建议：对 21719 的 o6 链做逐指令复现（输出维度低、易反解）。</li>
+<li><b>22229（10/12）</b>：余 2 行 diff=0.005075 恰超容差 1.5%，灯光解析衰减 f32 细节，维持不放宽容差。</li>
+<li><b>22260（54/108）</b>：步 177 已定性——golden 所需雾混合因子与 dump 的 cb12[190] 数学不可达，帧级共享 cbuffer 捕获时机嫌疑（结构）。</li>
+</ul>
+<h2>全量验证</h2>
+<ul>
+<li><b>Cases 回归 147/147 全 PASS 零回归</b>（ubfe 剔除、BC 解码器均未破坏既有案例）。</li>
+<li><b>Dump triage 26 案：22049 转 PASS（840/840）晋级</b>，其余逐案与基线持平。</li>
+<li><b>22049 晋级</b>回归表（<b>148 案</b>）并从 Dump 移除（剩 <b>25 案</b>）。</li>
+</ul>
+<h2>类 E 收官状态</h2>
+<p>witcher 采样家族 11 案（步 168 归类时）至此 <b>7 案消灭</b>：<br>16215、16834、22092、22201、21979、22049 + Octopath3601（搭车）。<br>余 4 案：21719/21895（深层探针光照链，o6 图集索引 1/16 线索在档）、<br>22229（容差边缘）、22260（cb12 捕获时机，结构定性）。</p>
+</div></body></html>

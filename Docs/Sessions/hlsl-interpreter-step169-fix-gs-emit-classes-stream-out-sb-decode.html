@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 169：修复 GS 发射类失败（类③计数 0 / 类④值不匹配）—— 一路挖出 8 个独立真 bug</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step169-fix-gs-emit-classes-stream-out-sb-decode</span></div>
+<div class="wrap">
+<h1>Step 169：修复 GS 发射类失败（类③计数 0 / 类④值不匹配）—— 一路挖出 8 个独立真 bug</h1>
+<h2>任务</h2>
+<p>修复 step 168 分类中的：</p>
+<ul>
+<li><b>类③</b> GS 条件发射计数 0（当时归因“cbuffer 解码”）：manhattan_frame_274_event50、sekiro2_event14998、sekiro4_event20560</li>
+<li><b>类④</b> GS 发射值不匹配：manhattan_frame_274_event87 / event124 / event161 / event198</li>
+</ul>
+<h2>思考与勘误</h2>
+<p>先验证既有假设：读取 manhattan event50 的 GS cbuffer 二进制（constant_1777.bin c12），<code>emitter_startBirthIdx=0, endBirthIdx=0</code> —— <b>cbuffer 解码本来就是对的</b>，“birth-index 解码错”的旧假设（step 166 记忆）不成立。逐案深挖后，实际是 8 个互相独立的 bug 叠加：</p>
+<h3>发现 1：manhattan 的「GS」根本不是 GS（5 案共因）</h3>
+<p><code>GS_shader_disasm.txt</code> 首行是 <b><code>vs_4_0</code></b>；GS_shader.hlsl 与 VS_shader.hlsl <b>逐字节相同</b>。这是 VS + Stream-Output 的粒子模拟 draw（无几何着色器），导出工具把同一 VS 导了两份。golden <code>gs_mesh.bin</code>（3000 行）= SO buffer 全量：前 1000 行是本 draw 的 VS 输出，后 2000 行全零（未写容量区）。我们的 GS 执行器只在拦截到 <code>Append()</code> 时计数 → 发射 0。</p>
+<p><b>修复</b>（render.py <code>_run_gs_stage</code>）：源码无 <code>Stream&lt;&gt;</code> 且无 <code>.Append(</code> → 判定为 stream-out 直通，<code>emitted = vs_results</code>（重跑一遍会把粒子更新应用两次）；golden 超出发射数的<b>全零尾部</b>按未写容量裁剪。</p>
+<h3>发现 2：struct 成员被 <code>// Offset:</code> 注释杀死（sekiro 共因）</h3>
+<p><code>_parse_structured_buffers</code> 按 <code>;</code> 切分成员后，RenderDoc 风格的行尾注释落在下一段开头，正则匹配失败——<code>GXStandardParticleVS</code>（14 个成员，真 stride 176）只剩 <code>float4 Position</code>（stride 16）。VS 读 <code>StructuredInstance[vid].*</code> 全错位。<br><b>修复</b>：解析 struct 体前 <code>re.sub(r'//[^\n]*','')</code> 剥离注释。</p>
+<h3>发现 3：stride 采信捕获值</h3>
+<p>新 dump 的 <code>buffer_params.csv</code> 已记录真实 <code>ElementByteSize</code>（StructuredInstance=176、g_LightBuffer=208…）。<code>load_structured_buffer_data</code> 新增 <code>_captured_sb_strides</code>：按 Name（回退 Slot）用捕获值覆盖源码推导 stride。</p>
+<h3>发现 4：SB 成员访问的尾部 swizzle 被丢弃（广播之源）</h3>
+<p><code>o0.y = StructuredInstance[v0.x].Position.y</code> —— 成员访问正则的 group(3)（<code>.y</code>）被忽略，返回整个 float4，赋值取 <code>[0]</code>，于是 <b>o0 = [P.x, P.x, P.x, 1]</b>（日志里 sv_position 三分量同值的直接原因；与 step 168 修的方法调用尾部 swizzle 同族）。<br><b>修复</b>：get_value SB 分支对 trailer 应用 <code>apply_swizzle</code>。</p>
+<h3>发现 5：非索引 draw 的 SV_VertexID 不含 StartVertexLocation</h3>
+<p>sekiro 两案 <code>DrawInstancedIndirect</code> 的 <code>VertexOffset=1</code>。我们把 idx_list=[1..N] 直接当 SV_VertexID → 所有粒子错位一个。golden 证实 GPU 从 0 开始（golden 粒子 0 = StructuredInstance[0]）——D3D11 语义：<b>非索引 draw 的 SV_VertexID 从 0 起，StartVertexLocation 只作用于 VB 取数</b>（与 Vulkan/GL 相反）。<br><b>修复</b>（render.py）：非索引 draw 时 SV_VertexID = idx - VertexOffset；VB 取数保持原 idx_list。</p>
+<h3>发现 6：RenderDoc post-GS golden 是 strip→list 展开</h3>
+<p>sekiro4 golden 1074 = <b>179 × 6</b>、sekiro2 golden 29148 = <b>4858 × 6</b>（4858 恰是我们门判定通过的粒子数——门逻辑本来就对！）。RenderDoc 把 4 顶点 trianglestrip 展开成 2 个三角形 = 6 行。<br><b>修复</b>：<code>executeGS_with_params</code> 改为按 strip 收集（<code>RestartStrip</code>/调用结束封口），<code>expand_strips=True</code> 时按 D3D 规则展开：偶三角形 (i, i+1, i+2)、奇三角形 <b>(i, i+2, i+1)</b>（次序按 golden 逐角验证，最初写成 (i+1,i,i+2) 时 Row3/4/5 恰好错位）；<code>_run_gs_stage</code> 从 GS disasm 的 <code>dcl_outputtopology trianglestrip</code> 触发展开。</p>
+<h3>发现 7：<code>f32tof16</code> 必须向零舍入</h3>
+<p>打包色 uint 输出与 golden 恰差 65536（高半字 1 ULP）。D3D 的 <code>f32tof16</code> 指令语义是 <b>round-toward-zero</b>，Python <code>struct.pack('&lt;e')</code> 是就近舍入。<br><b>修复</b>：新增 <code>_f32_to_f16_rtz</code>（含 subnormal/溢出钳制/NaN 处理），f32tof16 改用之。TexCoord2 的 2148 条错误全消。</p>
+<h3>发现 8：原始类型 / 矩阵成员 SB + 反编译伪影</h3>
+<p>sekiro4 tile 光照读 <code>StructuredBuffer&lt;uint&gt;</code> / <code>&lt;uint3&gt;</code>（无 struct，<code>[i].x</code> 直接 swizzle 元素）和 <code>g_SpotLightBuffer[i].ViewToLightSpaceMatrix._m02</code>（float4x4 成员，列主序 <code>_mRC</code> = vals[c*4+r]）。另外 <code>and r16.x, r16.x, l(0x0000ffff)</code>（取光源索引低 16 位）被 3Dmigoto 反编译成无意义自三元式 <code>r16.x = r16.x ? 0.000000 : 0;</code>（掩码按 float 打印成 0）。<br><b>修复</b>：<code>_SB_COMPONENTS</code> 增矩阵尺寸；<code>_structured_buffer_member</code> 支持原始元素 swizzle；访问路径支持 <code>._mRC</code>；<code>preprocess_hlsl</code> 将自三元式伪影重写回 <code>(uint)X &amp; 0xffff</code>（真实编译器不会生成两分支全零的 movc，无误伤风险）。</p>
+<h2>结果</h2>
+<table>
+<tr><th>Case</th><th>修复前</th><th>修复后</th></tr>
+<tr><td>manhattan event50</td><td>发射 0 vs 3000</td><td><b>PASS 1000/1000</b>（已晋级回归表）</td></tr>
+<tr><td>manhattan event87/161</td><td>发射 0，0/0</td><td>998/1000（仅 2 行 birth 粒子）</td></tr>
+<tr><td>manhattan event124/198</td><td>发射 0，0/0</td><td>999/1000（仅 1 行 birth 粒子）</td></tr>
+<tr><td>sekiro2_event14998</td><td>发射 0 vs 29148</td><td><b>28974/29148（99.4%）</b>，计数精确吻合</td></tr>
+<tr><td>sekiro4_event20560</td><td>发射 0 vs 1074</td><td>计数 1074=1074、VS 179/179；仅剩 TEXCOORD9</td></tr>
+</table>
+<ul>
+<li><b>回归 130/130 全过</b>（129 + 晋级的 manhattan_frame_274_event50），Dump 侧逐案对比零退步。</li>
+<li>manhattan 残余 1~2 行 = birth 粒子的 <code>frac(87362×sin(80000+))</code> hash —— 失败行号与 cbuffer birth 范围 [646,648)/[411,412) 完全吻合，sin 大相位下 GPU 硬件近似与 math.sin 的偏差被 ×87362 放大 → <b>超越函数墙（并入类⑥）</b>，非解释器 bug。</li>
+<li>sekiro4_20560 残余 TEXCOORD9（每行 3 分量）：irradiance volume（Texture3D）RGBM 解码读到 <b>alpha=1.0</b> → <code>exp2(20*(1-0.5))=1024</code> 倍放大；实际是体纹理 alpha/切片解码问题 → <b>并入类⑧（VS/GS 纹理采样精确性）</b>。</li>
+<li>sekiro2_14998 残余 174 行 TexCoord4 差 ~0.13（相对 4e-4）→ 精度临界（类⑦）。</li>
+</ul>
+<h2>分类更新（对 step 168 的 9 类）</h2>
+<ul>
+<li><b>类③（GS 发射计数 0）：已消灭</b> —— 根因不是 cbuffer 解码，而是发现 1/2/4/5/6 的叠加。</li>
+<li><b>类④（GS 发射值不匹配）：已消灭为墙残余</b> —— manhattan 4 案并入类⑥（超越函数），sekiro4_20560 并入类⑧，sekiro2_14998 并入类⑦。</li>
+<li>旧记忆「GS cbuffer birth-index 解码错（411/412 vs all-spawn）」已被证伪并更正。</li>
+</ul>
+<h2>修改文件</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code>：struct 注释剥离；<code>_captured_sb_strides</code> stride 覆盖；SB 成员尾部 swizzle / <code>._mRC</code> / 原始元素访问；<code>_SB_COMPONENTS</code> 矩阵尺寸；GS strip 收集 + strip→list 展开；<code>_f32_to_f16_rtz</code>；<code>preprocess_hlsl</code> and-mask 伪影修复。</li>
+<li><code>render.py</code>：<code>_run_gs_stage</code> stream-out 直通 + golden 零尾裁剪 + 输出拓扑检测；非索引 draw SV_VertexID 去 VertexOffset。</li>
+<li><code>Cases/regression_test_zip_files.csv</code>：+manhattan_frame_274_event50.zip（从 Dump/ 移入）。</li>
+</ul>
+</div></body></html>

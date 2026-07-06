@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 158 — golden CSV「N 个连续 float3 输出」列重映射：核实已实现 + 加固 + 锁回归</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step158-golden-n-consecutive-float3-remap</span></div>
+<div class="wrap">
+<h1>Step 158 — golden CSV「N 个连续 float3 输出」列重映射：核实已实现 + 加固 + 锁回归</h1>
+<h2>任务</h2>
+<blockquote>D：实现 golden CSV「N 个连续 float3 输出」的列重映射。</blockquote>
+<p>（来自 step 156 的判断：「Octopath golden CSV 多 float3 列错位，loader 只补偿了单个 trailing float3」。）</p>
+<h2>核心结论：该重映射<b>已正确实现</b>，step 156 的前提不准确</h2>
+<p>深入读 <code>load_vs_golden_from_mesh_csv</code> 后发现：它<b>不是</b>「只补偿单个 trailing float3」，而是用<br><b>「SV_Position 在前 + 每输出按 dumped 宽度（header 列组计数 <code>_dumped_count</code>）定位」</b>的方案，这本身就能正确<br>重映射<b>任意条数的 reduced-width（含 float3）连续输出</b>。step 156 写「loader 只补偿一个 float3」是没细读<br>loader 的误判（CLAUDE.md 里 <code>[None,x,y]</code> 那段描述的是早已被重写掉的旧实现，现 loader 与比较函数里都没有该逻辑）。</p>
+<p><b>实证 1 — event3502（典型 N 连续 float3）</b>：输出含 <code>TEXCOORD12</code>(float4 只写 .xyz→dump 3 列) +<br><code>TEXCOORD13</code>(float3→3 列) <b>两个连续 3 列组</b>。step 156 的 half4 解码修复后，本步实测 <b>PASS 384/384</b>。<br>loader 把物理列正确切给各输出（<code>TEXCOORD12/13</code> 取到 dump 中的尾部 0，且我方解释器同样输出 ~0，匹配）。</p>
+<p><b>实证 2 — Collision 套件（trailing float3 WORLDPOS，回归用例）</b>：<code>out float2 TEXCOORD0/1</code> +<br><code>out float3 NORMAL/WORLDPOS</code>，header 组宽度 2/2/3/3，长期 PASS。即「中间 float2 + 尾部连续 float3」也早被<br>正确处理。</p>
+<p><b>实证 3 — 全 86 个 Dump 用例扫描</b>：新增「列重映射对账」诊断（见下）后跑全部 Dump，<b>0 个触发错位告警</b> ——<br>即 loader 的 SV-first + dumped-width 切分在每个用例都精确消费完所有物理分量列，无一错位。</p>
+<h2>本步落地（加固 + 锁定，零行为风险）</h2>
+<p>既然重映射已正确，贸然改 loader 的切分逻辑只会有回归风险且无收益。故落地两件安全且有价值的事：</p>
+<ol>
+<li><b>对账诊断 + 显式文档</b>（<code>hlsl_interpreter.py::load_vs_golden_from_mesh_csv</code>）：<ul>
+<li>给列分配循环补上明确注释，点明它就是「N 连续 reduced-width/float3 输出」的重映射处（举 event3502 / Collision 为例）。</li>
+<li>加 <b>reconciliation guard</b>：SV-first、按 dumped 宽度的分配必须<b>恰好</b>消费完物理分量列；若 <code>cursor != len(comp_col_indices)</code> 则 <code>log_output</code> 告警 —— 这正是未处理的 mesh-export 错位的信号， 变「静默错切后续输出」为「响亮报警」。跑全 86 Dump + 126 回归均无告警。</li>
+</ul></li>
+</ol>
+<ol>
+<li><b>把典型用例锁进回归</b>：将 <code>Octopath-frame746_event3502.zip</code>（2 连续 float3 + half4 解码）加入 <code>Cases/regression_test_zip_files.csv</code>（拷贝 zip 到 <code>Cases/</code>）。回归 <b>126/126 PASS</b>。此用例同时守护 step 156 的 half4 解码与本步的 N-float3 列重映射，防回归。 （注：<code>Cases/</code> 整目录 .gitignore，回归套件本就是本地数据，此锁定与既有 125 条一样为本地生效。）</li>
+</ol>
+<h2>其余 D 类失败 ≠ 列重映射问题（澄清）</h2>
+<p>复triage 9 个 Octopath D 用例（step 156/157 后现状）：</p>
+<ul>
+<li><b>event3502</b>：PASS 384/384（半精度修复之功）。</li>
+<li><b>event2135 / event2912</b>：<code>TEXCOORD10/11</code> 失败，但<b>不是</b>列错位 —— 是<b>四元数/骨骼基重建的分量置换</b> （o0 实测 <code>[0.719,0.661,0.213]</code> vs golden <code>[0.661,0.719,0.213]</code> 为 x↔y 交换；o1 为 3-cycle；每输出置换 各异，非统一移位）。属解释器解码 bug，非 golden 列问题。</li>
+<li><b>event664 / event3012</b>：<code>sv_position</code> 失败（蒙皮/精度；event3012 30/51）。</li>
+<li><b>event576 / event2651 / event2682</b>：地形 heightmap 退化（cb 全 0 → LOD/索引塌缩），sv_position 8/23064。</li>
+</ul>
+<p>均与「golden 列重映射」无关。</p>
+<h2>结果</h2>
+<ul>
+<li><b>核实</b>：N 连续 float3 列重映射在 loader 中<b>已正确实现</b>（SV-first + dumped-width 定位），event3502 PASS 384/384、Collision 长期 PASS、全 86 Dump 对账零错位。</li>
+<li><b>加固</b>：新增列重映射对账诊断（misalignment 即告警）+ 显式文档。</li>
+<li><b>锁定</b>：event3502 入回归，<b>126/126 PASS（零回归）</b>。</li>
+<li><b>诚实结论</b>：本步无新 Dump 用例因「列重映射」翻盘 —— 因为该功能本就正确；step 156 的「待修」前提系误读 loader。剩余 D 失败是四元数解码 / sv_position 精度 / 地形退化，属不同问题。</li>
+</ul>
+<h2>后续</h2>
+<ul>
+<li>D 类真正可推进的是 <b>event2135/2912 的四元数/骨骼基分量置换</b>（解码顺序 bug，非列重映射）——下一个该查的点。</li>
+<li>event664/3012 sv_position 蒙皮精度；event576/2651/2682 地形退化（cb 全 0，可能需要缺失的 cbuffer 数据）。</li>
+</ul>
+</div></body></html>

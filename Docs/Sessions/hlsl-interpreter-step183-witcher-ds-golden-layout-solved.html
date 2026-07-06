@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 183 — witcher HS/DS golden 复合布局破案：16803/16817 全过、21346 至 855/1024</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step183-witcher-ds-golden-layout-solved</span></div>
+<div class="wrap">
+<h1>Step 183 — witcher HS/DS golden 复合布局破案：16803/16817 全过、21346 至 855/1024</h1>
+<h2>任务</h2>
+<p>调查修复 witcher 16803/16817/21346 的 <code>_ds_mesh</code> golden"多角点复合行"布局。</p>
+<h2>布局取证（决定性）</h2>
+<p>直接读 <code>_ds_mesh.bin</code> 原始浮点：</p>
+<ol>
+<li><b>16803/16817（stride 60B，4 行）</b>：数据是 <b>4-float 记录流</b> （corner.x, corner.y, size, cm_level），且<b>行间滑动窗口重叠</b>—— row i = 底层流字节 [i·16, i·16+60)（<code>rows[i][4:] == rows[i+1][:11]</code> 逐位成立）。即写入器用 DS 输出布局的 60B stride 拷贝 16B 记录， 每行<b>越读</b>了后续 2.75 条记录。"多角点复合行"实为越读伪影。</li>
+<li><b>21346（stride 76B，1024 行）</b>：同型缺陷，记录 13 floats （TEXCOORD0 4 + TEXCOORD1 <b>1</b> + TEXCOORD2 4 + TEXCOORD3 4）， 行读 19 floats 越读 6。</li>
+<li><b>golden 的本体 = VS 输出流（HS 输入控制点）</b>，各属性宽度 = <b>VS disasm 的 <code>dcl_output</code> 掩码</b>（o1 在 HLSL 声明 int4 但 dcl_output o1.x → 宽 1；其 int −1 的位模式即 golden 中的 NaN）。 21346 的 HS CP 相位有槽位重映射（o1←v[cpid][2]），但对 golden 无影响 ——dump 存的就是 VS 输出。</li>
+</ol>
+<h2>修复（render.py <code>_run_ds_stage</code> CP-stream 分支 + hlsl_interpreter.py）</h2>
+<ol>
+<li><b>比较截断</b>：每行只比较前 cp_width 浮点（cp_width = VS dcl_output 掩码宽度之和），忽略越读尾巴；sekiro4（无越读）行为不变。</li>
+<li><b>门槛泛化</b>：<code>in_cp == out_cp</code>（不再限 1）且 golden 行数 = patches × out_cp——21346（4×4，256 patch）纳入。</li>
+<li><b>键与宽度来源</b>：HS 输入签名语义（=VS 输出语义，与 CP 字典键一致）； 宽度从 VS disasm 的 dcl_output 掩码<b>并集</b>（o0.xy+o0.z+o0.w → 4）， 共享 slot 的多语义按<b>各自掩码 lane 放置</b>（CORNER@.xy、SIZE@.z、 CM_LEVEL@.w）。</li>
+<li><b><code>_dedupe_duplicate_out_params</code>（重要通用修复）</b>：3Dmigoto 把共享 slot 的额外输出全部命名 <code>pN</code>——16803 的 SIZE 与 CM_LEVEL <b>同名 p0</b>， 第二次 <code>p0.x=</code> 赋值覆盖第一次，SIZE 值静默丢失（DS 正常路径同样受害）。 preprocess 阶段按程序序把重复声明改名 <code>p0__dupK</code> 并重定向对应赋值 （赋值数与声明数一致才动，防误伤）。</li>
+<li>dxbc_interp.py：动态二维输入 <code>v[r0.x + 0][2]</code>（HS CP 相位形态，本步 实验用，保留为 VM 能力）。</li>
+</ol>
+<h2>结果</h2>
+<table>
+<tr><th>案例</th><th>修复前</th><th>修复后</th></tr>
+<tr><td>16803</td><td>0/4</td><td><b>PASS 4/4</b>（完整 4 浮点比较）</td></tr>
+<tr><td>16817</td><td>0/4</td><td><b>PASS 4/4</b></td></tr>
+<tr><td>21346</td><td>0/1024</td><td><b>855/1024</b></td></tr>
+<tr><td>sekiro4 19857/20244</td><td>PASS</td><td>PASS（回归保持）</td></tr>
+</table>
+<p><b>注</b>：步 181 时 16803 曾短暂显示 4/4，实为旧宽度取 max=2 只比较了<br>corner.xy 的弱通过；本步修复后是完整记录比较。</p>
+<h2>21346 余 169 行的定性：又是帧级动态资源</h2>
+<p>全部残差集中在 cp[4]（TEXCOORD1.x = clipmap 页索引）：我们 1 vs golden 0。<br>trace 证实顶点 (131.25, −318.75) 确实在 dump 的 t17 页表 page0 矩形<br>(257.8, −179.7)–(757.8, 320.3) <b>之外</b>——我们的包含判定正确；golden 选<br>page0 意味着 <b>GPU 当时的 t17 页表内容不同</b>（clipmap 页表随相机逐帧更新）。<br>残差归入"帧级动态资源捕获时机"家族（t22/cb12/t1/t17 同族第四证据）。</p>
+<h2>全量验证</h2>
+<ul>
+<li><b>Cases 回归 150/150 全 PASS 零回归</b>（p0 去重是解释器级改动，未伤任何既有案例）。</li>
+<li><b>Dump triage 23 案：16803（4/4）、16817（4/4）双双转 PASS</b>，21346 至 855/1024， 其余逐案与基线持平。</li>
+<li><b>2 案晋级</b>回归表（<b>152 案</b>）并从 Dump 移除（剩 <b>21 案</b>）。</li>
+</ul>
+<h2>HS/DS 类收官</h2>
+<ul>
+<li>witcher HS/DS golden 布局之谜<b>彻底破案</b>（写入器滑窗越读 + golden=VS 输出流）。</li>
+<li>16803/16817 消灭；21346 的余 169 行随 t17 页表归入帧级动态资源家族 （该家族第四个证据：t22 探针图集、cb12 帧常量、t1 拖尾 SB、t17 clipmap 页表）。</li>
+<li>类 C（HS/DS）作为解释器缺陷类<b>清空</b>。</li>
+</ul>
+</div></body></html>

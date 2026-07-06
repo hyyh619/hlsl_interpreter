@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 175 — 剩余 29 案归类与修复意见</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step175-remaining-bug-triage-and-recommendations</span></div>
+<div class="wrap">
+<h1>Step 175 — 剩余 29 案归类与修复意见</h1>
+<p>基准：step 174 收官后的 Dump 全量 triage（<code>triage_dump.py --vs-only</code>，容差 0.005）。<br>回归表已从步 168 的 129 案增至 <b>144 案</b>（全过）；Dump 从 44 案降至 <b>29 案</b>。</p>
+<h2>总览</h2>
+<table>
+<tr><th>类别</th><th>案数</th><th>性质</th><th>修复可行性</th></tr>
+<tr><td>A. 无 golden 可比</td><td>6</td><td>结构性不可验证</td><td>需导出侧补 golden</td></tr>
+<tr><td>B. 超时/性能</td><td>2(+2 慢案)</td><td>非正确性</td><td>可修（热路径优化）</td></tr>
+<tr><td>C. HS/DS 结构墙</td><td>5</td><td>反编译丢失/惯例差异</td><td>部分可动</td></tr>
+<tr><td>D. GPU 超越函数墙</td><td>7</td><td>硬件近似差异</td><td>投入产出比低</td></tr>
+<tr><td>E. witcher 采样家族残余</td><td>6</td><td>深层链路缺陷</td><td><b>可修，优先</b></td></tr>
+<tr><td>F. 精度临界单案</td><td>3</td><td>单点残差</td><td>可试探</td></tr>
+</table>
+<p>（E 类 22229 与 D 类 3207/9493 各有精度临界成分，计数按主要归因；共 29 个 zip。）</p>
+<h2>A. 无 golden（6 案）</h2>
+<p><b>案例</b>：EndlessSpace2_event3093、Nobu15_event2894、sekiro2_event13554/13931/14130/14388。</p>
+<p>sekiro2 四案是 tessellation 案且无 <code>_ds_mesh.bin</code>；ES3093 是 DrawAuto/SO 案<br>（NumIndicesOrVertices=0）；Nobu2894 无 VS mesh golden。</p>
+<p><b>意见</b>：唯一出路在导出侧——dx_dump 补导 DS 阶段 mesh golden<br>（<code>_ds_mesh.bin</code> + <code>_layout.csv</code>）与 Stream-Output buffer 内容。解释器侧无事可做。</p>
+<h2>B. 超时/性能（2 + 2 慢案）</h2>
+<p><b>案例</b>：OldWorld_event1034/2767（203,328 顶点，纯 Python &gt;300s）；<br>新增慢案 sekiro2_event3207/9493（步 174 修通风力循环后 45k 顶点 × 循环体，<br>并发 triage 下超 300s，独跑可完成，44341/45576）。</p>
+<p><b>意见</b>：</p>
+<ol>
+<li>语句级预编译——语法树已缓存，但赋值目标解析、swizzle 字符串处理仍每次重做， 可预解析为闭包；</li>
+<li>确认 <code>max_workers</code> 顶点级并行在 vs_only 路径吃满；</li>
+<li>短期：triage 对慢案单独放宽超时即可先见分晓。非正确性问题。</li>
+</ol>
+<h2>C. HS/DS 结构墙（5 案）</h2>
+<p><b>witcher3_countryside_event16803/16817/21346</b>：DS 读 HS fork/join（patch 常量）<br>相位输出 <code>vpc0.y</code>，该相位被 3Dmigoto 反编译器整体丢弃，HLSL 源里不存在。<br><b>意见</b>：给 DXBC VM 增加 HS fork/join 相位执行（disasm 里指令还在），由 VM 生成<br><code>vpc*</code> 喂给 DS，绕过反编译。工作量大但路线清晰。</p>
+<p><b>sekiro4_event19857/20244</b>：两个独立小缺陷：</p>
+<ol>
+<li><code>StructuredBuffer&lt;PointLight&gt;</code> stride 被误判 16B —— <b>可修</b>：从 struct 成员布局 推断真实 stride（与步 169 <code>_captured_sb_strides</code> 同思路）；</li>
+<li>point-sprite golden 的 SV_POSITION xyz≡0 惯例 —— <b>可修</b>：比较器特判。</li>
+</ol>
+<p><b>建议先做 sekiro4 两案</b>，有望转正。</p>
+<h2>D. GPU 超越函数墙（7 案）</h2>
+<p><b>案例</b>：TombRaider_event2848/7308（827/1548，rsqrt/sincos 程序化顶点动画）；<br>manhattan_event87/124/161/198（各差 1–2 行，<code>frac(sin(≈80000))</code> 出生粒子哈希）；<br>sekiro2_event3207/9493 残余 1235 行（<code>sin(≈3889 rad)</code> 风力大相位，Parallels GPU）。</p>
+<p><b>共性</b>：大相位/深链条超越函数的硬件近似差异。步 174 已实证 <b>f32 归约模型净负效</b><br>（44341→44338，已回滚）——该 GPU 归约精度高于朴素 f32 模型，math.sin 整体更近。</p>
+<p><b>意见</b>：若要继续，正确姿势是<b>数据驱动拟合</b>——批量反解失败顶点 golden 隐含的<br>sin/rsqrt 输出，与多种归约模型（Cody-Waite 双 f32、Payne-Hanek、查表+插值）比对<br>残差分布，确认 vendor 实际实现再落地。manhattan 每案只差 1–2 行、TombRaider 已<br>827/1548，按"已知墙"接受更划算。<b>不放宽全局容差</b>（会掩蔽真 bug）。</p>
+<h2>E. witcher 采样家族残余（6 案）— 建议的下一步主攻</h2>
+<p><b>案例</b>：21719（368/1728）、21895（1057/6360）、21979/22049（132/840）、<br>22260（54/108）、22229（10/12）。</p>
+<p>步 173 十项修复后从全 0 大幅收敛，说明方向正确、还剩下一层。已掌握的线索：</p>
+<ul>
+<li><b>21979 与 22049 通过数完全相同（132/840）</b> → 大概率同 shader 或同缺陷， 修一得二。错误集中在 TexCoord4（探针/雾链）。</li>
+<li><b>22260</b>：失败行 TexCoord3 输出是<b>常量</b>（0.6796/0.8352/0.9610 = 雾基色）而 golden 逐顶点变化——<code>exp2(-14.6)≈0</code> 塌缩迹象，疑似雾衰减链系数错误（非精度）， <b>低垂果实，建议第一个开刀</b>。</li>
+<li><b>22229</b>：仅余 2 行 diff=0.005075（超容差 1.5%），灯光解析衰减 f32 细节； 可检查该链的 FMA 融合覆盖（<code>_try_fma</code>）。</li>
+</ul>
+<p><b>方法</b>：沿用步 172/173 的"[STMT] trace 反照 + golden 中间值反解"。</p>
+<h2>F. 精度临界单案（3 案）</h2>
+<ul>
+<li><b>EndlessSpace2_event2991（1464/1536）</b>：几何/SB 已证全对（golden TEXCOORD1 与我们完全一致），残差锁定在曲线图集宽度因子——采样点 u·w=1832.5 <b>恰在纹素 中心</b>，尾部 72 行差一个 texel。<b>意见</b>：验证 GPU point 采样在精确 .5 处的舍入 方向，及 <code>r1.y*4+0.5</code> 链的 f32 舍入是否把 .5 推到另一侧；±1 texel 对照双跑即可判定。</li>
+<li><b>sekiro2_event14998 GS 段（28974/29148）</b>：TexCoord4 相对差 5e-4，非 trig 来源（billboard 角偏移链）。<b>意见</b>：用步 172 的独立逐指令复现脚本法对 GS 定位 ——该方法已两次证明比对着 golden 猜快得多。</li>
+</ul>
+<h2>建议优先级</h2>
+<ol>
+<li><b>E 类 witcher 家族</b>（22260 → 21979/22049 → 21895/21719）：方法成熟、线索在手， 期望再转正 2–4 案；</li>
+<li><b>C 类 sekiro4 两案</b>（SB stride 推断 + point-sprite 惯例）：小改动、确定性高；</li>
+<li><b>F 类两单案</b>：各一个对照实验即可分晓；</li>
+<li><b>B 类性能</b>：一次热路径优化解锁 4 案结果；</li>
+<li><b>A/D 类</b>：分别等导出侧补 golden 与 vendor 数学拟合，暂记为墙。</li>
+</ol>
+<h2>附：29 案明细（最近一次全量 triage）</h2>
+<table>
+<tr><th>案例</th><th>状态</th><th>类别</th></tr>
+<tr><td>EndlessSpace2_event2991</td><td>1464/1536</td><td>F</td></tr>
+<tr><td>EndlessSpace2_event3093</td><td>无 golden</td><td>A</td></tr>
+<tr><td>Nobu15-frame3456_event2894</td><td>无 golden</td><td>A</td></tr>
+<tr><td>OldWorld_event1034</td><td>timeout</td><td>B</td></tr>
+<tr><td>OldWorld_event2767</td><td>timeout</td><td>B</td></tr>
+<tr><td>TombRaider_event2848</td><td>827/1548</td><td>D</td></tr>
+<tr><td>TombRaider_event7308</td><td>827/1548</td><td>D</td></tr>
+<tr><td>manhattan_event87/124/161/198</td><td>998~999/1000</td><td>D</td></tr>
+<tr><td>sekiro2_event13554/13931/14130/14388</td><td>无 golden</td><td>A</td></tr>
+<tr><td>sekiro2_event14998</td><td>VS 全过；GS 28974/29148</td><td>F</td></tr>
+<tr><td>sekiro2_event3207</td><td>44341/45576（慢）</td><td>D/B</td></tr>
+<tr><td>sekiro2_event9493</td><td>44341/45576（慢）</td><td>D/B</td></tr>
+<tr><td>sekiro4_event19857</td><td>0/5</td><td>C</td></tr>
+<tr><td>sekiro4_event20244</td><td>0/7</td><td>C</td></tr>
+<tr><td>witcher3_event16803</td><td>0/4</td><td>C</td></tr>
+<tr><td>witcher3_event16817</td><td>0/4</td><td>C</td></tr>
+<tr><td>witcher3_event21346</td><td>0/1024</td><td>C</td></tr>
+<tr><td>witcher3_event21719</td><td>368/1728</td><td>E</td></tr>
+<tr><td>witcher3_event21895</td><td>1057/6360</td><td>E</td></tr>
+<tr><td>witcher3_event21979</td><td>132/840</td><td>E</td></tr>
+<tr><td>witcher3_event22049</td><td>132/840</td><td>E</td></tr>
+<tr><td>witcher3_event22229</td><td>10/12</td><td>E</td></tr>
+<tr><td>witcher3_event22260</td><td>54/108</td><td>E</td></tr>
+</table>
+</div></body></html>

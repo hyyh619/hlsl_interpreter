@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 180 — 超越函数墙的数据驱动定量：墙成立，libm 即最优近似</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step180-transcendental-wall-quantified</span></div>
+<div class="wrap">
+<h1>Step 180 — 超越函数墙的数据驱动定量：墙成立，libm 即最优近似</h1>
+<h2>任务</h2>
+<p>类 D 7 案：TombRaider 2848/7308（827/1548）、manhattan 87/124/161/198<br>（各差 1–2 行出生粒子）、sekiro2 3207/9493 残余 1235 行。按步 175 建议做<br>数据驱动拟合：批量反解 golden 隐含的硬件 sin 输出，与多种归约模型比对。</p>
+<h2>基建：可插拔 trig 归约模型</h2>
+<ul>
+<li><code>HLSLInterpreter(trig_model=...)</code> + config 键 <code>trig_model</code>（render.py 接线）， 默认 <code>'libm'</code>（= math.sin/cos，行为与历史逐位一致）。</li>
+<li>模型库 <code>_TRIG_MODELS</code>：<code>libm</code>、<code>f32red</code>（朴素 f32 圈数归约）、 <code>cw2</code>（Cody-Waite 双项 f32 逐步舍入）、<code>cw2fma</code>（双项 FMA 单舍入）。</li>
+<li>sin/cos/sincos 全部经 <code>self._sin/_cos</code> 路由。</li>
+</ul>
+<h2>拟合一：sekiro2_3207 全案逐模型（Parallels/Apple GPU）</h2>
+<table>
+<tr><th>模型</th><th>Total PASSED</th></tr>
+<tr><td><b>libm</b></td><td><b>44341/45576</b></td></tr>
+<tr><td>f32red</td><td>44338</td></tr>
+<tr><td>cw2</td><td>44338</td></tr>
+<tr><td>cw2fma</td><td>44338</td></tr>
+</table>
+<p>所有 f32 级归约模型都不如 libm——该 GPU 的归约精度高于任何 f32 模型。</p>
+<h2>拟合二：manhattan 出生粒子哈希反解（nVidia GPU，决定性）</h2>
+<p>出生行输出 = <code>emitter_worldmat·(aperture·(2·frac(sin(a)·k)−1))+T</code>，<br>线性可逆：golden → frac → 隐含硬件 sin = (n+frac)/k（n 由 libm 近似定整，<br>k≈43758/87362/12235 使隐含 sin 的精度达 ~2e-5）。4 案 14 个样本<br>（args 1.36e4 ~ 1.00e5 rad）：</p>
+<ul>
+<li><b>隐含硬件 sin 与 libm 的偏差：max 2.4e-5、mean 7.5e-6</b>；</li>
+<li>各归约模型残差：f32red max 5.6e-3、cw2 5.4e-3、cw2fma 3.4e-3—— <b>全部比 libm 差 100–1000 倍</b>（nVidia 用宽位 Payne-Hanek 类 RRO）；</li>
+<li>归约角偏移 dr 的符号无规律、dr/arg 非常数（6e-12 ~ 1.4e-9）—— <b>不是解析可建模的常数偏置，是硬件内部定点量化噪声</b>（幅度 ≲2^-15.3 rad）。</li>
+</ul>
+<h2>结论：墙定量成立</h2>
+<ol>
+<li><b>libm（double 归约）就是可用的最优近似</b>——任何 f32 归约"改进"都是倒退 （步 174 的净负效实验由此得到解释）。</li>
+<li>manhattan 的 <code>frac(sin·87362)</code> 把 ~1e-5 的硬件角噪声放大 87362 倍 → 出生行 的 frac 输出与任何解析近似完全去相关。<b>匹配这些行需要比特级复刻 nVidia SFU 的 RRO+二次插值表</b>（未公开的内部定点常数），工程上不可行。</li>
+<li>sekiro（Parallels）与 TombRaider（nVidia）同理：残差行都在 放大链末端的容差边缘，模型扫描证实无解析模型可改进。</li>
+<li><b>决策：默认保持 <code>libm</code>，不放宽全局容差</b>；7 案按"已定量证实的墙"归档。 <code>trig_model</code> 开关保留作未来 vendor 拟合的工具。</li>
+</ol>
+<h2>全量验证</h2>
+<p><b>Cases 回归 148/148 全 PASS</b>——<code>trig_model</code> 接线默认 <code>libm</code>，行为与历史<br>逐位一致，零扰动。</p>
+<h2>方法论沉淀</h2>
+<p>哈希放大链是<b>反解硬件超越函数的天然探针</b>：<code>frac(sin(a)·k)</code> 的 k 越大，<br>golden 对 sin 的约束越精（本例 2e-5）；配合 libm 定整数部分，<br>无需任何硬件文档即可测得 vendor sin 的真实误差分布。</p>
+</div></body></html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 188 — Live rasterizer animation + per-item animation delays</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step188-rasterizer-animation-and-delays</span></div>
+<div class="wrap">
+<h1>Step 188 — Live rasterizer animation + per-item animation delays</h1>
+<h2>Prompt</h2>
+<ol>
+<li>动态 web 页面显示能够根据 rasterizer 执行的进度，动态展示像素点绘制的进展。</li>
+<li>针对 VS/PS/Rasterizer 动态展示绘制过程，可以设置每次顶点、primitive、像素的处理延迟 时间来控制动画的进程。</li>
+</ol>
+<h2>Starting point (after step 186/187)</h2>
+<p>The web viewer already animated <b>VS</b> (per-vertex) and <b>PS</b> (per-pixel)<br>progress by sharing the interpreter's growing lists and polling <code>/state</code>. The<br><b>rasterizer</b> was still bulk: <code>rast.rasterize()</code> ran to completion, then<br>render.py fed the full pixel list in one shot — so the "Rasterizer" tab<br>snapped from empty to done. And there was no way to pace any stage, so on a fast<br>machine the whole pipeline finished inside one 250 ms poll and the animation was<br>invisible.</p>
+<h2>Design</h2>
+<p>Two additions, both reusing the step-186 "share the growing list, slice on poll"<br>pattern:</p>
+<h3>1. Live rasterizer progress (deliverable 1)</h3>
+<ul>
+<li><code>Rasterizer.set_animation_hook(view)</code> attaches a <code>WebMeshView</code> (guarded on <code>hasattr(view, 'bind_rast_pixels')</code>, so it's a no-op for tk/html/none).</li>
+<li><code>rasterize()</code> computes the total primitive count per topology and calls <code>view.bind_rast_pixels(self._pixels, total)</code> — sharing the <b>same list</b> the scan-converter appends to.</li>
+<li>After each primitive in every <code>_rasterize_*_list/strip/point</code> loop, a new <code>_anim_primitive_done()</code> reports <code>set_rast_progress(primitives, None, len(pixels))</code> and applies the per-primitive delay.</li>
+<li><code>WebMeshView._snapshot</code> serves rasterizer pixels from the live list (<code>_rast_pixels_ref[:_rast_pixel_count]</code>) while the stage runs, and from the final <code>_rasterizer_pixels</code> list once render.py sets it. Added a <code>rast: {done,total,pixels}</code> block to <code>/state</code> and a <b>Rast progress bar</b> to the page.</li>
+</ul>
+<h3>2. Per-item animation delays (deliverable 2)</h3>
+<ul>
+<li><code>WebMeshView</code> holds <code>_delays = {vertex, primitive, pixel}</code> (seconds), with <code>set_delays()</code> / <code>get_delay(kind)</code>. The pipeline reads them <b>live</b> each iteration, so slider changes take effect immediately.</li>
+<li>Wiring: VS loop sleeps <code>get_delay('vertex')</code> per vertex; the rasterizer sleeps <code>get_delay('primitive')</code> per primitive; the PS loop sleeps <code>get_delay('pixel')</code> per pixel. When a delay is active, progress is reported every item (smooth animation) instead of the throttled 1-in-500 sampling.</li>
+<li>Control surface:<ul>
+<li><b>Config seeds</b>: <code>anim_vertex_delay</code> / <code>anim_primitive_delay</code> / <code>anim_pixel_delay</code> (seconds) in the JSON, applied at <code>enable_mesh_view</code>.</li>
+<li><b>Live sliders</b>: a delay row in the page (ms) POSTs to <code>GET /set?vertex=..&amp;primitive=..&amp;pixel=..</code>; <code>/state.delays</code> feeds the sliders back (without fighting a mid-drag user). A Reset button zeroes them.</li>
+</ul></li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>web_mesh_view.py</code> — <code>_delays</code> + <code>set_delays</code>/<code>get_delay</code>; <code>bind_rast_pixels</code> / <code>set_rast_progress</code>; live rasterizer slice in <code>_snapshot</code>; <code>/set</code> route; Rast progress bar + delay sliders + JS wiring (<code>pushDelays</code>, <code>syncDelaySliders</code>, auto-follow the <code>rasterizer</code> phase tab).</li>
+<li><code>rasterizer.py</code> — <code>import time</code>; <code>_anim_view</code> + <code>set_animation_hook</code> + <code>_anim_primitive_done</code>; bind at <code>rasterize()</code> start; per-primitive hook in all five topology loops; final progress flush.</li>
+<li><code>hlsl_interpreter.py</code> — <code>import time</code>; per-vertex delay in <code>executeVS_with_params</code>; per-pixel delay in <code>executePS_with_params</code>.</li>
+<li><code>render.py</code> — attach <code>set_animation_hook</code> before <code>rast.rasterize</code>; seed delays from config at mesh-view enable.</li>
+</ul>
+<h2>Verification</h2>
+<ul>
+<li>Standalone: page contains the Rast bar + three delay sliders + <code>pushDelays</code> + <code>/set</code>; <code>GET /set?vertex=0.01&amp;primitive=0.05&amp;pixel=0.002</code> updates <code>get_delay</code> and is reflected in <code>/state.delays</code>; <code>/state</code> carries the <code>rast</code> block.</li>
+<li>Full pipeline, <code>Collision-...event104.zip</code> (1149 verts / 46015 rast px / 42726 PS px), <code>anim_primitive_delay=0.01</code>, background poller: <b>99 distinct rasterizer-phase samples</b> with primitives growing <code>3→6→10→…→383</code> and pixels filling in live <code>0→2078→3909→…→46015</code>; phases <code>vs→rasterizer→ps→done</code>.</li>
+<li>Delay pacing: <code>anim_vertex_delay=0.002</code> → VS time <code>0.4s → 3.41s</code> (<code>1149 × 2ms ≈ +2.3s</code>), confirming the live per-vertex sleep.</li>
+<li>Regression: <b>118/123</b>, unchanged from step 186/187 — the 5 failures are pre-existing; delays default to 0 and the animation hook is never attached on the headless regression path (mesh view disabled).</li>
+</ul>
+</div></body></html>

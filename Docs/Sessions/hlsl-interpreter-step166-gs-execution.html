@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 166 — 实现 GS（几何着色器）执行（分步任务第 1 步）</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step166-gs-execution</span></div>
+<div class="wrap">
+<h1>Step 166 — 实现 GS（几何着色器）执行（分步任务第 1 步）</h1>
+<h2>任务</h2>
+<p>实现 GS/DS/HS 执行 + Tessellation 固定功能，分步：<b>先 GS</b>，再 DS/HS/Tessellation；每步全量跑对应 case。<br>本步 = <b>GS 执行</b>。</p>
+<h2>GS case（共 9，均有 gs_mesh.bin golden）</h2>
+<p>Octopath event102/event4014（passthrough triangle strip）；manhattan event50/87/124/161/198（粒子发射器 GS，<br>point→展开）；sekiro2_event14998；sekiro4_event20560。</p>
+<h2>GS 执行模型（实现）</h2>
+<ol>
+<li>跑 VS → 每顶点输出（canonical key）。</li>
+<li><b>primitive 组装</b> <code>_assemble_primitives(idx_list, topology)</code>：point(1)/line(2)/linestrip(3)/trianglelist(4)/ <b>trianglestrip(5)</b>。strip 绕序：偶 tri <code>(i,i+1,i+2)</code>、奇 tri <code>(i,i+2,i+1)</code>（末两个交换，与 gs_mesh golden 核对确定）。</li>
+<li>每 primitive 建 <code>v[i][j]</code>（i=primitive 顶点、j=GS 输入 slot，按 semantic 映射到 VS 输出 key）；系统值 SV_VertexID→该顶点 draw 索引、SV_InstanceID→实例号。</li>
+<li>执行 GS main：<code>stream.Append(...)</code> 快照当前输出寄存器为一个输出顶点、<code>stream.RestartStrip()</code> 分隔。</li>
+<li>收集 emit 顶点 → 与 gs_mesh golden 比较（复用 <code>compare_vs_output_with_golden_params</code>，打印总数/成功数 + 前几个 <code>Error:</code> 例子）。</li>
+</ol>
+<h2>实现细节</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code>：<ul>
+<li><code>_assemble_primitives</code>（拓扑→primitive 顶点组）。</li>
+<li><code>executeGS_with_params</code>（slot→canonical 映射 + SV 系统值 + 遍历 primitive×instance 调 <code>_execute_gs_main</code>，收集 emit）。</li>
+<li><code>_execute_gs_main</code>（设 <code>v</code> 2D + 输出初始化为 (0,0,0,1)/默认，跑语句，emit 经 Append 回调）。</li>
+<li><b>2D 索引</b> <code>v[i][j].swz</code>：<code>get_value</code> 数组分支支持嵌套 <code>[j]</code>。</li>
+<li><b>Append/RestartStrip 拦截</b>：<code>execute_statement</code> 顶部在 GS 模式（<code>self._gs_emit</code> 非 None）识别 <code>&lt;stream&gt;.Append(...)</code>/<code>.RestartStrip()</code>；<code>__init__</code> 加 <code>_gs_emit</code>/<code>_gs_restart=None</code>。</li>
+</ul></li>
+<li><code>render.py</code>：<code>_run_gs_stage</code>（建 gs_interp、解析 GS shader/cbuffer/signature、跑 GS、加载 gs_mesh golden、比较）， VS 比较后调用（vs_only 也跑）；<code>_draw_input_topology</code>（从 draw_call_info 的 PrimitiveTopology 取输入拓扑）。 GS 日志经 <code>vs_interp.log_output</code> 输出（gs_interp 自身缓存不 flush，否则丢失）。</li>
+</ul>
+<h2>全量运行 9 个 GS case 结果</h2>
+<ul>
+<li><b>Octopath event102 / event4014：GS 6/6 PASS</b>（passthrough triangle strip，端到端正确）。修复过程：strip 绕序 先错（3/6→4/6→6/6，最终确定偶 <code>(i,i+1,i+2)</code>/奇 <code>(i,i+2,i+1)</code>）。</li>
+<li><b>manhattan ×5（粒子发射器）</b>：VS 999/1000（另一 VS 问题）；GS <b>emit 0 vs golden 3000</b>。GS 条件 spawn 依赖 <code>emitter_startBirthIdx/endBirthIdx</code>（我方解出 411/412 → 仅 1 顶点应 spawn，但 golden=3000=全 1000×3）， <b>疑 GS cbuffer（3 个 float4x4 + uint）偏移解码有误</b>，需逐案追。</li>
+<li><b>sekiro2_event14998 / sekiro4_event20560</b>：类似 emit-count 不符。</li>
+<li>新增 emit-vs-golden 计数不符的显式 <code>Error:</code> 行（避免 0/0 假通过）。</li>
+</ul>
+<h2>结果</h2>
+<ul>
+<li><b>GS 执行核心已实现并验证</b>（passthrough 2 case 6/6）；primitive 组装/<code>v[i][j]</code>/Append/RestartStrip/SV 系统值齐备。</li>
+<li><b>回归 125/125 零回归</b>（event102 在回归内，同时守护 VS+GS）。</li>
+<li>复杂 GS（粒子 emit-count、GS cbuffer 偏移；sekiro）未全通过——记为待查，非 passthrough 执行框架之误。</li>
+</ul>
+<h2>后续（下一步 = DS/HS + Tessellation）</h2>
+<ol>
+<li>DS/HS 执行 + Tessellation 固定功能（task 第 3 步，step 167）。</li>
+<li>粒子 GS：GS cbuffer（emitter_*）偏移解码修正 → manhattan/sekiro emit-count 对齐。</li>
+</ol>
+</div></body></html>

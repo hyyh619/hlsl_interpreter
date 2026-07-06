@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 181 — HS fork/join 相位 VM + sekiro4 双案转正</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step181-hs-fork-join-vm-sekiro4-pass</span></div>
+<div class="wrap">
+<h1>Step 181 — HS fork/join 相位 VM + sekiro4 双案转正</h1>
+<h2>任务</h2>
+<p>类 C：sekiro4_19857/20244（SB stride + point-sprite 惯例）与<br>witcher 16803/16817/21346（HS fork/join 相位被反编译丢弃）。</p>
+<h2>sekiro4_19857/20244：5/5、7/7 全 PASS</h2>
+<p>排查推翻了步 167 的两个旧判断：</p>
+<ol>
+<li><b>SB stride 已无问题</b>——步 169 的 <code>_captured_sb_strides</code>（ElementByteSize 覆盖）已在 DS 路径生效（g_LightBuffer 正确装载 208B）。</li>
+<li><b>golden 不是 DS 域求值</b>：逐列比对发现每个变化列都等于<b>控制点属性</b> （COLOR.w=v1.w、TEXCOORD10.y=v11.w、SV_POSITION=(0,0,0,v0.w)），且流为 <b>控制点扁平 float 按 DS 输出布局重切片</b>（golden TEXCOORD8 跨 v10.y,v11.x,v11.y——v10 是 float2）。</li>
+</ol>
+<p><b>实现（render.py <code>_run_ds_stage</code>）</b>：<code>in_cp==out_cp==1</code> 的点精灵 patch 走<br>CP 直通比较——按 HS 签名 slot 分组拼接（多语义共享 slot：witcher 的<br>CORNER.xy+SIZE.z+CM_LEVEL.w），<b>宽度取自 HS disasm 的 dcl_input 掩码</b><br>（反编译 HLSL 全部填成 float4：<code>v[1][9].xyz</code>→3、<code>v[1][10].xy</code>→2），<br>UInt golden 列按原始位比较。</p>
+<h2>HS fork/join 相位执行基建（DXBC VM 扩展 + render 接线）</h2>
+<p>按步 175 路线："disasm 里指令还在，由 VM 生成 vpc* 喂给 DS"。</p>
+<p><b>dxbc_interp.py</b>：</p>
+<ul>
+<li><code>dcl_immediateConstantBuffer</code> 解析（icb 表 + <code>icb[expr]</code> 操作数）；</li>
+<li>动态输出目标 <code>o[r0.x + 0].x</code>（HS fork 的 indexRange 写法）；</li>
+<li><code>ld/ld_indexable</code> 从占位 0 升级为真钩子（'ld'(slot, int_coords)，支持 Texture2DArray 切片）；<code>resinfo</code> 新增（'resinfo'(slot, mip) 钩子）。</li>
+</ul>
+<p><b>render.py <code>_run_hs_patch_phases</code></b>：切分 HS disasm 的 fork/join 相位<br>（实例数、<code>dcl_output_siv</code> 因子映射表 <code>_SIV_FACTOR_NAMES</code>）、装载 HS<br>cbuffer bin 行与 HS 纹理钩子、逐 patch × 逐实例运行 VM（vicp/vocp/<br>vForkInstanceID 输入）、收集 SV_TessFactor + vpc 常量行；<br><code>executeDS_with_params(..., patch_constants=...)</code> 注入（该形参已在步 167<br>预留，此前恒 None → vpc*=0）。</p>
+<p><b>验证</b>：witcher 16803 的 fork 相位（464 条指令：dp4/div/ld_indexable/<br>resinfo/sqrt/movc/分支）完整执行成功——vpc 6 行、patch0 因子<br>edge=[2,2,2,2] inside=[2,2]（fractional_even）。DS 的 <code>vpc0.y</code> 首次拿到<br>真值。</p>
+<h2>witcher 16803/16817/21346：golden 布局之谜（留档）</h2>
+<p>vpc 打通后输出仍 0/4——继续取证发现其 <code>_ds_mesh</code> golden 是**多域角点打包<br>的复合行**：row0 的 sv_position=(corner.x, corner.y, size, 0)（域(0,0)+<br>size），TexCoord=(corner.x+size, corner.y, size)（域(1,0)！），TexCoord2<br>是 UInt 位模式列——<b>单行打包了同一 patch 的多个角点求值</b>，与<br>"每行=一次 DS 求值"的既有模型不符。步 167 的"diff==size"观察即此。<br>需要下一步对该布局做专门取证（对照 RenderDoc 源码或逐列反推），<br>再决定 DS 求值序还是复合行重排。</p>
+<h2>全量验证</h2>
+<ul>
+<li><b>Cases 回归 148/148 全 PASS 零回归</b>（CP 直通模式、VM 扩展、vpc 接线均未 破坏既有案例）。</li>
+<li><b>Dump triage 25 案：sekiro4_19857（5/5）、20244（7/7）双双转 PASS</b>， 其余逐案与基线持平（witcher 16803/16817 错误行 56→40 是 CP 模式尝试的 显示变化，pass 数不变）。</li>
+<li><b>2 案晋级</b>回归表（<b>150 案</b>）并从 Dump 移除（剩 <b>23 案</b>）。</li>
+</ul>
+<h2>类 C 收官状态</h2>
+<ul>
+<li>sekiro4 两案消灭（点精灵 CP 流惯例破解 + disasm 宽度）。</li>
+<li>witcher 三案：fork/join 相位执行基建已就位（vpc 真值可供 DS）， 剩余阻塞在 <code>_ds_mesh</code> golden 的多角点复合行布局——单行打包同 patch 多个域角点求值，需专门取证后重排比较。</li>
+</ul>
+</div></body></html>

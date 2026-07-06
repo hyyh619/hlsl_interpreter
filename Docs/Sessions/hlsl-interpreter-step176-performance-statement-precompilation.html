@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 176 — 执行性能优化：语句级预编译与缓存体系</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step176-performance-statement-precompilation</span></div>
+<div class="wrap">
+<h1>Step 176 — 执行性能优化：语句级预编译与缓存体系</h1>
+<h2>任务</h2>
+<ol>
+<li>优化 OldWorld_event1034/2767（203,328 顶点，&gt;300s）与 sekiro2_event3207/9493 （45,576 顶点 × 风力循环）的执行性能；</li>
+<li>语句级预编译（赋值目标解析、swizzle 处理预解析为闭包）；</li>
+<li>确认 <code>max_workers</code> 顶点级并行在 vs_only 路径是否吃满。</li>
+</ol>
+<h2>画像（cProfile，OldWorld 3000 顶点切片，基线 21.2s）</h2>
+<table>
+<tr><th>热点</th><th>成本</th><th>根因</th></tr>
+<tr><td><code>SyntaxTreeParser.parse</code></td><td>16.2 万次调用 / ~3s</td><td><b>完全无缓存</b>——每条语句每顶点重新解析（"语法树已缓存"的旧认知有误）</td></tr>
+<tr><td><code>get_value</code></td><td>36 万次 / 5.7s</td><td>每次做字面量 float()、正则、字符串拆解</td></tr>
+<tr><td>debug f-string</td><td>分散 ~2s</td><td><code>debug_print(f"...")</code> 即使不打印也构建字符串 + <code>_format_float</code></td></tr>
+<tr><td><code>execute_statement</code> 级联</td><td>—</td><td>每语句每顶点重跑 GetDimensions/ld_raw/sincos 等特例正则</td></tr>
+<tr><td><code>execute_block</code>/<code>if</code>/<code>while</code></td><td>循环案显著</td><td>每次调用（循环体每迭代！）重做 GenerateStmts/括号配对</td></tr>
+</table>
+<h2>六项优化（语义零改变，回归门禁）</h2>
+<ol>
+<li><b>parse 记忆化</b>（hlsl_syntax_tree.py）：<code>_parse_cache[expr] → tree</code>。 语法树在求值期只读，按解析器实例（=按解释器）缓存。</li>
+<li><b>value 节点访问器缓存</b>（<code>_build_value_accessor</code>，缓存在节点 <code>_ev</code> 上）：<ul>
+<li>数字字面量 → 常量闭包（保持 <code>_f32</code> 舍入语义）；</li>
+<li>裸名 <code>r0</code> → <code>lv.get</code> 闭包；<code>r0.xyz</code> → 预解析分量下标元组闭包；</li>
+<li>字面下标 cbuffer 引用（<code>cb0[24].xyzw</code>/具名字段）→ 每 draw 静态值缓存， <b>列表按副本返回</b>（swizzle 赋值是原地写，共享引用会污染 cbuffer）；</li>
+<li>其余（动态下标、struct 成员、buffer）保持完整 get_value 路径；</li>
+<li>访问器 miss（变量缺失/形状不符）时回退 get_value，语义不变。</li>
+</ul></li>
+<li><b>语句级快派发</b>（<code>_stmt_fast</code>）：swizzle 赋值/简单赋值/带初值声明三类在首个 顶点分类一次（存目标名、swizzle、RHS 串），后续顶点直接命中，跳过整个特例 正则级联。仅缓存纯赋值——GS Append/if/while 等永不进缓存，不会遮蔽。</li>
+<li><b>块/if/while 结构缓存</b>：<code>execute_block</code> 的 GenerateStmts、<code>execute_if_statement</code> 的条件+分支切分、<code>execute_while_statement</code> 的条件+体切分各缓存一次 （风力循环每迭代都在重做这些）。</li>
+<li><b>debug 快标志</b>：<code>self._dbg</code> 随 <code>_should_print</code> 维护；31 处单行 <code>debug_print(f"[FUNC/BINARY OP/METHOD/...]")</code> 加 <code>if self._dbg:</code> 守卫， 不打印时零字符串构建。debug_print 内部完整条件仍在（语义兜底）。</li>
+<li><code>execute_statement</code> 首行 <code>[STMT] Executing</code> 打印同样守卫。</li>
+</ol>
+<h2>结果（3000 顶点切片）</h2>
+<table>
+<tr><th>案例</th><th>基线</th><th>优化后</th><th>加速</th></tr>
+<tr><td>OldWorld_1034（无循环，40 语句/顶点）</td><td>21.2s</td><td><b>5.43s</b></td><td><b>3.9×</b></td></tr>
+<tr><td>sekiro2_3207（含风力 while 循环）</td><td>~21s*</td><td><b>3.28s</b></td><td><b>~6.5×</b></td></tr>
+</table>
+<p>（*3207 切片基线未单测，按同规模推算；循环案受益于块缓存+debug 守卫更多。）</p>
+<p>全案预估/实测：sekiro2_3207/9493（45,576 顶点）≈ 1 分钟级；<br>OldWorld（203,328 顶点）≈ 6–7 分钟（含 ~20s 一次性装载）。</p>
+<h2>max_workers 核查结论（任务 3）</h2>
+<ul>
+<li><code>max_workers</code> 的 ThreadPoolExecutor <b>只存在于 legacy struct 路径</b> （<code>interpret</code>/<code>execute_main_function</code>），当前 <code>executeVS_with_params</code> 主路径是 <b>单线程顺序循环</b>。</li>
+<li>即使接上线程池也无收益：解释器是纯 Python CPU 密集，<b>GIL 下线程并行无效</b>。</li>
+<li>真并行需进程池分块，但解释器状态（文件句柄、闭包缓存、纹理执行器）不可 pickle，需要按块重建全套装载——工程量大，收益与 6 项单线程优化（已 4–6.5×） 相比不划算，<b>暂不实施</b>（如需 203k 案入回归，建议 triage 对大案用 <code>--timeout 900</code> 单独跑，或后续做 render.py 级子进程分块）。</li>
+</ul>
+<h2>优化引出的一个隐蔽回归（已修复）：引用循环吞掉日志最终 flush</h2>
+<p>首轮回归 143/144：witcher3_event22420 日志 0 字节 → "no VS-vs-golden comparison"。<br>根因：<code>_cb</code> 访问器闭包捕获了 <code>self</code>，闭包存在解析器缓存的节点上 →<br><b>interp → parser → 节点 → 闭包 → interp 引用循环</b>。解释器析构从"引用计数归零"<br>（文件仍开）延迟到进程关停期 GC——此时运行时已回收文件对象，<code>__del__</code> 里的最终<br>flush 抛 "I/O operation on closed file"，小案（日志 &lt; 缓存阈值、从未中途 flush）<br>的日志整体丢失。大案因周期性 flush 只丢尾部，正确性比较仍在 stdout。</p>
+<p>修复：① <code>_cb</code> 闭包只捕获缓存字典（首次解析由求值侧经 get_value 回填，命中返回<br>副本）；② render.py <code>_make_interpreter</code> 登记所有解释器，<code>_run_zip_workflow</code> 的<br>finally 里<b>确定性 flush</b>（不再依赖 <code>__del__</code>）；③ <code>__del__</code> 兜底 try/except。</p>
+<p><b>教训</b>：把捕获 <code>self</code> 的闭包挂到长生命周期缓存（解析树）上，会改变对象析构时机<br>——依赖 <code>__del__</code> 做 I/O 收尾的代码随之炸裂。确定性资源收尾必须显式。</p>
+<h2>全量验证</h2>
+<ul>
+<li><b>OldWorld_event1034：PASS 203328/203328</b>、<b>OldWorld_event2767：PASS 203328/203328</b>（timeout 900 独跑，各约 6–7 分钟）——两个 203k 超时案不仅能跑完， 而且<b>全过</b>（它们从来不是正确性问题）。<b>双双晋级</b> Cases + 回归表。</li>
+<li>sekiro2_event3207/9493：按时完成（约 1 分钟级），44341/45576 维持 （残余为步 174 已定性的 sin 大相位精度墙）。</li>
+<li><b>Cases 回归（含日志修复后重跑）：144/144 全 PASS 零回归</b>；输出数值与优化前 逐位一致（所有优化均为纯执行加速，无语义改动）。</li>
+<li><b>OldWorld 两案晋级</b>回归表（<b>146 案</b>，注意二者各需 ~7 分钟 vs-only， 套件总时长相应增加）；Dump 剩 <b>27 案</b>，超时类清零。</li>
+</ul>
+</div></body></html>

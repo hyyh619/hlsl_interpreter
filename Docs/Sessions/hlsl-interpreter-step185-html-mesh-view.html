@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 185 — HTML 网格视图 + 三态显示选择机制</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step185-html-mesh-view</span></div>
+<div class="wrap">
+<h1>Step 185 — HTML 网格视图 + 三态显示选择机制</h1>
+<h2>任务</h2>
+<ol>
+<li>模仿 MeshView 创建一个 HTML 页面展示；</li>
+<li>HTML 的数据窗口与 MeshView 一致；</li>
+<li>提供选择机制：不显示 / MeshView（tk）/ HTML 页面。</li>
+</ol>
+<h2>设计</h2>
+<p><b>同 API 双实现</b>：<code>HtmlMeshView</code>（新 <code>html_mesh_view.py</code>）暴露与<br><code>mesh_view.MeshView</code> <b>完全相同的公开方法</b>（管线实际调用的那些：<br><code>set_input_data</code>/<code>set_output_data</code>/<code>set_rasterizer_pixels</code>/<br><code>set_pixel_shader_output</code>/<code>set_output_merger_pixels</code>/<code>set_pipeline_stats</code>/<br><code>set_primitive_topology</code>/<code>clear</code>/<code>show</code>/<code>close</code>，加 <code>_draw_*</code> 空钩子与<br>re-execute 空钩子）。管线无需区分二者——<code>self._mesh_view</code> 是谁都照常调用。</p>
+<p><b>不画 tk canvas，改累积数据 + 输出自包含 HTML</b>：<code>show()</code> 时把所有数据窗口<br>序列化为 JSON，注入到一份内联了 canvas 渲染 JS 的 HTML 模板<br>（<code>_HTML_TEMPLATE</code> 的 <code>/*__PAYLOAD__*/{}</code> 标记处），写文件并<br><code>webbrowser.open('file://…')</code>。零外部依赖、可直接 file:// 打开。</p>
+<p><b>数据窗口与 MeshView 一致</b>（HTML 内 JS 复刻其绘制）：</p>
+<ul>
+<li>顶部<b>统计栏</b>：输入/输出顶点数、拓扑名、管线统计（verts/prims/clipped/ culled/rast px/depth fail/PS px）——与 <code>_update_info</code> 完全一致的字段与措辞；</li>
+<li><b>Input Vertices</b> canvas：3D 投影拓扑线框（复刻 <code>_transform_vertex</code> 的 旋转 + <code>_project</code> 的缩放/居中；三角形列表/带、线列表/带、点列表全支持）；</li>
+<li><b>Output</b> 选项卡：VS Result 线框 + Rasterizer / Pixel Shader / Output Merger 像素图（复刻 <code>_prim_color</code>（primitive_id→稳定色）与 <code>_shaded_color_fn</code> （ps_output_color 优先））；</li>
+<li><b>Selected Vertex Info</b> 面板：右键选顶点，显示输入/输出顶点的 Position/Normal/Color/TexCoord（复刻 <code>_update_vertex_info_panel</code>）；</li>
+<li><b>交互</b>：拖拽旋转、滚轮缩放、右键选点——与 tk 视图一致。</li>
+</ul>
+<p><b>像素数据压缩</b>：每个 Pixel 压成 <code>[x, y, primitive_id, psR, psG, psB]</code><br>（无 ps 输出时 RGB=-1），避免大像素集撑爆 payload。</p>
+<h2>选择机制（三态）</h2>
+<ul>
+<li>config 新增 <code>mesh_view_mode</code>：<code>"none"</code> | <code>"tk"</code> | <code>"html"</code>；</li>
+<li><b>向后兼容</b>：无 <code>mesh_view_mode</code> 时回退旧布尔 <code>mesh_view_enabled</code> （true→tk、false→none）——所有既有 Cases 配置零改动仍按原样工作；</li>
+<li><code>render._resolve_mesh_view_mode(config)</code> 统一解析；两个工作流 （zip / legacy）都据此调 <code>enable_mesh_view(mode=..., html_path=...)</code>；</li>
+<li><code>HLSLInterpreter.enable_mesh_view</code> 改为按 mode 分派：none 不建视图、 tk 建 <code>MeshView</code>、html 建 <code>HtmlMeshView</code>（各自可用性缺失时安全降级并告警）； 旧签名 <code>enable_mesh_view(True/False)</code> 保留兼容。</li>
+<li>HTML 写到日志同目录的 <code>mesh_view.html</code>。</li>
+</ul>
+<h2>验证</h2>
+<ul>
+<li><b>HTML 生成</b>：合成数据（1 三角形 + 24 像素 + 完整 stats）驱动 <code>HtmlMeshView</code>，产物 11.8KB、<code>&lt;!doctype&gt;</code> 开头、<code>__TITLE__</code> 占位已替换、 payload 注入成功、JSON 反解含全部 9 键、input/output/rast/om/stats 计数正确。</li>
+<li><b>接线单测</b>：<code>_resolve_mesh_view_mode</code> 对 html/tk/none/legacy-true/ legacy-false/缺省/非法值 7 种输入全部正确；<code>enable_mesh_view</code> 对 html/none/legacy 分派出正确的视图类型与启用标志。</li>
+<li><b>回归</b>：（见下）默认配置 <code>mesh_view_enabled:false</code> → none，应零影响。</li>
+</ul>
+<h2>结果</h2>
+<ul>
+<li><b>Cases 回归 152/152 全 PASS 零回归</b>：所有既有配置 <code>mesh_view_enabled:false</code> 经兼容回退解析为 <code>none</code>，行为与改动前完全一致。</li>
+<li>新增 <code>html_mesh_view.py</code>（<code>HtmlMeshView</code>）；<code>hlsl_interpreter.enable_mesh_view</code> 三态分派；<code>render._resolve_mesh_view_mode</code> + <code>_mesh_view_html_path</code> 接线两工作流。</li>
+<li>用法：在 Cases JSON 里设 <code>"mesh_view_mode": "html"</code>（或 <code>"tk"</code> / <code>"none"</code>）； HTML 写到日志同目录的 <code>mesh_view.html</code> 并自动在浏览器打开。</li>
+</ul>
+<h2>三种显示方式对照</h2>
+<table>
+<tr><th>mesh_view_mode</th><th>行为</th><th>依赖</th></tr>
+<tr><td>none（默认）</td><td>不显示</td><td>无（回归/批量用）</td></tr>
+<tr><td>tk</td><td>tkinter MeshView 窗口（可 re-execute）</td><td>tkinter</td></tr>
+<tr><td>html</td><td>写自包含 HTML 并开浏览器</td><td>无（跨平台、可分享）</td></tr>
+</table>
+</div></body></html>

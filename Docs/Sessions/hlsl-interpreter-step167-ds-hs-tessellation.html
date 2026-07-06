@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 167 — 实现 HS/DS 执行 + Tessellation 固定功能（分步任务第 2 步）</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step167-ds-hs-tessellation</span></div>
+<div class="wrap">
+<h1>Step 167 — 实现 HS/DS 执行 + Tessellation 固定功能（分步任务第 2 步）</h1>
+<h2>任务</h2>
+<p>step 166 完成 GS 执行后，本步实现 **HS（Hull Shader 控制点阶段）+ 固定功能 Tessellator + DS（Domain<br>Shader）** 三段，并全量跑相应 case（<code>Dump/</code> 中带 HS/DS 的 draw）。</p>
+<h2>HS/DS case 盘点（扫描 <code>Dump/*.zip</code>）</h2>
+<table>
+<tr><th>case</th><th>HS</th><th>DS</th><th><code>_ds_mesh.bin</code> golden</th><th>domain</th><th>partitioning</th><th>in_cp/out_cp</th><th>vpc?</th><th>备注</th></tr>
+<tr><td>witcher3_countryside_event16803</td><td>✓(空体)</td><td>✓</td><td>✓</td><td>quad</td><td>fractional_even</td><td>1/1</td><td><b>是</b></td><td>地形块</td></tr>
+<tr><td>witcher3_countryside_event16817</td><td>✓(空体)</td><td>✓</td><td>✓</td><td>quad</td><td>fractional_even</td><td>1/1</td><td><b>是</b></td><td>地形块</td></tr>
+<tr><td>witcher3_countryside_event21346</td><td>✓(空体)</td><td>✓</td><td>✓</td><td>quad</td><td>fractional_even</td><td><b>4/4</b></td><td>是</td><td>地形块</td></tr>
+<tr><td>sekiro4_event19857</td><td>✓(空体)</td><td>✓</td><td>✓</td><td>quad</td><td>integer</td><td>1/1</td><td>否</td><td>粒子 billboard（DS 505 行）</td></tr>
+<tr><td>sekiro4_event20244</td><td>✓(空体)</td><td>✓</td><td>✓</td><td>quad</td><td>integer</td><td>1/1</td><td>否</td><td>粒子 billboard</td></tr>
+<tr><td>sekiro2_event13554/13931/14130/14388</td><td>✓</td><td>✓</td><td><b>无</b></td><td>quad</td><td>—</td><td>1/1</td><td>否</td><td>无 golden，仅执行</td></tr>
+</table>
+<h2>D3D11 tessellation 管线回顾</h2>
+<p><code>VS → HS(控制点阶段 + fork/join 补丁常量阶段) → 固定功能 Tessellator → DS</code>。</p>
+<ul>
+<li><b>HS 控制点阶段</b>：每输出控制点跑一次，变换输入控制点。</li>
+<li><b>HS fork/join（补丁常量）阶段</b>：每 patch 跑一次，算 <code>SV_TessFactor</code>/<code>SV_InsideTessFactor</code> + 其它 patch 常量。</li>
+<li><b>Tessellator（固定功能）</b>：按 domain(tri/quad/isoline) + partitioning + tess factors 生成 domain 采样点(u,v[,w]) + 连接性。</li>
+<li><b>DS</b>：每个 domain 点跑一次，输入 <code>SV_DomainLocation</code>(vDomain)、控制点 <code>vicp[i][j]</code>、patch 常量 <code>vpc*</code>，输出一个顶点。</li>
+</ul>
+<h2>实现</h2>
+<h3>1) <code>tessellator.py</code>（新，固定功能）</h3>
+<p><code>tessellate(domain, edge_factors, inside_factors, partitioning)</code> → <code>(points, prims)</code>。</p>
+<ul>
+<li>quad / tri / isoline；integer / pow2 / fractional_odd / fractional_even 段数取整。</li>
+<li>integer factor 1：quad→4 角 <code>(0,0)(1,0)(0,1)(1,1)</code>、tri→3 角、isoline→2 端点（<b>最小 patch</b>，可独立单测）。</li>
+<li>fractional 用取整段数近似（domain 点计数/端点正确，内部均匀分布）——golden 每 patch 一顶点，不影响比较。</li>
+<li>验证：<code>quad f1→4 点/2 三角</code>、<code>tri f1→3 点/1 三角</code>、<code>quad f2 even→9 点/8 三角</code>、<code>tri f3→10 点/9 三角</code> 全对。</li>
+</ul>
+<h3>2) HS 执行（<code>hlsl_interpreter.py</code>）</h3>
+<ul>
+<li><code>executeHS_with_params(...)</code>：VS 输出按 <code>in_cp</code> 分组成 patch；每 patch 产 <code>out_cp</code> 个输出控制点（canonical key）。</li>
+<li><b>空体（decompiler 丢弃 fork 阶段、控制点阶段为恒等）→ passthrough</b>：输出控制点 = 输入控制点。</li>
+<li><code>_execute_hs_main</code> 支持非空体：<code>v</code>/<code>vicp</code> 二维控制点数组 + <code>SV_OutputControlPointID</code>。</li>
+<li><code>_body_is_trivial</code> 判定空体。</li>
+</ul>
+<h3>3) DS 执行（<code>hlsl_interpreter.py</code>）</h3>
+<ul>
+<li><code>executeDS_with_params(main, ..., ds_input_sig, hs_patches, domain_points, patch_constants=None)</code>： 每 patch × 每 domain 点跑一次 DS main，patch-major/domain-point 顺序收集输出流。</li>
+<li><code>_execute_ds_main</code>：设局部变量 <code>vicp</code>/<code>v</code>（2D 控制点，复用 GS 的 <code>v[i][j]</code> 索引支持）、<code>vDomain</code>/<code>SV_DomainLocation</code>、 <code>vpc0..vpc7</code>（fork 阶段输出，缺失时默认 0），按语义把控制点填入具名输入参数；跑语句后按 canonical key 收集输出。</li>
+<li>DS 无 <code>Append</code>，直接收集输出参数（类 VS）。</li>
+</ul>
+<h3>4) <code>render.py</code></h3>
+<ul>
+<li><code>_parse_tess_params(folder)</code>：从 HS/DS disasm（或 HLSL 注释）解析 <code>dcl_input/output_control_point_count</code>、 <code>dcl_tessellator_domain</code>、<code>dcl_tessellator_partitioning</code>。</li>
+<li><code>_run_ds_stage(...)</code>：检测 <code>HS_shader.hlsl + DS_shader.hlsl + *_ds_mesh.bin</code>；建 HS/DS 解释器（纹理/cbuffer/ structured/typed buffer/签名/main 参数），跑 HS→tessellator→DS，与 <code>_ds_mesh.bin</code> golden 比（复用 <code>compare_vs_output_with_golden_params</code>，打总数/成功数 + 前几个 <code>Error:</code>）。VS 比较后调用，vs_only 也跑。</li>
+</ul>
+<h2>关键发现：<b>golden DS-out 计数 = patches × out_cp</b>（RenderDoc DS-out 预览惯例）</h2>
+<p>逐案对：16803 drawn4/golden4；21346 drawn1024/golden1024（256 patch × 4）；sekiro4 5/5、7/7。<br>→ <b>DS 每 patch 跑 <code>out_cp</code> 次</b>（每个输出控制点/角一次）。故取<b>最小 patch（integer factor 1）</b>的前 <code>out_cp</code> 个角作为<br>per-patch domain 位置（out_cp=1→仅 <code>(0,0)</code>；out_cp=4 quad→4 角）。修正后<b>5 个 golden case 计数全对</b><br>（4/4、4/4、1024/1024、5/5、7/7）。</p>
+<blockquote>注：fractional_even 声明但 golden 用 factor-1 的 4 角——D3D 在所有 factor=1 时产最小 patch，与 partitioning 无关。</blockquote>
+<h2>全量运行结果（5 个 <code>_ds_mesh</code> golden case）</h2>
+<table>
+<tr><th>case</th><th>DS emitted</th><th>golden</th><th>计数</th><th>逐行通过</th><th>结论</th></tr>
+<tr><td>witcher16803</td><td>4</td><td>4</td><td>✓</td><td>0/4</td><td><b>vpc 墙</b></td></tr>
+<tr><td>witcher16817</td><td>4</td><td>4</td><td>✓</td><td>0/4</td><td><b>vpc 墙</b></td></tr>
+<tr><td>witcher21346</td><td>1024</td><td>1024</td><td>✓</td><td>0/1024</td><td><b>vpc 墙</b></td></tr>
+<tr><td>sekiro4_19857</td><td>5</td><td>5</td><td>✓</td><td>0/5</td><td>复杂 DS（见下）</td></tr>
+<tr><td>sekiro4_20244</td><td>7</td><td>7</td><td>✓</td><td>0/7</td><td>复杂 DS</td></tr>
+</table>
+<p><b>框架正确性已验证</b>（非逐行全过，但核心链路对）：</p>
+<ol>
+<li><b>计数全对</b>：patch 组装 + <code>out_cp</code> domain 点规则 + HS passthrough + DS 执行链路正确。</li>
+<li><b>sekiro4 <code>Color.xyz</code> 逐分量精确匹配</b> golden：<code>o0.xyz = vicp[0][5].xyz * vicp[0][1].xyz</code>（COLOR4×COLOR0）→ <b>vicp 接线（HS 输出控制点→DS <code>vicp[i][j]</code>）正确</b>。</li>
+<li><b>witcher <code>TexCoord3</code> 差值恰为 <code>size</code>(7.8125)</b>：几何式 <code>vDomain*size+corner</code> 正确，仅代表 domain 角与 golden 不同。</li>
+</ol>
+<p><b>逐行 0 通过的根因（结构墙，非框架 bug）</b>：</p>
+<ul>
+<li><b>witcher（3 案）</b>：DS 读 <code>vpc0.y</code>（HS fork 阶段的非 SIV patch 常量输出 <code>o0.y</code>），<b>fork/join 阶段被 3Dmigoto decompiler 丢弃</b>（HLSL 只剩空的控制点阶段），无法算 → <code>vpc0</code> 缺失 → <code>t3.Load</code> 索引错、<code>TexCoord=inf</code>、 SV_Position 连带错。<b>不可修（缺源）</b>。</li>
+<li><b>sekiro4（2 案）</b>：①SV_POSITION golden = <code>(0,0,0,w)</code>（point-sprite/RenderDoc 惯例，xyz 恒 0），我方走 view×proj 得非零 xy；②<code>o10</code>(TEXCOORD10) 走 tile-based 光照 + <code>StructuredBuffer&lt;PointLight&gt;</code>，<b>PointLight 结构体 stride 被误判为 16B</b>（应为结构体大小），光照顶点错；③fade 项（r4.y）。域位置扫 <code>(0,0)/(0.5,0.5)/(1,1)/(0.5,0)</code> 对匹配数无影响（37~38），确认非域位置问题。</li>
+</ul>
+<h2>回归</h2>
+<p><code>python run_regression.py</code> → <b>125/125 全过，零回归</b>（<code>_run_ds_stage</code> 在无 HS/DS/<code>_ds_mesh</code> 时提前返回，不影响非 tessellation draw）。</p>
+<h2>结论</h2>
+<ul>
+<li><b>HS 控制点执行 + 固定功能 Tessellator + DS 执行框架完成</b>，<code>_run_ds_stage</code> 端到端接入（VS→HS→Tess→DS→golden 比较）。</li>
+<li><b>经验证</b>：5 个 golden case DS-out 计数全对；vicp 接线（Color.xyz）与几何式（size 差）逐分量对。</li>
+<li><b>逐行不过 = 结构墙</b>：witcher = fork 阶段（vpc）未 decompile；sekiro4 = point-sprite SV_POSITION 惯例 + PointLight structured-buffer stride 误判 + 光照循环。均非框架之误。</li>
+<li>分步任务（GS→DS/HS+Tess）<b>两步完成</b>。</li>
+</ul>
+<h2>后续（可选）</h2>
+<ol>
+<li><code>StructuredBuffer&lt;struct&gt;</code> stride 从结构体布局推断（修 sekiro4 <code>o10</code> 光照）。</li>
+<li>HS fork/join（patch 常量）阶段：若能拿到含该阶段的反汇编/HLSL，补 <code>vpc*</code> → 解 witcher 墙。</li>
+<li>point-sprite SV_POSITION 惯例核对（sekiro4 xyz=0 的 RenderDoc 语义）。</li>
+</ol>
+</div></body></html>

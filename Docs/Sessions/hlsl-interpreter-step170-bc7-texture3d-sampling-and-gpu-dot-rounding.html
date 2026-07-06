@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 170：类⑧ irradiance volume（Texture3D/BC7）解码 + 类⑦精度残差（GPU 点积舍入链）</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step170-bc7-texture3d-sampling-and-gpu-dot-rounding</span></div>
+<div class="wrap">
+<h1>Step 170：类⑧ irradiance volume（Texture3D/BC7）解码 + 类⑦精度残差（GPU 点积舍入链）</h1>
+<h2>任务</h2>
+<ol>
+<li><b>类⑧</b>：修复 sekiro4_20560 唯一残余的 irradiance volume（Texture3D）alpha 解码，并评估对 witcher 纹理采样家族的带动。</li>
+<li><b>类⑦</b>：精度临界 6 案（sekiro2_3207/9493/4833、sekiro4_7844、Octopath 664/3012），"需 bit-exact GPU 数学"。</li>
+</ol>
+<h2>类⑧：一路揭开四层纹理栈缺陷</h2>
+<p>从 sekiro4_20560 的 TEXCOORD9（RGBM 解码 <code>exp2(20*(α−0.5))</code> 放大 1024 倍）入手，逐层定位出 4 个独立缺陷：</p>
+<h3>1. BC7 解码器（新增，texture.py）</h3>
+<p>texture_params.csv 显示 irradiance volume 是 <b>Texture3D 40×8×76 BC7_UNORM</b>。原 <code>.img</code> 原始解码不支持 BC7 → 回退 24bpp BMP（<b>alpha 丢失恒 1.0</b> → exp2(10)=1024 倍放大，且只有 slice 0）。</p>
+<p>实现纯 Python BC7 块解码器（8 模式全支持：分区表 2/3 子集、anchor 表、p-bit 端点扩展、2/3/4-bit 权重插值、mode 4/5 旋转与 idxMode 双索引流）。<b>验证方法</b>：对同 zip 内 RenderDoc 转换的 BMP（RGB 权威真值）逐纹素比对——首轮发现 PART2 表 16~63 行记错（mode7/partition21 块 8 纹素错），换规范表后：</p>
+<ul>
+<li>40×8 volume 切片：<b>320/320 逐纹素精确</b>（×2 个资源）</li>
+<li>256×256 PS 纹理：<b>65534/65536 精确</b>（2 纹素差 ≤8，可忽略）</li>
+<li>2D <code>.img</code> 路径同步接入 BC7（<code>_decode_raw_texels</code>），BC7 纹理不再退化到无 alpha 的 BMP。</li>
+</ul>
+<h3>2. Texture3D 体加载与三线性采样（新增）</h3>
+<p><code>TextureDesc</code> 增加 <code>Depth</code>/<code>Kind</code>（render.py 从 texture_params.csv 传入）；<code>_get_volume_slices</code> 把 <code>.img</code> 按 Depth 切片独立解码（BC7 每切片 (W/4)(H/4) 块）；<code>sample_volume</code> 做 z 轴 <code>w*D−0.5</code> 定位 + 两切片双线性 + z 线性（三线性），按采样器过滤/地址模式退化到点采样。解释器 Sample/SampleLevel 对 <code>Texture3D</code> 绑定路由到体采样（<code>_is_volume_texture</code>，绑定声明或 texture_params 的 Type 均可判定）。</p>
+<h3>3. 采样器地址模式名解析（潜伏面最广）</h3>
+<p>调试时发现 in-run 采样 u=1.0079 环绕到了纹理另一头——sampler_params.csv 用 RenderDoc 命名 <b><code>ClampEdge</code>/<code>ClampBorder</code></b>，<code>ADDRESS_NAME_MAP</code> 不认识 → <b>静默退化成 WRAP</b>。所有新 dump 的 clamp 采样器都受影响（含 witcher）。已加映射（CLAMPEDGE→CLAMP 等）。</p>
+<h3>4. 双线性采样约定（D3D 规范）</h3>
+<p><code>_sample_linear</code> 用 <code>u*w</code> 取整——<b>比 D3D 规范 <code>u*w−0.5</code> 偏半个纹素</b>（纹素中心采样时会错误混合邻居）。改为规范约定，邻居索引按地址模式（wrap 取模 / clamp 夹边）。用 golden 隐含 α 值验证：修正后 α=0.3077 vs golden 隐含 0.3079 ✓。</p>
+<p><b>结果：sekiro4_event20560 从 0/1074 → PASS 1074/1074</b>（上一步遗留的最后一块）。</p>
+<h2>类⑦：GPU 点积舍入链</h2>
+<p>两个解释器（HLSL 解释器 + DXBC VM）的 <code>dot</code>/矩阵乘都是<b>双精度累加、最后一次舍入</b>；GPU 的 dpN/mul+mad 链是<b>每步一次 float32 舍入</b>。在 f32 仿真下改为 GPU 序列（<code>_gpu_dot</code>：f32 乘积在 double 中精确、每步 product+acc 一次舍入 = mad 语义）：</p>
+<ul>
+<li><code>dot_product</code>、<code>mul_matrix_vector</code>（hlsl_interpreter.py，f32_emulation 门控）</li>
+<li><code>dp2/dp3/dp4</code>（dxbc_interp.py），顺便补了 <code>umin</code>/<code>umax</code> 指令</li>
+</ul>
+<p><b>结果</b>：</p>
+<ul>
+<li><b>Octopath event664：36/51 → PASS 51/51</b></li>
+<li><b>Octopath event3012：35/51 → PASS 51/51</b>（类⑦的两个 Octopath 蒙皮案被此修复消灭——此前判断"需 bit-exact GPU 数学"，实际 dpN 逐步舍入就是那个 bit-exact 语义）</li>
+<li>sekiro2_3207/9493：43329 → 43337/45576（+8 行，残余 diff ~0.005 恰在容差边缘）</li>
+<li>TombRaider event2848/7308（类⑥超越函数墙）顺带收敛：742 → <b>827/1548</b>（dpN 舍入链消除了变换侧的双重舍入，剩余纯为 sincos/rsqrt 硬件近似）</li>
+<li>sekiro2_4833、sekiro4_7844：无变化（DXBC VM 定位显示 o1 法线精确匹配、o0 位置差 1e-3 相对量级——骨骼数据/权重侧的问题，VM 尚不支持骨骼 buffer 资源加载，留待后续）</li>
+</ul>
+<h2>验证</h2>
+<ul>
+<li>回归（130 案）：<b>130/130 全过</b>——BC7/体采样/ClampEdge/双线性约定/点积舍入全部零回归（双线性半纹素修正没有破坏任何既有 case，说明旧 case 的纹理采样均在平滑区域或容差内）。</li>
+<li>Dump 全量：sekiro4_20560、Octopath664、Octopath3012 转 PASS（晋级回归表）；witcher 家族误差收敛但未过线（event16215 错误行 180→150）。</li>
+</ul>
+<h2>witcher 家族状态（类⑧残余）</h2>
+<p>ClampEdge + 双线性修正使 witcher 各案误差普遍下降但均未过线；其 TexCoord2/4 链经 VS 内 <code>SampleLevel</code>（Texture2DArray 细节法线 R16G16_FLOAT 等），残余属纹素级精确性 + 一处 HS/DS 结构墙，留待后续步骤。</p>
+<h2>修改文件</h2>
+<ul>
+<li><code>texture.py</code>：BC7 解码器（分区/anchor/权重表 + <code>_bc7_decode_block</code>/<code>decode_bc7_image</code>）；<code>TextureDesc.Depth/Kind</code>；<code>_get_volume_slices</code>/<code>sample_volume</code>；<code>_decode_raw_texels</code> 接入 BC7；<code>ADDRESS_NAME_MAP</code> 增 RenderDoc 命名；<code>_sample_linear</code> 改 D3D <code>−0.5</code> 约定 + 地址模式邻居。</li>
+<li><code>hlsl_interpreter.py</code>：<code>_is_volume_texture</code> + Sample/SampleLevel 体采样路由；<code>_gpu_dot</code> + <code>dot_product</code>/<code>mul_matrix_vector</code> GPU 舍入链。</li>
+<li><code>render.py</code>：<code>_load_stage_textures</code> 传 <code>Depth</code>/<code>Kind</code>。</li>
+<li><code>dxbc_interp.py</code>：dpN 逐步舍入；<code>umin</code>/<code>umax</code>。</li>
+<li><code>Cases/regression_test_zip_files.csv</code>：+3（sekiro4_event20560、Octopath event664/event3012）。</li>
+</ul>
+<h2>最终状态</h2>
+<ul>
+<li>回归 <b>133/133 全过</b>（130 + 3 晋级）。</li>
+<li>类⑦：6 案 → 2 案消灭（Octopath 664/3012），4 案残留（sekiro2×3 + sekiro4×1，精度临界/骨骼数据侧）。</li>
+<li>类⑧：sekiro4_20560 消灭；witcher 9 案误差收敛中。</li>
+</ul>
+</div></body></html>

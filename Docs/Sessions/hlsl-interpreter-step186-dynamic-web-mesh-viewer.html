@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 186 — Dynamic web mesh viewer (live VS/PS progress + normals toggle)</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step186-dynamic-web-mesh-viewer</span></div>
+<div class="wrap">
+<h1>Step 186 — Dynamic web mesh viewer (live VS/PS progress + normals toggle)</h1>
+<h2>Prompt</h2>
+<ol>
+<li>请把 view html 静态页面展示，改为动态 web 页面显示</li>
+<li>能够根据 VS 执行的进度，动态展示顶点绘制的进展</li>
+<li>能够根据 PS 执行的进度，动态展示像素绘制的进展</li>
+<li>能够动态开关显示当前顶点的法线向量</li>
+</ol>
+<h2>Goal</h2>
+<p>Step 185 added <code>HtmlMeshView</code> — a <b>static</b> one-shot viewer: it accumulates<br>all pipeline data and, on <code>show()</code> (called once at the very end of the run),<br>writes a single self-contained <code>mesh_view.html</code> with every datum baked into a<br>JSON literal, then opens the browser. Nothing animates; you only ever see the<br>finished frame.</p>
+<p>This step makes the viewer <b>dynamic</b>: a live web page, served by a background<br>HTTP server, that the browser polls while the pipeline is still executing — so<br>vertices appear as the VS shades them and pixels fill in as the PS shades them,<br>with a live toggle for per-vertex normal vectors.</p>
+<h2>Design &amp; thinking</h2>
+<h3>Why a server, not a file</h3>
+<p>A static <code>file://</code> HTML can't update after it's written. To show <i>progress</i> the<br>page must re-read state over time. The cleanest stdlib-only way (no third-party<br>deps, per project rules) is a tiny <code>http.server.ThreadingHTTPServer</code> on a daemon<br>thread serving two routes, with the browser polling on a timer:</p>
+<ul>
+<li><code>GET /</code>      → the poller page (self-contained HTML+JS)</li>
+<li><code>GET /state</code> → a JSON snapshot, rebuilt under a lock on every request</li>
+</ul>
+<p>Polling (250 ms) was chosen over SSE/WebSockets: it is trivial with<br><code>BaseHTTPRequestHandler</code>, survives disconnects, and needs no framing protocol.</p>
+<h3>Zero-copy live snapshots</h3>
+<p>The naïve approach — rebuild and serialize the whole geometry array on every<br>shaded vertex — is O(n²). Instead the viewer **shares the interpreter's own<br>growing lists**:</p>
+<ul>
+<li><code>bind_vs_results(results_ref, total)</code> hands the viewer the exact list <code>executeVS_with_params</code> appends each vertex's canonical output to.</li>
+<li>Per vertex the interpreter only bumps an integer counter via <code>set_vs_progress(done, total)</code> (a lock + int — microseconds).</li>
+<li><code>/state</code> slices <code>results_ref[:done]</code> and serializes <i>only when the browser polls</i> (~4×/s), not per vertex.</li>
+</ul>
+<p>Same pattern for PS via <code>bind_ps_pixels(pixels_ref, total)</code> /<br><code>set_ps_progress</code> — the PS colours <code>Pixel</code> objects in place, so<br><code>pixels_ref[:done]</code> is the shaded-so-far slice.</p>
+<h3>New file: <code>web_mesh_view.py</code> — <code>WebMeshView</code></h3>
+<p>Drop-in for <code>HtmlMeshView</code>/<code>MeshView</code> (same setter API: <code>set_input_data</code>,<br><code>set_output_data</code>, <code>set_rasterizer_pixels</code>, <code>set_pixel_shader_output</code>,<br><code>set_output_merger_pixels</code>, <code>set_pipeline_stats</code>, <code>set_primitive_topology</code>,<br><code>clear</code>, <code>show</code>, <code>close</code>, plus the <code>_draw_*</code> / <code>set_hlsl_interpreter*</code> no-ops).<br>Extra live hooks (no-ops on the other viewers, so callers guard with <code>hasattr</code>):<br><code>bind_vs_results</code> / <code>set_vs_progress</code> / <code>bind_ps_pixels</code> / <code>set_ps_progress</code> /<br><code>set_phase</code>. All state is behind an <code>RLock</code>; a <code>seq</code> counter increments on every<br>mutation.</p>
+<p>The page reuses the step-185 projection / wireframe / pixel-image rendering, but<br>wraps <code>DATA</code> in a <code>fetch('/state')</code> poll loop and adds:</p>
+<ul>
+<li>VS and PS <b>progress bars</b> (done/total) + a phase label (<code>init</code>→<code>vs</code>→<code>rasterizer</code>→<code>ps</code>→<code>done</code>), auto-following the active stage;</li>
+<li>a <b>"Show Normals" checkbox</b> that draws a short blue line from each vertex along its (projected) normal on both input and output canvases — toggled live, no reload.</li>
+</ul>
+<h3>Interpreter &amp; orchestrator wiring</h3>
+<ul>
+<li><code>hlsl_interpreter.py</code>: import <code>WebMeshView</code> (guarded), add a <code>'web'</code> branch to <code>enable_mesh_view</code>, and add the live hooks to <code>executeVS_with_params</code> (bind + per-~1/500 progress) and <code>executePS_with_params</code> (bind + per-~1/500 progress). Both hooks are gated on <code>self._mesh_view_enabled and hasattr(view, 'bind_*')</code>, so tk/html/none viewers and the headless regression path are completely inert.</li>
+<li><code>render.py</code>: accept <code>'web'</code> in <code>_resolve_mesh_view_mode</code>; feed the rasterizer coverage + <code>set_phase('rasterizer')</code> right after <code>rast.rasterize</code>; and <code>set_phase('done')</code> at the final mesh-view block.</li>
+</ul>
+<h3>Bug found &amp; fixed: PS runs on a <i>separate</i> interpreter</h3>
+<p>First integration run showed VS animating but PS jumping straight from<br><code>rasterizer</code> → <code>done</code> with no live pixels. Cause: <code>render.py</code> executes the pixel<br>shader on a <b>fresh <code>ps_interp</code></b> created by <code>_make_interpreter</code>, which has **no<br>mesh view attached** (<code>_mesh_view is None</code>), so the PS live hooks never fired.<br>Fix: before <code>executePS_with_params</code>, share the VS interpreter's viewer to<br><code>ps_interp</code> (only when it's a <code>WebMeshView</code>, guarded by<br><code>hasattr(.., 'bind_ps_pixels')</code>). After this, PS pixels fill in live.</p>
+<h3>Cosmetic fix: <code>clear()</code> no longer zeroes progress</h3>
+<p><code>render.py</code> calls <code>show_input_mesh_from_params</code> → <code>clear()</code> <b>after</b> the VS loop<br>finishes, which was snapping the completed VS bar back to 0/0. <code>WebMeshView.clear</code><br>now resets geometry/pixel buffers and the shared list refs but <b>keeps</b> the<br>numeric VS/PS progress counters (the next run rebinds via <code>bind_*</code>).</p>
+<h2>Verification</h2>
+<p>Standalone server test (browser open stubbed out): <code>/</code> serves the page with the<br>title injected and the normals toggle present; <code>/state</code> reflects live VS growth<br>(output vertices 1→2→3 as <code>set_vs_progress</code> advances) and PS growth (ps_pixels<br>grow as pixels are coloured); phase transitions to <code>done</code>.</p>
+<p>Full-pipeline test in <code>web</code> mode on<br><code>Collision-fix-constant-buffer-and-RdotV-zero_event104.zip</code> (1149 verts,<br>46015 rasterizer fragments, 42726 PS pixels), with a background poller sampling<br><code>/state</code>, captured the live progression:</p>
+<pre><code>(phase, vs_done, ps_done, out_verts, ps_px)
+('vs',        819, 0,    819,  0)      # vertices appearing as VS shades
+('vs',       1149, 0,   1149,  0)
+('rasterizer',1149, 0,  1149, 46015)   # fragment coverage
+('ps',       1149, 256, 1149,  256)    # pixels filling in as PS shades
+('ps',       1149, 3146,1149, 3146)
+ ... 
+('ps',       1149,42726,1149,42726)
+('done',     1149,42726,1149,42726)    # VS bar preserved at 100%</code></pre>
+<p>All four deliverables confirmed: (1) dynamic server-backed page, (2) live VS<br>vertex progress, (3) live PS pixel progress, (4) live normals toggle.</p>
+<p><b>Regression: 118/123 — no regression introduced.</b> The 5 failing cases<br>(<code>witcher3_countryside_event1643/1834/1852/2322</code>, <code>manhattan_frame_274_event1041</code>)<br>are <b>pre-existing</b>: with the code changes stashed, <code>event1643</code> still fails<br>0/1110 at clean HEAD, and the added code path is inert whenever the mesh view is<br>disabled (the regression config). Baseline and post-change counts match.</p>
+<h2>Files changed</h2>
+<ul>
+<li><code>web_mesh_view.py</code> (new) — <code>WebMeshView</code>: HTTP server + live poller page.</li>
+<li><code>hlsl_interpreter.py</code> — import guard, <code>enable_mesh_view</code> <code>'web'</code> branch, VS/PS live progress hooks.</li>
+<li><code>render.py</code> — <code>'web'</code> mode, rasterizer/<code>done</code> phase hooks, share viewer to <code>ps_interp</code>, docstring.</li>
+<li><code>Cases/Default.json</code> — <code>mesh_view_mode: "web"</code> (fixed the ignored <code>mesh_view_Mode</code> typo key) so the default run uses the dynamic viewer.</li>
+</ul>
+</div></body></html>

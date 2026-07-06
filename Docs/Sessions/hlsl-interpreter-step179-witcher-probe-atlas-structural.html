@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 179 — 21719/21895 定性：探针图集（帧级动态资源）捕获时机不一致</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step179-witcher-probe-atlas-structural</span></div>
+<div class="wrap">
+<h1>Step 179 — 21719/21895 定性：探针图集（帧级动态资源）捕获时机不一致</h1>
+<h2>任务</h2>
+<p>继续修复 21719（368/1728）、21895（1057/6360）、22229（10/12）、22260（54/108）。</p>
+<h2>21719 逐层排查（trace 反照 + 原始位核验）</h2>
+<p>失败分布：<b>o4/TEXCOORD4（探针环境色）约 1200 行为主导</b>，o6/TEXCOORD6 仅数行。</p>
+<ol>
+<li><b>探针索引层排查（步 178 的"1/16 图集索引"线索）</b>： row 67 的探针元素索引 = 13017（<code>(uint4)v1 * v12.y + v12.x</code>，逐 lane 一致）； 图集行号 <code>r6.w = t0[13017].val[11]</code>——直接读 buffer_1678.bin 原始位： <b>val[11] = 0x00000000，真零</b>，非 denormal 家族问题。我们的 struct 读取 与索引推导全部正确。t0 元素 16 词逐词核对（法线/切线/图集坐标/位置） 与解释器读数完全一致。</li>
+<li><b>o4 反解</b>：o4 = r3·r2.x，golden/ours 各通道比值 1.167/0.720/0.431 <b>非均匀</b> → 非标量因子差，是探针颜色本体不同（golden 暖色 r&gt;g&gt;b， 我们冷蓝 b&gt;g&gt;r）。</li>
+<li><b>决定性验证——手工解码 t22 图集</b>：采样点 (0.2459, 0.2277)、lod=1、 R11G11B10_FLOAT mip1（24×84）：四邻域纹素全部冷蓝 （[0.34,0.61,0.84]/[0.29,0.52,0.70]/[0.22,0.41,0.50]/[0.19,0.36,0.42]）， 双线性结果与解释器采样<b>逐位一致</b>（[0.252, 0.457, 0.588]）。 <b>golden 所需的暖色无法由 dump 的 t22 内容在该 UV 产生。</b></li>
+</ol>
+<h2>结论：结构性（与 22260/ES2991 同类）</h2>
+<p>t22 探针图集是<b>逐帧重渲染的动态资源</b>；dump 的 t22 内容与 draw 时刻<br>GPU 实际采到的内容不一致——与步 177 对 22260 的 cb12[190]（帧级共享<br>cbuffer）"数学不可达"定性完全同构。证据链：</p>
+<ul>
+<li>同一 t22 在 22229 的采样与 golden 吻合（该 event 的捕获时机恰好一致）；</li>
+<li>21719 的采样与 dump 内容逐位吻合但与 golden 不可调和；</li>
+<li>失败只集中在消费该资源的输出（o4），同 draw 其它输出通过。</li>
+</ul>
+<p><b>21719/21895/22260 归入"帧级动态资源捕获时机"结构类</b>（ES2991 家族），<br>解释器侧无缺陷可修；出路在导出侧（dx_dump 在 draw 事件点重放后立即<br>dump SRV/cbuffer，而非帧末）。</p>
+<h2>o6（TEXCOORD6）残余的定性</h2>
+<p>golden TEXCOORD6.x 分布：1.0×1491、0.0×195、少量小数——**本质是二值的<br>太阳可见性**，小数只出现在 CSM 半影行。我们错的 ~5 行都是半影行<br>（PCF 亚纹素精度），非系统性缺陷。</p>
+<h2>22229 / 22260 复核</h2>
+<ul>
+<li><b>22229</b>：余 2 行 diff=0.005075（恰超容差 1.5%），灯光解析衰减 f32 细节。维持不放宽全局容差。</li>
+<li><b>22260</b>：维持步 177 定性；本步 21719 的 t22 证据进一步支持 "帧级资源时机"家族假设。</li>
+</ul>
+<h2>代码改动</h2>
+<p>无（纯调查/定性步）。回归状态维持步 178 的 147/147（148 案表）。</p>
+<h2>类 E 最终版图（步 168 的 11 案）</h2>
+<ul>
+<li><b>7 案消灭</b>：16215、16834、22092、22201、21979、22049、Octopath3601。</li>
+<li><b>3 案结构定性</b>：21719、21895、22260（帧级动态资源捕获时机）。</li>
+<li><b>1 案容差边缘</b>：22229（2 行，0.005075）。</li>
+</ul>
+<h2>对导出侧的建议（转交）</h2>
+<p>dx_dump 需确认：重放至目标 EventId 后、执行 draw 前，SRV（纹理/typed<br>buffer/SB）与 cbuffer 的 dump 时点是否即为该事件的绑定内容——<br>特别是逐帧更新的探针图集（t22）、帧常量（cb12）、拖尾粒子 SB<br>（ES2991 的 t1）。若为帧末快照，则 21719/21895/22260/ES2991 都能<br>通过修正导出时机翻转。</p>
+</div></body></html>

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 174 — 类⑦（精度临界，&quot;需 bit-exact GPU 数学&quot;）：多数并非精度问题</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step174-precision-class-named-struct-cbuffer</span></div>
+<div class="wrap">
+<h1>Step 174 — 类⑦（精度临界，"需 bit-exact GPU 数学"）：多数并非精度问题</h1>
+<h2>任务</h2>
+<p>修复类⑦（步 168 归类"精度临界（float32 仿真残差）需 bit-exact GPU 数学"）。<br>步 170 的 GPU dpN 逐步舍入已修掉 Octopath 664/3012；本步处理剩余：<br>sekiro2_3207/9493（43337/45576）、sekiro2_4833（12/24）、sekiro4_7844（162/324）、<br>sekiro2_14998（28974/29148，GS 案）。</p>
+<h2>sekiro2_4833：根本不是精度问题——具名 cbuffer 嵌套 struct 的三层缺陷</h2>
+<p>trace 显示 <code>min((uint)g_forceParam.LoopNum.x, 8) = 0</code>——<b>整个风力 while 循环从未执行</b><br>（且步 173 之前 while 本身就未实现），"精度残差"实为整个风力位移项缺失。<br>二进制里 LoopNum.x = 2（denormal 存储，浮点视图 0.0）。三层修复（hlsl_interpreter.py）：</p>
+<ol>
+<li><b><code>override_cbuffers_from_binary</code> 对非数组 struct 实例不填数据</b>： <code>for j in range(array_size)</code> 在 array_size=0（<code>struct {...} g_forceParam</code>， 非数组实例）时零迭代 → <code>field.data</code> 恒空。改 <code>range(max(1, array_size))</code>。</li>
+<li><b>get_value 的点号路径不识别非数组 struct 成员访问</b>： <code>g_forceParam.LoopNum.x</code> 落入通用浮点路径（denormal→0）。新增路由： base 名匹配 <code>__struct__</code> 非数组字段时走 <code>_struct_member_access(field, 0, rest)</code> ——uint/int 成员经 <code>struct_int_data</code> 读精确位。</li>
+<li><b><code>_struct_member_access</code> 的成员数组下标用空局部环境求值</b>： <code>GustParam[r0.y]</code> 的 r0.y（循环变量）解析失败回退 0。签名加 <code>local_vars</code> 透传。</li>
+</ol>
+<p>结果：<b>12/24 → 24/24 PASS</b>。</p>
+<h2>sekiro4_7844：324/324 直接 PASS</h2>
+<p>同引擎（FromSoftware）风力 struct——纯搭 4833 修复（+步 173 的 while 循环）的车。<br>步 170 时"骨骼数据侧、DXBC VM 无法定位"的判断不成立：真因同上。</p>
+<h2>sekiro2_3207 / 9493：又是"假精度"——(uint) 强转吞掉 denormal 位模式</h2>
+<p>同样的风力系统，但每顶点风力骨骼数来自 <code>Buffer&lt;mixed4&gt; t4</code>（tbForce）的<br><code>.x</code>（uint 道）：t4[0].x = <b>uint 2</b>，浮点视图是 denormal 0.0 →<br><code>min(8, (uint)0.0)</code> = 0 → 风力循环从未执行。用 golden o0 反解（4×4 求逆）<br>证实 golden 世界坐标含 ~0.004 的风力位移。</p>
+<p><b>修复（通用）</b>：int/uint 强转（<code>_INT_CAST_TYPES</code> 分支）遇 <b>denormal 范围</b><br>（0 &lt; |f| &lt; 1.18e-38）浮点时按位重解释——GPU 是 FTZ 的，真实运算永远不产生<br>denormal；在 int 强转处出现的 denormal 只可能是原始整数位穿透浮点存储。<br>（与步 173 的 <code>_load_coord_to_int</code> 同一启发式，扩展到所有 int 强转。）</p>
+<p>结果：43337 → <b>44341/45576</b>（+1004 行）。</p>
+<p><b>残余 1235 行 = 真正的精度墙</b>：全部 sv_position.x、diff 0.00500–0.0107<br>恰在 0.005 容差线上（相对 ~1e-4），失败顶点的风力相位 <code>sin(≈3889 rad)</code> 是<br>时间×频率大数。实验了 GPU 快速 sin 归约模型<br>（<code>sin(2π·frac(f32(x·f32(1/2π))))</code>）：局部有效（631 行检查 7 错→1 错）但<br><b>全量净负效</b>（44341→44338，修一批坏一批）——本案捕获 GPU 是<br>Parallels/Apple 虚拟 GPU，其归约精度高于 f32 模型，math.sin 整体更近。<br><b>已回滚</b>，维持 math.sin/cos；不放宽容差。</p>
+<h2>sekiro2_14998</h2>
+<p>VS 段 <b>4867/4867 全过</b>；GS 段维持 28974/29148（TexCoord4 ~0.13，相对 5e-4）。<br>其 GS 的 <code>sincos</code> 角度非大相位，残余另有来源（billboard 角偏移链），非本步范围。</p>
+<h2>全量验证</h2>
+<ul>
+<li><b>Cases 回归 <code>run_regression.py</code> 142/142 全 PASS 零回归</b>（denormal int 强转、 非数组 struct 三层修复均为共享路径改动）。</li>
+<li><b>Dump triage 31 案：2 转 PASS（4833、7844），其余逐案与基线持平</b>。 3207/9493 因风力循环开销在 6 并发下超 300s（独跑完成，44341/45576）—— 移入"慢案"观察，非正确性退步。</li>
+<li><b>2 案晋级</b> Cases + 回归表（<b>144 案</b>）并从 Dump 移除（剩 <b>29 案</b>）。</li>
+</ul>
+<h2>结论：类⑦"需 bit-exact GPU 数学"的判断大部分不成立</h2>
+<p>6 案中 4 案（4833、7844、664、3012——后两个是步 170）实为<b>装载/解析 bug</b><br>（denormal 位模式在三个不同入口被浮点路径吞掉：struct 成员、Load 坐标、int 强转），<br>修复后精确全过。真正的精度墙只剩 3207/9493 的 1235 行（sin(≈3889 rad) 大相位，<br>Parallels GPU）与 14998 的 GS 段（非 trig 来源）。</p>
+<p><b>方法论</b>：denormal 一族三入口（步 173 Load 坐标、本步 struct 成员 + int 强转）<br>的共同信号是"整数存进 cbuffer/buffer 后浮点视图 ≈0"——凡在 trace 里看到<br><code>(uint)x = 0</code> 且行为像"循环没跑/索引恒 0"，先查原始位。GPU FTZ 保证运算不产生<br>denormal，故 int 消费点的 denormal 必为原始位模式，重解释是安全的。</p>
+</div></body></html>

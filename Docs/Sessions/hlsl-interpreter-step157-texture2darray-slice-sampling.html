@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 157 — 实现 Texture2DArray 切片采样</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step157-texture2darray-slice-sampling</span></div>
+<div class="wrap">
+<h1>Step 157 — 实现 Texture2DArray 切片采样</h1>
+<h2>任务</h2>
+<blockquote>修复 E：Texture2DArray 切片采样（两 loader 去掉 <code>arr!=0</code> 跳过 + <code>sample()</code> 收 slice index）。</blockquote>
+<p>step 154/156 把 witcher o2/o3 的根因之一定位为 Texture2DArray 采样缺口。本步实现切片采样。</p>
+<h2>关键发现：解释器侧的真正阻塞不止「只装 slice 0」</h2>
+<p>排查 witcher event16215（<code>Texture2DArray&lt;float4&gt; t4</code>，<code>r0.xz = t4.SampleLevel(s4_s, r3.xyz, 0).xy</code>）时<br>发现<b>更上游的 bug</b>：<code>texture_binding</code> 正则 <code>Texture2D(?:&lt;[^&gt;]+&gt;)?\s+(\w+)...</code> **根本不匹配<br><code>Texture2DArray</code> / <code>TextureCube</code> / <code>Texture3D</code> / <code>Texture1D</code>**（<code>Texture2D</code> 后跟 <code>Array</code> 既非 <code>&lt;</code> 也非空格）。<br>于是 t4 从未被绑定 → <code>SampleLevel</code> 的 <code>_find_texture_binding('t4')</code> 返 None → 整项静默归 0。<br>即 step 154 在 DXBC VM 看到的「采样返 0」，在 HLSL 解释器侧的原因其实是<b>绑定都没解析到</b>。</p>
+<h2>实现（4 处改动）</h2>
+<ol>
+<li><b>绑定正则泛化</b>（<code>hlsl_interpreter.py</code> ~427）： <code>(Texture(?:1D|2D|3D|Cube)(?:Array)?(?:MS)?)(?:&lt;[^&gt;]+&gt;)?\s+(\w+)\s*:\s*register\(t(\d+)\)</code>， group(1)=维度种类。<code>TextureBinding</code> 加 <code>kind</code> 字段，<code>_parse_texture_and_sampler_bindings</code> 记录之。</li>
+<li><b>两个 loader 装全部切片</b>（<code>render.py</code>）：<ul>
+<li>新增 <code>_collect_array_mip_paths</code>：扫 <code>arr0,arr1,...</code> 返回 <code>slices[slice]=[mip0,mip1,...]</code>。</li>
+<li><code>_load_stage_textures</code>：填 <code>ArrayMipDataPaths</code>。</li>
+<li><code>_discover_stage_textures_from_bmp</code>：去掉 <code>if arr!=0: continue</code>，按 <code>{slot:{arr:{mip:path}}}</code> 分组装全切片。</li>
+</ul></li>
+<li><b>TextureDesc + sample() 收 slice</b>（<code>texture.py</code>）： <code>TextureDesc.ArrayMipDataPaths</code>（slice→mip 链，slice0 = 既有 <code>MipDataPaths</code> 故非数组纹理零行为变化）； <code>_get_mip_levels(desc, array_slice=0)</code> 选对应切片；<code>sample(..., array_slice=0)</code> 透传。</li>
+<li><b>采样点传 slice</b>（<code>hlsl_interpreter.py</code>）：新增 <code>_array_slice_for(binding, coords)</code> —— 按 kind 取 切片分量（Texture2DArray→coords[2]、Cube Array→coords[3]、1DArray→coords[1]、非数组→0）。 <code>Sample</code>(函数式+方法式) 与 <code>SampleLevel</code> 三处都传 <code>array_slice</code>；数组纹理的第 3 坐标是切片而非显式 LOD， 故数组时把传给 <code>sample</code> 的 <code>w</code> 置 0（让 derivative 决定 LOD），不再误当 LOD。</li>
+</ol>
+<h2>验证</h2>
+<ul>
+<li><b>回归 125/125 PASS（零回归）</b>：绑定正则现在也匹配 Cube/3D/1D（原先这些静默返 0），回归集无 case 因此改变。</li>
+<li><b>witcher event16215</b>：t4 现在绑定、<b>装入 3 个 array 切片</b>、<code>SampleLevel</code> 返回<b>真实 texel</b> <code>[0.0, 0.027, 0.0, 1.0]</code>（原来恒 0）。3 个切片采样值各异（slice0/1/2 的 G = 0.032/0.189/0.125）， 按 <code>coords.z</code> 正确选片。o2 的 y 分量由 0.0289 → 0.0559 <b>向 golden 0.087 收敛</b>。</li>
+</ul>
+<h2>仍未 PASS 的原因（超出本任务范围）</h2>
+<p>t4 是 <b>R16G16_FLOAT</b>（2 通道）。需要 <code>sample.xy ≈ [-0.087, 0.058]</code>，但所有切片在该 UV 解出 <b>R≈0</b><br>（<code>[0.0, G, 0, 1]</code>）——detail-normal 的 R 通道在计算出的 UV 处读到 ~0，而 golden 需要 -0.087。这属<br><b>texel 取值精确性</b>（精确 UV / 采样器过滤 / R16G16 通道 / DXBC 的 <code>t4.xzyw</code> 资源 swizzle），与「实现切片采样」<br>是不同的更深问题；叠加 step 156 已记录的 o3 矩阵主序分量，witcher o2/o3 仍不入 0.01 容差。step 156 已预判<br>witcher 命中容差概率低，本步证实：切片采样缺口已补齐（真实数据、值收敛），但精确 PASS 受 texel 精确性限制。</p>
+<h2>结果</h2>
+<ul>
+<li><b>Texture2DArray / Cube / 3D / 1D 切片采样完整实现</b>（绑定解析 + 全切片加载 + slice-index 采样），零回归。</li>
+<li>顺带修复<b>绑定正则漏匹配非-Texture2D 资源</b>这一更广的真实 bug（之前所有 array/cube/3D/1D 纹理采样静默返 0）。</li>
+<li>witcher o2/o3 采样值由「恒 0」变为「真实且向 golden 收敛」，但受 R16G16 detail-normal 的 texel 精确性 （+o3 主序）限制未入容差。</li>
+</ul>
+<h2>后续</h2>
+<ul>
+<li>texel 精确性：核对 R16G16_FLOAT 在精确 UV 的取值、采样器过滤/地址模式、以及 DXBC <code>t4.xzyw</code> 资源返回 swizzle 在反编译 <code>.xy</code> 中的等价处理（step 153 记过 <code>_parse_method_call</code> 丢尾随 swizzle 的小 bug）。</li>
+<li>o3 矩阵主序仍需 DXBC 反汇编重建（同 C/E 墙）。</li>
+</ul>
+</div></body></html>

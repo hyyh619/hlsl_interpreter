@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 163 — FMA 融合（float32 mad 单次舍入）+ 判定 event2848/7308 为 GPU 超越函数精度受限</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step163-fma-fusion-and-transcendental-limit</span></div>
+<div class="wrap">
+<h1>Step 163 — FMA 融合（float32 mad 单次舍入）+ 判定 event2848/7308 为 GPU 超越函数精度受限</h1>
+<h2>任务</h2>
+<blockquote>继续修 event2848/7308（精度受限的程序化动画）。</blockquote>
+<h2>重新审视 step 162 的「精度受限」判定</h2>
+<p>step 162 用「双精度下仍失败（0.0176）」推断精度受限，但那个推理不完整：<b>golden 是 GPU 的 float32 结果</b>，正确<br>的目标是<b>贴合 GPU 的 float32 路径</b>（含 FMA 与超越函数实现），而非双精度。于是本步先补一个真实的 float32 仿真<br>缺陷——FMA。</p>
+<h2>FMA 融合（真实修复，已落地）</h2>
+<p><b>发现</b>：<code>dxbc_interp</code>（step 154 的寄存器级 golden VM）的 <code>mad</code> 是 <code>a*b+c</code> 在 double 计算、写回时单次舍入<br>（line 342 <code>_as_f32</code>）——等价 GPU 的 FMA（单次舍入）。而我方 HLSL 解释器开 <code>float32_emulation</code> 时每个二元 op<br>都舍入：<code>a*b+c</code> = round(a*b) 再 round(+c)，<b>两次舍入</b>，与 GPU 的 mad 不符。</p>
+<p><b>实现</b>（<code>evaluate_syntax_tree</code> 的 binary_op 分支 + <code>_try_fma</code>/<code>_fma</code>）：识别 <code>(a*b)±c</code> 与 <code>c+(a*b)</code> 模式，<br>求值 a/b/c 后按 <b>单次 float32 舍入</b> 计算 <code>a*b+c_sign*c</code>（乘积不预舍入），分量级处理标量/向量广播；非纯数值<br>操作数（矩阵/None）回退 <code>_NO_FMA</code> 走原路径。仅在 <code>f32_emulation</code> 时启用。</p>
+<p><b>验证</b>：in-process 单测确认融合生效且正确（<code>1.0000001*16777216-16777216</code>：非融合=2.0，融合=1.6777…=真值）。<br><b>回归 130/130（零回归）</b>——FMA 是更贴近 GPU 的正确改进，安全。</p>
+<h2>event2848/7308 —— 确证为 GPU 超越函数精度受限，非可修 bug</h2>
+<p>FMA 落地后 event2848/7308 <b>仍 1418/1548，max diff 0.026 完全不变</b>。定位：这两个 shader 的失败输出<br>（sv_position + TEXCOORD5）都源于<b>程序化顶点动画</b>（<code>rsqrt</code>/<code>sincos</code>/<code>frac</code>/分支算偏移，再经矩阵变换）。<br>FMA 只改矩阵 mad 的舍入，而<b>分歧发生在动画的超越函数上游</b>——我方 <code>math.sin</code>/<code>rsqrt</code> 近乎精确（double 后<br>舍 f32），GPU 用<b>硬件 float32 近似</b>的 sincos/rsqrt，二者本身就差 ~1e-4，经变换放大到 sv_position 的 0.026。</p>
+<p><b>结论</b>：要匹配需<b>位精确复刻 GPU 的 float32 sincos/rsqrt 近似实现</b>（及其精确指令序列），不现实。event2848/7308<br>是 GPU 超越函数精度受限，<b>不放宽全局容差</b>（掩盖真错），保留于 Dump。这坐实并深化了 step 162 的判定：不是我方<br>算术缺陷（FMA 已补齐、双精度也不符），而是 GPU 专有的超越函数舍入。</p>
+<h2>结果</h2>
+<ul>
+<li><b>FMA 融合落地</b>（float32 mad 单次舍入，修正 float32 仿真的真实缺陷），in-process 验证正确，<b>回归 130/130 零回归</b>。</li>
+<li><b>event2848/7308 确证 GPU 超越函数精度受限</b>，非可修 bug，留 Dump（TombRaider 保持 35/37）。</li>
+<li>本步无新用例转 PASS——目标 case 属超越函数精度墙；但补齐了 FMA 这一通用正确性改进（对未来精度边缘 case 有益）。</li>
+</ul>
+<h2>本步代码改动</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code>：模块级 <code>_NO_FMA</code> sentinel；<code>_try_fma</code>/<code>_fma</code> + <code>_is_num</code>；<code>evaluate_syntax_tree</code> 的 binary_op 分支在 f32 仿真下对 <code>(a*b)±c</code>/<code>c+(a*b)</code> 做单次舍入融合。</li>
+</ul>
+<h2>后续</h2>
+<ul>
+<li>event2848/7308：GPU sincos/rsqrt float32 近似精度墙；除非实现 GPU 位精确超越函数，否则不可 PASS。</li>
+<li>FMA 融合现已就绪，可能帮助 F1 精度边缘 case（如 sekiro2 event3207/9493，45k 顶点本步未及跑完验证）——后续可测。</li>
+</ul>
+</div></body></html>
