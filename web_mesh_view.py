@@ -624,10 +624,19 @@ _PAGE = r"""<!doctype html>
   .delays input[type=range]{width:120px;}
   .delays .val{color:#9fb;min-width:48px;display:inline-block;}
   #live{color:#6c9;}
-  .wrap{display:flex;gap:8px;padding:8px;align-items:flex-start;flex-wrap:wrap;}
-  .panel{background:#1a1a2e;border:1px solid #2a2a44;border-radius:4px;}
+  /* Free layout: panels are absolutely positioned and dragged by their
+     titlebar (step 191). .wrap is the positioning context; JS sets min-height. */
+  .wrap{position:relative;padding:8px;min-height:780px;}
+  .panel{position:absolute;background:#1a1a2e;border:1px solid #2a2a44;border-radius:4px;
+    box-shadow:0 2px 6px rgba(0,0,0,.45);}
+  .panel.dragging{z-index:1000;box-shadow:0 8px 24px rgba(0,0,0,.75);opacity:.97;}
+  .titlebar{cursor:move;user-select:none;-webkit-user-select:none;
+    padding:5px 8px;font-size:12px;font-weight:bold;color:#cdeeff;background:#26264a;
+    border-bottom:1px solid #2a2a44;border-radius:4px 4px 0 0;
+    display:flex;justify-content:space-between;align-items:center;gap:10px;}
+  .titlebar .grip{color:#7788bb;letter-spacing:2px;font-weight:normal;}
   .panel h3{margin:0;padding:5px 8px;font-size:12px;background:#22223a;
-    border-bottom:1px solid #2a2a44;border-radius:4px 4px 0 0;}
+    border-bottom:1px solid #2a2a44;}
   canvas{display:block;background:#1a1a2e;cursor:crosshair;}
   .tabs{display:flex;gap:2px;padding:4px 6px 0;}
   .tabs button{background:#22223a;color:#bbc;border:1px solid #2a2a44;
@@ -664,6 +673,7 @@ _PAGE = r"""<!doctype html>
     <div class="bar">Phase: <span class="phase" id="phase">init</span></div>
     <div class="bar"><label><input type="checkbox" id="shownormals"> Show Normals</label></div>
     <div class="bar"><label><input type="checkbox" id="livepoll" checked> Live</label> <span id="live"></span></div>
+    <div class="bar"><button id="resetlayout" style="background:#33335a;color:#fff;border:1px solid #2a2a44;border-radius:3px;cursor:pointer;padding:2px 8px;font:inherit;">Reset Layout</button> <span style="color:#778;">drag a panel's title bar to rearrange</span></div>
   </div>
   <div class="delays">
     <b>Animation delay per item:</b>
@@ -681,17 +691,17 @@ _PAGE = r"""<!doctype html>
     <span id="replaymsg"></span>
   </div>
 </header>
-<div class="wrap">
-  <div class="panel">
-    <h3>Input Vertices</h3>
+<div class="wrap" id="wrap">
+  <div class="panel" id="panel-input">
+    <div class="titlebar">Input Vertices <span class="grip">&#8942;&#8942;</span></div>
     <div class="ctl">
       <label>Zoom <input type="range" id="izoom" min="0.1" max="5" step="0.05" value="1"></label>
       drag = rotate &nbsp; right-click = select
     </div>
     <canvas id="incanvas" width="620" height="360"></canvas>
   </div>
-  <div class="panel">
-    <h3>Output</h3>
+  <div class="panel" id="panel-output">
+    <div class="titlebar">Output <span class="grip">&#8942;&#8942;</span></div>
     <div class="tabs" id="otabs">
       <button data-tab="vs" class="active">VS Result</button>
       <button data-tab="rast">Rasterizer</button>
@@ -707,7 +717,8 @@ _PAGE = r"""<!doctype html>
     </div>
     <canvas id="outcanvas" width="620" height="360"></canvas>
   </div>
-  <div class="panel">
+  <div class="panel" id="panel-info">
+    <div class="titlebar">Selected Info <span class="grip">&#8942;&#8942;</span></div>
     <h3>Selected Vertex Info</h3>
     <div id="info">Right-click a vertex to inspect its VS instruction trace.</div>
     <h3>Selected Pixel Info</h3>
@@ -979,6 +990,67 @@ function refreshHeader(){
   document.getElementById("phase").textContent=DATA.phase||"?";
 }
 
+// ---- Draggable panels (step 191): free layout, dragged by the titlebar,
+// persisted to localStorage so the arrangement survives reloads. ----
+var LAYOUT_KEY="hlsl_web_layout_v1";
+function loadLayout(){ try{return JSON.parse(localStorage.getItem(LAYOUT_KEY));}catch(e){return null;} }
+function saveLayout(){
+  var o={};
+  document.querySelectorAll(".panel").forEach(function(p){
+    o[p.id]={left:parseInt(p.style.left)||0, top:parseInt(p.style.top)||0};});
+  try{ localStorage.setItem(LAYOUT_KEY, JSON.stringify(o)); }catch(e){}
+}
+function fitWrap(){
+  var maxB=0, maxR=0;
+  document.querySelectorAll(".panel").forEach(function(p){
+    maxB=Math.max(maxB,(parseInt(p.style.top)||0)+p.offsetHeight);
+    maxR=Math.max(maxR,(parseInt(p.style.left)||0)+p.offsetWidth);});
+  var w=document.getElementById("wrap");
+  w.style.minHeight=(maxB+20)+"px"; w.style.minWidth=(maxR+20)+"px";
+}
+function tileLayout(){
+  var x=8;
+  document.querySelectorAll(".panel").forEach(function(p){
+    p.style.left=x+"px"; p.style.top="8px"; x+=p.offsetWidth+10;});
+}
+function resetLayout(){
+  try{ localStorage.removeItem(LAYOUT_KEY); }catch(e){}
+  tileLayout(); saveLayout(); fitWrap();
+}
+function makeDraggable(panel){
+  var bar=panel.querySelector(".titlebar"); if(!bar)return;
+  bar.addEventListener("mousedown",function(e){
+    if(e.button!==0)return;
+    e.preventDefault();
+    var sx=e.clientX, sy=e.clientY;
+    var ol=parseInt(panel.style.left)||0, ot=parseInt(panel.style.top)||0;
+    panel.classList.add("dragging");
+    function mm(ev){
+      panel.style.left=Math.max(0, ol+(ev.clientX-sx))+"px";
+      panel.style.top =Math.max(0, ot+(ev.clientY-sy))+"px";
+    }
+    function mu(){
+      document.removeEventListener("mousemove",mm);
+      document.removeEventListener("mouseup",mu);
+      panel.classList.remove("dragging");
+      saveLayout(); fitWrap();
+    }
+    document.addEventListener("mousemove",mm);
+    document.addEventListener("mouseup",mu);
+  });
+}
+function initPanels(){
+  var panels=[].slice.call(document.querySelectorAll(".panel"));
+  var saved=loadLayout(), x=8;
+  panels.forEach(function(p){
+    var pos=saved&&saved[p.id];
+    if(pos&&typeof pos.left==="number"){ p.style.left=pos.left+"px"; p.style.top=pos.top+"px"; }
+    else { p.style.left=x+"px"; p.style.top="8px"; x+=p.offsetWidth+10; }
+    makeDraggable(p);
+  });
+  fitWrap();
+}
+
 var lastSeq=-1, delaysTouched=false;
 function syncDelaySliders(d){
   // Reflect server delays on the sliders, but don't fight the user mid-drag.
@@ -1088,7 +1160,14 @@ function tracePixel(x,y){
       });
     });});
 
+  // Draggable panels (step 191): position panels, enable title-bar dragging,
+  // and wire the Reset Layout button.
+  initPanels();
+  document.getElementById("resetlayout").addEventListener("click",resetLayout);
+  window.addEventListener("resize", fitWrap);
+
   setTab("vs");
+  fitWrap();
   poll();
   setInterval(poll, 250);
 })();

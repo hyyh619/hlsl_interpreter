@@ -3819,6 +3819,27 @@ Notice:
 
 ## Claude Code Session
 
+纯前端改动（仅 `web_mesh_view.py` 页面模板，服务端/管线不动）：让三个面板（Input Vertices /
+Output / Selected Info）可自由拖动排布，取代原来的固定 flex 行。
+
+- **自由定位**：`.wrap` 变为定位上下文（`position:relative`，min-height/width 由 JS 维护），每个
+  `.panel` 改 `position:absolute` 并有稳定 `id`（panel-input/output/info）。
+- **拖动把手**：每个面板加 `.titlebar`（`cursor:move`、`user-select:none`，名称+抓取符号），拖动只
+  绑在标题栏上——画布保留自身的旋转/平移/点击交互，Info 面板内部的 `<h3>` 分节标题也不会误触发移动。
+- **拖动机制**：`makeDraggable` 在标题栏左键 mousedown 后于 `document` 上跟踪 mousemove/mouseup
+  （快速拖出标题栏也不断），更新 left/top 并夹到 ≥0；拖动中加 `.dragging` 抬升 z-index/阴影。
+- **持久化**：落点写入 `localStorage`（`hlsl_web_layout_v1`），加载时恢复，故布局跨刷新/重跑保留；
+  `initPanels()` 应用已存布局，首次则左→右平铺（与旧观感一致）；`fitWrap()` 撑开容器并随窗口 resize
+  重算。**Reset Layout** 按钮清除已存布局并重新平铺。
+
+**改动**：`web_mesh_view.py`——CSS（`.wrap`/`.panel`/`.titlebar`/`.dragging`）、面板标记（id+titlebar）、
+头部 Reset Layout 按钮、拖动 JS（loadLayout/saveLayout/fitWrap/tileLayout/resetLayout/makeDraggable/
+initPanels）并在 init IIFE 接线。
+
+**验证**：页面含 3 面板各带 `.titlebar`、绝对定位、`cursor:move` 与拖动/持久化 JS+Reset 按钮
+（标记齐全，3 面板 ⇔ 3 标题栏）；抽取页面 `<script>` 跑 `node --check` **语法通过**；服务端
+`/state` `/pixels` `/replay` `/trace_*` 不变。**回归 118/123 不变**（headless 回归从不实例化该视图）。
+
 # 192
 ## Prompts
 
