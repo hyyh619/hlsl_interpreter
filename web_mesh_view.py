@@ -73,12 +73,16 @@ class WebMeshView:
 
         self._input = []           # serialized vertex dicts
         self._output = []          # final serialized output (set_output_data)
-        self._rasterizer_pixels = []
-        self._output_merger_pixels = []
+        # Pixels are kept as REFERENCES to the interpreter's Pixel lists — never
+        # persistently packed. Packing (to the compact [x,y,prim,r,g,b] JSON
+        # form) happens lazily in the /pixels route and is cached by _pixels_ver,
+        # so idle polls do zero work and we don't retain ~10MB packed duplicates.
+        self._rast_final = None    # final rasterizer Pixel list (set_rasterizer_pixels)
+        self._om_final = None      # final output-merger Pixel list
         self._pipeline_stats = {}
 
-        # Live progress: share the interpreter's own growing lists so /state can
-        # slice a snapshot without the interpreter paying an O(n) copy per item.
+        # Live progress: share the interpreter's own growing lists so a snapshot
+        # can slice without the interpreter paying an O(n) copy per item.
         self._vs_results_ref = None
         self._vs_done = 0
         self._vs_total = 0
@@ -89,6 +93,14 @@ class WebMeshView:
         self._ps_pixels_ref = None
         self._ps_done = 0
         self._ps_total = 0
+
+        # Caches: /state bytes keyed by _seq; per-view packed /pixels bytes keyed
+        # by _pixels_ver. Both are invalidated only when the underlying data
+        # actually changes, so a browser polling a finished pipeline reuses bytes
+        # instead of re-serializing multi-MB payloads several times a second.
+        self._pixels_ver = 0
+        self._state_cache = (None, None)     # (seq, bytes)
+        self._pixels_cache = {}              # which -> (pixels_ver, bytes)
 
         # Per-item animation delays (seconds). The pipeline reads these LIVE each
         # iteration (get_delay), so the browser sliders (POST /set) can pace the
@@ -112,6 +124,11 @@ class WebMeshView:
     def _bump(self):
         self._seq += 1
 
+    def _bump_pixels(self):
+        """Pixel data changed: invalidate the per-view /pixels cache and /state."""
+        self._pixels_ver += 1
+        self._seq += 1
+
     # --------------------------------------------------------------- setters
     def set_primitive_topology(self, primitive_topology: int):
         with self._lock:
@@ -127,12 +144,12 @@ class WebMeshView:
         with self._lock:
             self._input = []
             self._output = []
-            self._rasterizer_pixels = []
-            self._output_merger_pixels = []
+            self._rast_final = None
+            self._om_final = None
             self._vs_results_ref = None
             self._rast_pixels_ref = None
             self._ps_pixels_ref = None
-            self._bump()
+            self._bump_pixels()
 
     @staticmethod
     def _pack_vertices(positions, normals, colors, tex_coords, tex_coords2):
@@ -225,19 +242,21 @@ class WebMeshView:
         return packed
 
     def set_rasterizer_pixels(self, pixels):
+        # Keep a reference only; pack lazily on demand (see /pixels). Storing the
+        # packed list here would retain a ~10MB duplicate of the Pixel objects.
         with self._lock:
-            self._rasterizer_pixels = self._pack_pixels(pixels)
-            self._bump()
+            self._rast_final = pixels
+            self._bump_pixels()
 
     def set_pixel_shader_output(self, pixels):
         with self._lock:
-            self._rasterizer_pixels = self._pack_pixels(pixels)
-            self._bump()
+            self._rast_final = pixels
+            self._bump_pixels()
 
     def set_output_merger_pixels(self, pixels):
         with self._lock:
-            self._output_merger_pixels = self._pack_pixels(pixels)
-            self._bump()
+            self._om_final = pixels
+            self._bump_pixels()
 
     def set_pipeline_stats(self, stats: dict):
         with self._lock:
@@ -277,10 +296,10 @@ class WebMeshView:
             self._rast_pixel_count = 0
             # Drop the previous run's final pixels so the snapshot shows the live
             # growing list (matters on replay, where finals were already set).
-            self._rasterizer_pixels = []
-            self._output_merger_pixels = []
+            self._rast_final = None
+            self._om_final = None
             self._phase = 'rasterizer'
-            self._bump()
+            self._bump_pixels()
 
     def set_rast_progress(self, done_primitives: int, total_primitives: int = None,
                           pixel_count: int = None):
@@ -292,7 +311,7 @@ class WebMeshView:
                 self._rast_pixel_count = pixel_count
             elif self._rast_pixels_ref is not None:
                 self._rast_pixel_count = len(self._rast_pixels_ref)
-            self._bump()
+            self._bump_pixels()
 
     def bind_ps_pixels(self, pixels_ref, total: int = 0):
         """Share the pixel list executePS_with_params colours in place."""
@@ -301,17 +320,17 @@ class WebMeshView:
             self._ps_total = total or 0
             self._ps_done = 0
             # On replay the previous final pixels would mask the live PS slice.
-            self._rasterizer_pixels = []
-            self._output_merger_pixels = []
+            self._rast_final = None
+            self._om_final = None
             self._phase = 'ps'
-            self._bump()
+            self._bump_pixels()
 
     def set_ps_progress(self, done: int, total: int = None):
         with self._lock:
             self._ps_done = done
             if total is not None:
                 self._ps_total = total
-            self._bump()
+            self._bump_pixels()
 
     # ------------------------------------------------------- animation delays
     def set_delays(self, vertex=None, primitive=None, pixel=None):
@@ -367,11 +386,54 @@ class WebMeshView:
     def set_hlsl_interpreter_params(self, *a, **k):
         pass
 
-    # ------------------------------------------------------------- snapshot
-    def _snapshot(self) -> dict:
+    # --------------------------------------------------------- pixel packing
+    def _view_pixels(self, which):
+        """Return the Pixel list (and a cap) for a view: 'rast' | 'ps' | 'om'.
+        Prefers the final list; during the active stage returns the live slice
+        so pixels animate in. Returns (list, count)."""
+        if which == 'rast':
+            if self._rast_final is not None:
+                return self._rast_final, len(self._rast_final)
+            if self._rast_pixels_ref is not None:
+                return self._rast_pixels_ref, self._rast_pixel_count
+            return [], 0
+        if which == 'ps':
+            if self._phase == 'done' and self._rast_final is not None:
+                return self._rast_final, len(self._rast_final)
+            if self._ps_pixels_ref is not None:
+                return self._ps_pixels_ref, self._ps_done
+            if self._rast_final is not None:
+                return self._rast_final, len(self._rast_final)
+            return [], 0
+        if which == 'om':
+            if self._om_final is not None:
+                return self._om_final, len(self._om_final)
+            return self._view_pixels('ps')
+        return [], 0
+
+    def _pixels_body(self, which):
+        """Serialized JSON bytes for one pixel view, cached by _pixels_ver so
+        repeated polls of unchanged pixels never re-pack or re-serialize."""
         with self._lock:
-            # Output: prefer the final set_output_data payload; while VS runs,
-            # slice the live results list up to the shaded count.
+            cached = self._pixels_cache.get(which)
+            if cached is not None and cached[0] == self._pixels_ver:
+                return cached[1]
+            src, count = self._view_pixels(which)
+            packed = self._pack_pixels(src[:count]) if count else []
+            body = json.dumps({'ver': self._pixels_ver, 'which': which,
+                               'pixels': packed}, separators=(',', ':')).encode('utf-8')
+            self._pixels_cache[which] = (self._pixels_ver, body)
+            return body
+
+    # ------------------------------------------------------------- snapshot
+    def _state_body(self):
+        """Serialized /state JSON bytes, cached by _seq. Lightweight: progress,
+        stats, vertex arrays, pixel COUNTS + pixels_ver — but NOT the pixel
+        arrays (those are fetched lazily via /pixels only for the active tab)."""
+        with self._lock:
+            if self._state_cache[0] == self._seq and self._state_cache[1] is not None:
+                return self._state_cache[1]
+
             if self._output:
                 output = self._output
             elif self._vs_results_ref is not None:
@@ -380,25 +442,11 @@ class WebMeshView:
             else:
                 output = []
 
-            # Rasterizer pixels: the final full list (set after rasterize) wins;
-            # while the rasterizer runs, slice the live growing list so pixels
-            # animate in as each primitive is scan-converted.
-            if self._rasterizer_pixels:
-                rasterizer = self._rasterizer_pixels
-            elif self._rast_pixels_ref is not None:
-                rasterizer = self._pack_pixels(self._rast_pixels_ref[:self._rast_pixel_count])
-            else:
-                rasterizer = []
+            _, rast_n = self._view_pixels('rast')
+            _, ps_n = self._view_pixels('ps')
+            _, om_n = self._view_pixels('om')
 
-            # PS pixels: final override wins; else the in-flight coloured slice.
-            if self._rasterizer_pixels and self._phase == 'done':
-                ps_pixels = self._rasterizer_pixels
-            elif self._ps_pixels_ref is not None:
-                ps_pixels = self._pack_pixels(self._ps_pixels_ref[:self._ps_done])
-            else:
-                ps_pixels = rasterizer
-
-            return {
+            snap = {
                 'seq': self._seq,
                 'phase': self._phase,
                 'title': self.title,
@@ -420,9 +468,8 @@ class WebMeshView:
                 },
                 'input': self._input,
                 'output': output,
-                'rasterizer': rasterizer,
-                'ps_pixels': ps_pixels,
-                'output_merger': self._output_merger_pixels,
+                'pixels_ver': self._pixels_ver,
+                'counts': {'rast': rast_n, 'ps': ps_n, 'om': om_n},
                 'stats': self._pipeline_stats,
                 'vs': {'done': self._vs_done, 'total': self._vs_total},
                 'rast': {'done': self._rast_done, 'total': self._rast_total,
@@ -430,6 +477,9 @@ class WebMeshView:
                 'ps': {'done': self._ps_done, 'total': self._ps_total},
                 'delays': dict(self._delays),
             }
+            body = json.dumps(snap, separators=(',', ':')).encode('utf-8')
+            self._state_cache = (self._seq, body)
+            return body
 
     # --------------------------------------------------------------- server
     def _ensure_server(self):
@@ -460,8 +510,15 @@ class WebMeshView:
                     html = _PAGE.replace('__TITLE__', safe_title)
                     self._send(200, html.encode('utf-8'), 'text/html; charset=utf-8')
                 elif path == '/state':
-                    body = json.dumps(view._snapshot(), separators=(',', ':')).encode('utf-8')
-                    self._send(200, body, 'application/json')
+                    self._send(200, view._state_body(), 'application/json')
+                elif path == '/pixels':
+                    # Heavy pixel arrays, fetched lazily only for the active tab
+                    # and only when pixels_ver changed. Cached server-side.
+                    q = urllib.parse.parse_qs(parts[1] if len(parts) > 1 else '')
+                    which = (q.get('which', ['rast'])[0]).lower()
+                    if which not in ('rast', 'ps', 'om'):
+                        which = 'rast'
+                    self._send(200, view._pixels_body(which), 'application/json')
                 elif path == '/set':
                     # Live animation-delay control: /set?vertex=..&primitive=..&pixel=..
                     # (values in seconds). The pipeline reads these each iteration.
@@ -658,10 +715,22 @@ _PAGE = r"""<!doctype html>
   </div>
 </div>
 <script>
-var DATA = {input:[],output:[],rasterizer:[],ps_pixels:[],output_merger:[],
-  stats:{},topo_names:{},topo_enum:{},topology:4,vs:{done:0,total:0},ps:{done:0,total:0},phase:'init'};
+var DATA = {input:[],output:[],counts:{rast:0,ps:0,om:0},pixels_ver:-1,
+  stats:{},topo_names:{},topo_enum:{},topology:4,vs:{done:0,total:0},
+  rast:{done:0,total:0,pixels:0},ps:{done:0,total:0},phase:'init'};
 var SHOW_NORMALS = false;
 var curTab = 'vs';
+// Client-side pixel cache: heavy pixel arrays are fetched from /pixels only for
+// the active tab and only when pixels_ver changes, then reused for zoom/pan/redraw.
+var pixelCache = {rast:null, ps:null, om:null};
+var pixelCacheVer = {rast:-1, ps:-1, om:-1};
+function ensurePixels(which, cb){
+  if(pixelCache[which] && pixelCacheVer[which]===DATA.pixels_ver){ cb(pixelCache[which]); return; }
+  fetchJSON("/pixels?which="+which, function(res){
+    if(res && res.pixels){ pixelCache[which]=res.pixels; pixelCacheVer[which]=res.ver; cb(res.pixels); }
+    else cb(pixelCache[which]||[]);
+  });
+}
 
 function primColor(id){
   var hue=(id*37)%360, d=Math.PI/180;
@@ -864,10 +933,11 @@ function pickPixel(mx,my){
   return [x,y];
 }
 function renderOutput(){
-  if(curTab==="vs")outVs.draw();
-  else if(curTab==="rast")drawPixels(DATA.rasterizer,false);
-  else if(curTab==="ps")drawPixels(DATA.ps_pixels&&DATA.ps_pixels.length?DATA.ps_pixels:DATA.rasterizer,true);
-  else if(curTab==="om")drawPixels(DATA.output_merger&&DATA.output_merger.length?DATA.output_merger:(DATA.ps_pixels&&DATA.ps_pixels.length?DATA.ps_pixels:DATA.rasterizer),true);
+  if(curTab==="vs"){outVs.draw();return;}
+  // Pixel tabs: draw from the client cache (sync when fresh); ensurePixels fetches
+  // from /pixels only when pixels_ver changed, so zoom/pan/idle redraws are free.
+  var shaded = (curTab!=="rast");
+  ensurePixels(curTab, function(arr){ if(curTab!=="vs")drawPixels(arr||[], shaded); });
 }
 function setTab(name){
   curTab=name;
