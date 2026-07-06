@@ -3840,8 +3840,9 @@ initPanels）并在 init IIFE 接线。
 （标记齐全，3 面板 ⇔ 3 标题栏）；抽取页面 `<script>` 跑 `node --check` **语法通过**；服务端
 `/state` `/pixels` `/replay` `/trace_*` 不变。**回归 118/123 不变**（headless 回归从不实例化该视图）。
 
-# 192
+# 192 动态 web 视图selected VS/PS info窗口分成两个独立的
 ## Prompts
+动态 web 视图selected Vertex/Pixel info窗口分成两个独立的
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3851,6 +3852,22 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+承接 step191（面板可拖动）：Selected Vertex Info 与 Selected Pixel Info 仍挤在同一个
+`panel-info` 窗口里（两个 `<h3>` 分节堆叠）。本步（纯前端 `web_mesh_view.py`）把它们拆成两个
+**独立可拖动**窗口：
+
+- **拆分面板**：`panel-info`（含 `#info`+`#pxinfo`）拆为 `panel-vertex`（标题 Selected Vertex Info，
+  体 `#info`）与 `panel-pixel`（标题 Selected Pixel Info，体 `#pxinfo`），各带自己的 `.titlebar`；
+  现有拖动系统（`initPanels`/`makeDraggable` 遍历所有 `.panel`）自动让二者独立拖动+持久化，无需额外接线。
+- **布局键升 v2**（`hlsl_web_layout_v1`→`v2`）：面板集合变了（`panel-info` 消失、新增两个 id），换键
+  避免恢复到定位旧合并面板的过期布局。
+- **默认平铺换行**：现有 4 个面板，单行左→右会把最后一个挤出屏幕，故 `tileLayout()` 在下一个面板超出
+  视口宽度时换行；`initPanels()` 无存档时用 `tileLayout()`，有存档时应用存档并把无位置的新面板补到最右。
+
+**验证**：页面现 **4 面板/4 标题栏**，`panel-vertex`/`panel-pixel`/`#info`/`#pxinfo` 齐全、旧
+`panel-info` 已无、布局键为 v2；抽取 `<script>` 跑 `node --check` **语法通过**；服务端不变（顶点追踪仍
+写 `#info`、像素追踪写 `#pxinfo`，元素 id 未变）。**回归 118/123 不变**（headless 回归不实例化该视图）。
 
 # 193
 ## Prompts

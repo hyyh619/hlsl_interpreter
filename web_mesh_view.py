@@ -717,11 +717,12 @@ _PAGE = r"""<!doctype html>
     </div>
     <canvas id="outcanvas" width="620" height="360"></canvas>
   </div>
-  <div class="panel" id="panel-info">
-    <div class="titlebar">Selected Info <span class="grip">&#8942;&#8942;</span></div>
-    <h3>Selected Vertex Info</h3>
+  <div class="panel" id="panel-vertex">
+    <div class="titlebar">Selected Vertex Info <span class="grip">&#8942;&#8942;</span></div>
     <div id="info">Right-click a vertex to inspect its VS instruction trace.</div>
-    <h3>Selected Pixel Info</h3>
+  </div>
+  <div class="panel" id="panel-pixel">
+    <div class="titlebar">Selected Pixel Info <span class="grip">&#8942;&#8942;</span></div>
     <div id="pxinfo">Click a pixel (Rasterizer / Pixel Shader / Output Merger tab) to trace its PS instructions.</div>
   </div>
 </div>
@@ -992,7 +993,7 @@ function refreshHeader(){
 
 // ---- Draggable panels (step 191): free layout, dragged by the titlebar,
 // persisted to localStorage so the arrangement survives reloads. ----
-var LAYOUT_KEY="hlsl_web_layout_v1";
+var LAYOUT_KEY="hlsl_web_layout_v2";  // v2: Selected Info split into two panels
 function loadLayout(){ try{return JSON.parse(localStorage.getItem(LAYOUT_KEY));}catch(e){return null;} }
 function saveLayout(){
   var o={};
@@ -1009,9 +1010,16 @@ function fitWrap(){
   w.style.minHeight=(maxB+20)+"px"; w.style.minWidth=(maxR+20)+"px";
 }
 function tileLayout(){
-  var x=8;
+  // Row-wrapping tile so all panels stay on-screen (now 4 panels: input,
+  // output, vertex info, pixel info).
+  var pad=8, gap=10, x=pad, y=pad, rowH=0;
+  var maxW=Math.max((document.documentElement.clientWidth||1400)-pad, 700);
   document.querySelectorAll(".panel").forEach(function(p){
-    p.style.left=x+"px"; p.style.top="8px"; x+=p.offsetWidth+10;});
+    var w=p.offsetWidth, h=p.offsetHeight;
+    if(x>pad && x+w>maxW){ x=pad; y+=rowH+gap; rowH=0; }
+    p.style.left=x+"px"; p.style.top=y+"px";
+    x+=w+gap; rowH=Math.max(rowH,h);
+  });
 }
 function resetLayout(){
   try{ localStorage.removeItem(LAYOUT_KEY); }catch(e){}
@@ -1041,13 +1049,20 @@ function makeDraggable(panel){
 }
 function initPanels(){
   var panels=[].slice.call(document.querySelectorAll(".panel"));
-  var saved=loadLayout(), x=8;
-  panels.forEach(function(p){
-    var pos=saved&&saved[p.id];
-    if(pos&&typeof pos.left==="number"){ p.style.left=pos.left+"px"; p.style.top=pos.top+"px"; }
-    else { p.style.left=x+"px"; p.style.top="8px"; x+=p.offsetWidth+10; }
-    makeDraggable(p);
-  });
+  var saved=loadLayout();
+  var anySaved=saved&&panels.some(function(p){return saved[p.id];});
+  if(!anySaved){
+    tileLayout();
+  } else {
+    // Apply saved positions; append any panel without one after the rightmost.
+    var x=8;
+    panels.forEach(function(p){var pos=saved[p.id];
+      if(pos&&typeof pos.left==="number")x=Math.max(x,pos.left+p.offsetWidth+10);});
+    panels.forEach(function(p){var pos=saved[p.id];
+      if(pos&&typeof pos.left==="number"){p.style.left=pos.left+"px";p.style.top=pos.top+"px";}
+      else {p.style.left=x+"px";p.style.top="8px";x+=p.offsetWidth+10;}});
+  }
+  panels.forEach(makeDraggable);
   fitWrap();
 }
 
