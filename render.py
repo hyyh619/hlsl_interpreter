@@ -1619,6 +1619,14 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         vs_interp.enable_mesh_view(
             mode=mesh_view_mode,
             html_path=_mesh_view_html_path(log_file_path, config_path))
+        # Seed the web viewer's per-item animation delays from config (seconds).
+        # These are also adjustable live via the page sliders while it runs.
+        _mv0 = vs_interp._mesh_view
+        if _mv0 is not None and hasattr(_mv0, 'set_delays'):
+            _mv0.set_delays(
+                vertex=config.get('anim_vertex_delay', 0.0),
+                primitive=config.get('anim_primitive_delay', 0.0),
+                pixel=config.get('anim_pixel_delay', 0.0))
 
     if not os.path.exists(vs_hlsl):
         print(f"Error: VS shader not found: {vs_hlsl}")
@@ -1911,6 +1919,10 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
         vs_interp.show_result_mesh_from_params(vs_results)
 
     vs_interp.log_output(f"\nRasterizing {len(vs_results)} vertices (topology={primitive_topology})...")
+    # Live web view: let the rasterizer animate pixels appearing per primitive
+    # (no-op unless the viewer exposes bind_rast_pixels, i.e. WebMeshView).
+    if mesh_view_enabled and vs_interp._mesh_view is not None and hasattr(rast, 'set_animation_hook'):
+        rast.set_animation_hook(vs_interp._mesh_view)
     rast_start = time.time()
     pixels = rast.rasterize(vs_results, primitive_topology)
     rast_time = time.time() - rast_start

@@ -32,6 +32,7 @@ The server binds 127.0.0.1 on an OS-assigned free port and serves two routes:
 import json
 import os
 import threading
+import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List
@@ -81,9 +82,18 @@ class WebMeshView:
         self._vs_results_ref = None
         self._vs_done = 0
         self._vs_total = 0
+        self._rast_pixels_ref = None    # rasterizer's growing self._pixels list
+        self._rast_done = 0             # primitives rasterized so far
+        self._rast_total = 0            # total primitives
+        self._rast_pixel_count = 0      # pixels emitted so far (report cap)
         self._ps_pixels_ref = None
         self._ps_done = 0
         self._ps_total = 0
+
+        # Per-item animation delays (seconds). The pipeline reads these LIVE each
+        # iteration (get_delay), so the browser sliders (POST /set) can pace the
+        # VS/Rasterizer/PS animation while it runs. 0 = full speed.
+        self._delays = {'vertex': 0.0, 'primitive': 0.0, 'pixel': 0.0}
 
         self._server = None
         self._thread = None
@@ -111,6 +121,7 @@ class WebMeshView:
             self._rasterizer_pixels = []
             self._output_merger_pixels = []
             self._vs_results_ref = None
+            self._rast_pixels_ref = None
             self._ps_pixels_ref = None
             self._bump()
 
@@ -247,6 +258,29 @@ class WebMeshView:
                 self._vs_total = total
             self._bump()
 
+    def bind_rast_pixels(self, pixels_ref, total_primitives: int = 0):
+        """Share the rasterizer's growing self._pixels list so /state animates
+        pixels appearing as each primitive is scan-converted (deliverable 1)."""
+        with self._lock:
+            self._rast_pixels_ref = pixels_ref
+            self._rast_total = total_primitives or 0
+            self._rast_done = 0
+            self._rast_pixel_count = 0
+            self._phase = 'rasterizer'
+            self._bump()
+
+    def set_rast_progress(self, done_primitives: int, total_primitives: int = None,
+                          pixel_count: int = None):
+        with self._lock:
+            self._rast_done = done_primitives
+            if total_primitives is not None:
+                self._rast_total = total_primitives
+            if pixel_count is not None:
+                self._rast_pixel_count = pixel_count
+            elif self._rast_pixels_ref is not None:
+                self._rast_pixel_count = len(self._rast_pixels_ref)
+            self._bump()
+
     def bind_ps_pixels(self, pixels_ref, total: int = 0):
         """Share the pixel list executePS_with_params colours in place."""
         with self._lock:
@@ -262,6 +296,23 @@ class WebMeshView:
             if total is not None:
                 self._ps_total = total
             self._bump()
+
+    # ------------------------------------------------------- animation delays
+    def set_delays(self, vertex=None, primitive=None, pixel=None):
+        """Set per-item animation delays in SECONDS (None leaves a value as-is)."""
+        with self._lock:
+            if vertex is not None:
+                self._delays['vertex'] = max(0.0, float(vertex))
+            if primitive is not None:
+                self._delays['primitive'] = max(0.0, float(primitive))
+            if pixel is not None:
+                self._delays['pixel'] = max(0.0, float(pixel))
+            self._bump()
+
+    def get_delay(self, kind: str) -> float:
+        """Current delay (seconds) for 'vertex' | 'primitive' | 'pixel'. Read
+        LIVE by the pipeline each iteration so slider changes take effect at once."""
+        return self._delays.get(kind, 0.0)
 
     # ------------------------------------------------- tk-parity no-op hooks
     def _draw_rasterizer_pixels(self):
@@ -292,13 +343,23 @@ class WebMeshView:
             else:
                 output = []
 
+            # Rasterizer pixels: the final full list (set after rasterize) wins;
+            # while the rasterizer runs, slice the live growing list so pixels
+            # animate in as each primitive is scan-converted.
+            if self._rasterizer_pixels:
+                rasterizer = self._rasterizer_pixels
+            elif self._rast_pixels_ref is not None:
+                rasterizer = self._pack_pixels(self._rast_pixels_ref[:self._rast_pixel_count])
+            else:
+                rasterizer = []
+
             # PS pixels: final override wins; else the in-flight coloured slice.
             if self._rasterizer_pixels and self._phase == 'done':
                 ps_pixels = self._rasterizer_pixels
             elif self._ps_pixels_ref is not None:
                 ps_pixels = self._pack_pixels(self._ps_pixels_ref[:self._ps_done])
             else:
-                ps_pixels = self._rasterizer_pixels
+                ps_pixels = rasterizer
 
             return {
                 'seq': self._seq,
@@ -322,12 +383,15 @@ class WebMeshView:
                 },
                 'input': self._input,
                 'output': output,
-                'rasterizer': self._rasterizer_pixels,
+                'rasterizer': rasterizer,
                 'ps_pixels': ps_pixels,
                 'output_merger': self._output_merger_pixels,
                 'stats': self._pipeline_stats,
                 'vs': {'done': self._vs_done, 'total': self._vs_total},
+                'rast': {'done': self._rast_done, 'total': self._rast_total,
+                         'pixels': self._rast_pixel_count},
                 'ps': {'done': self._ps_done, 'total': self._ps_total},
+                'delays': dict(self._delays),
             }
 
     # --------------------------------------------------------------- server
@@ -352,13 +416,28 @@ class WebMeshView:
                     pass
 
             def do_GET(self):
-                path = self.path.split('?', 1)[0]
+                parts = self.path.split('?', 1)
+                path = parts[0]
                 if path == '/' or path == '/index.html':
                     safe_title = (view.title or 'Mesh View').replace('<', '').replace('>', '')
                     html = _PAGE.replace('__TITLE__', safe_title)
                     self._send(200, html.encode('utf-8'), 'text/html; charset=utf-8')
                 elif path == '/state':
                     body = json.dumps(view._snapshot(), separators=(',', ':')).encode('utf-8')
+                    self._send(200, body, 'application/json')
+                elif path == '/set':
+                    # Live animation-delay control: /set?vertex=..&primitive=..&pixel=..
+                    # (values in seconds). The pipeline reads these each iteration.
+                    q = urllib.parse.parse_qs(parts[1] if len(parts) > 1 else '')
+                    def _f(k):
+                        try:
+                            return float(q[k][0]) if k in q else None
+                        except (ValueError, IndexError):
+                            return None
+                    view.set_delays(vertex=_f('vertex'), primitive=_f('primitive'),
+                                    pixel=_f('pixel'))
+                    body = json.dumps({'delays': dict(view._delays)},
+                                      separators=(',', ':')).encode('utf-8')
                     self._send(200, body, 'application/json')
                 else:
                     self._send(404, b'not found', 'text/plain')
@@ -416,8 +495,15 @@ _PAGE = r"""<!doctype html>
   .bar{display:flex;align-items:center;gap:6px;font-size:12px;color:#aab;}
   .track{width:180px;height:10px;background:#22223a;border:1px solid #2a2a44;border-radius:5px;overflow:hidden;}
   .fill{height:100%;width:0;background:#4a8;transition:width .12s linear;}
+  #rastfill{background:#48a;}
   #psfill{background:#a84;}
   .phase{color:#fd6;font-weight:bold;}
+  .delays{display:flex;gap:14px;margin-top:6px;flex-wrap:wrap;align-items:center;
+    padding:5px 8px;background:#20203a;border:1px solid #2a2a44;border-radius:4px;}
+  .delays b{color:#cdeeff;font-weight:bold;margin-right:2px;}
+  .delays .d{display:flex;align-items:center;gap:5px;font-size:12px;color:#aab;}
+  .delays input[type=range]{width:120px;}
+  .delays .val{color:#9fb;min-width:48px;display:inline-block;}
   #live{color:#6c9;}
   .wrap{display:flex;gap:8px;padding:8px;align-items:flex-start;flex-wrap:wrap;}
   .panel{background:#1a1a2e;border:1px solid #2a2a44;border-radius:4px;}
@@ -439,10 +525,18 @@ _PAGE = r"""<!doctype html>
   <div id="stats"></div>
   <div class="bars">
     <div class="bar">VS <div class="track"><div class="fill" id="vsfill"></div></div><span id="vstxt">0/0</span></div>
+    <div class="bar">Rast <div class="track"><div class="fill" id="rastfill"></div></div><span id="rasttxt">0/0</span></div>
     <div class="bar">PS <div class="track"><div class="fill" id="psfill"></div></div><span id="pstxt">0/0</span></div>
     <div class="bar">Phase: <span class="phase" id="phase">init</span></div>
     <div class="bar"><label><input type="checkbox" id="shownormals"> Show Normals</label></div>
     <div class="bar"><label><input type="checkbox" id="livepoll" checked> Live</label> <span id="live"></span></div>
+  </div>
+  <div class="delays">
+    <b>Animation delay per item:</b>
+    <span class="d">Vertex (VS) <input type="range" id="dvertex" min="0" max="100" step="1" value="0"><span class="val" id="dvertexv">0 ms</span></span>
+    <span class="d">Primitive (Rast) <input type="range" id="dprimitive" min="0" max="200" step="1" value="0"><span class="val" id="dprimitivev">0 ms</span></span>
+    <span class="d">Pixel (PS) <input type="range" id="dpixel" min="0" max="50" step="0.5" value="0"><span class="val" id="dpixelv">0 ms</span></span>
+    <button id="dreset" style="background:#33335a;color:#fff;border:1px solid #2a2a44;border-radius:3px;cursor:pointer;padding:2px 8px;font:inherit;">Reset</button>
   </div>
 </header>
 <div class="wrap">
@@ -495,7 +589,10 @@ function vcolor(v){
 }
 // A view over one canvas; verts is re-read from DATA each draw so live updates show.
 function makeView(canvas, getVerts, zoomEl, onSelect){
-  var rx=0, ry=0, ox=0, oy=0, zoom=1, sel=-1, dragging=false, last=null;
+  // Start with a mild tilt so the mesh isn't dead-on axis-aligned: with rx=ry=0
+  // the camera looks straight down z, so normals facing +/-z (very common)
+  // project to zero length and are invisible. The tilt gives them screen extent.
+  var rx=22, ry=-32, ox=0, oy=0, zoom=1, sel=-1, dragging=false, last=null;
   function transform(p){
     var ax=rx*Math.PI/180, ay=ry*Math.PI/180;
     var cx=Math.cos(ax), sx=Math.sin(ax), cy=Math.cos(ay), sy=Math.sin(ay);
@@ -533,14 +630,27 @@ function makeView(canvas, getVerts, zoomEl, onSelect){
     else if(topo===E.TRIANGLESTRIP){for(var i=0;i+2<verts.length;i++){var col=vcolor(verts[i]);seg(i,i+1,col);seg(i+1,i+2,col);seg(i+2,i,col);}}
     else if(topo===E.LINELIST){for(var i=0;i+1<verts.length;i+=2)seg(i,i+1,vcolor(verts[i]));}
     else if(topo===E.LINESTRIP){for(var i=0;i+1<verts.length;i++)seg(i,i+1,vcolor(verts[i]));}
-    // normal vectors (deliverable 4): short line from vertex along its normal
+    // normal vectors (deliverable 4): draw each normal as a FIXED-length screen
+    // segment along its projected direction, so it is visible at any zoom/units.
+    // (Adding n*len in object space then projecting collapses to nothing when the
+    //  normal faces the camera and vanishes entirely at small on-screen scale.)
     if(SHOW_NORMALS){
-      var nlen=0.12*Math.max(b[1][0]-b[0][0], b[1][1]-b[0][1], 1e-6);
-      ctx.strokeStyle="#5ec8ff";
+      var nlen=20;                 // on-screen normal length, pixels
+      var drew=0;
+      ctx.strokeStyle="#7fd7ff"; ctx.lineWidth=1.5; ctx.fillStyle="#cdeeff";
       for(var i=0;i<verts.length;i++){var v=verts[i];if(!v.n)continue;
         var p0=project(v.p);
-        var p1=project([v.p[0]+v.n[0]*nlen, v.p[1]+v.n[1]*nlen, v.p[2]+v.n[2]*nlen]);
-        ctx.beginPath();ctx.moveTo(p0[0],p0[1]);ctx.lineTo(p1[0],p1[1]);ctx.stroke();}
+        // screen-space direction of the normal: transform() applies the same
+        // rotation project() does; project flips y, so negate ty.
+        var td=transform(v.n), dx=td[0], dy=-td[1];
+        var len=Math.sqrt(dx*dx+dy*dy);
+        if(len<1e-4){ // normal points at/away from the camera: mark with a tip dot
+          ctx.beginPath();ctx.arc(p0[0],p0[1],2.4,0,7);ctx.fill();drew++;continue;}
+        dx=dx/len*nlen; dy=dy/len*nlen;
+        ctx.beginPath();ctx.moveTo(p0[0],p0[1]);ctx.lineTo(p0[0]+dx,p0[1]+dy);ctx.stroke();
+        ctx.beginPath();ctx.arc(p0[0]+dx,p0[1]+dy,1.8,0,7);ctx.fill();drew++;}
+      ctx.lineWidth=1;
+      if(!drew){ctx.fillStyle="#fd6";ctx.fillText("(selected mesh has no normal data)",20,H-12);}
     }
     // vertex dots
     for(var i=0;i<verts.length;i++){var p=project(verts[i].p);
@@ -637,20 +747,32 @@ function refreshHeader(){
   }
   document.getElementById("stats").textContent=line;
   var vt=DATA.vs.total||0, vd=DATA.vs.done||0;
+  var rt=(DATA.rast&&DATA.rast.total)||0, rd=(DATA.rast&&DATA.rast.done)||0;
   var pt=DATA.ps.total||0, pd=DATA.ps.done||0;
   document.getElementById("vsfill").style.width=(vt?100*vd/vt:0)+"%";
+  document.getElementById("rastfill").style.width=(rt?100*rd/rt:0)+"%";
   document.getElementById("psfill").style.width=(pt?100*pd/pt:0)+"%";
   document.getElementById("vstxt").textContent=vd+"/"+vt;
+  document.getElementById("rasttxt").textContent=rd+"/"+rt+" ("+((DATA.rast&&DATA.rast.pixels)||0)+" px)";
   document.getElementById("pstxt").textContent=pd+"/"+pt;
   document.getElementById("phase").textContent=DATA.phase||"?";
 }
 
-var lastSeq=-1;
+var lastSeq=-1, delaysTouched=false;
+function syncDelaySliders(d){
+  // Reflect server delays on the sliders, but don't fight the user mid-drag.
+  if(delaysTouched||!d)return;
+  var m={vertex:'dvertex',primitive:'dprimitive',pixel:'dpixel'};
+  for(var k in m){var el=document.getElementById(m[k]);
+    if(el){el.value=(d[k]*1000);document.getElementById(m[k]+'v').textContent=(d[k]*1000).toFixed(el.step<1?1:0)+" ms";}}
+}
 function applyState(st){
   DATA=st;
   refreshHeader();
+  syncDelaySliders(st.delays);
   // Auto-follow the active stage so progress is visible without clicking tabs.
-  if(DATA.phase==="ps" && curTab==="vs") setTab("ps");
+  if(DATA.phase==="rasterizer" && curTab==="vs") setTab("rast");
+  if(DATA.phase==="ps" && (curTab==="vs"||curTab==="rast")) setTab("ps");
   inView.draw();
   renderOutput();
 }
@@ -659,10 +781,25 @@ function poll(){
   fetch("/state",{cache:"no-store"}).then(function(r){return r.json();}).then(function(st){
     document.getElementById("live").textContent="";
     if(st.seq!==lastSeq){lastSeq=st.seq;applyState(st);}
-    else{ // still refresh live progress bars/output during a phase
-      if(st.phase==="vs"||st.phase==="ps"){applyState(st);}
+    else{ // still refresh live progress bars/output during an active phase
+      if(st.phase==="vs"||st.phase==="rasterizer"||st.phase==="ps"){applyState(st);}
     }
   }).catch(function(){document.getElementById("live").textContent="(disconnected)";});
+}
+// Push slider values (ms -> seconds) to the server; pipeline reads them live.
+function pushDelays(){
+  var v=parseFloat(document.getElementById("dvertex").value)/1000;
+  var p=parseFloat(document.getElementById("dprimitive").value)/1000;
+  var x=parseFloat(document.getElementById("dpixel").value)/1000;
+  fetch("/set?vertex="+v+"&primitive="+p+"&pixel="+x,{cache:"no-store"}).catch(function(){});
+}
+function wireDelay(id){
+  var el=document.getElementById(id), lbl=document.getElementById(id+"v");
+  el.addEventListener("input",function(){
+    delaysTouched=true;
+    lbl.textContent=parseFloat(el.value).toFixed(el.step<1?1:0)+" ms";
+    pushDelays();
+  });
 }
 
 (function(){
@@ -675,6 +812,12 @@ function poll(){
     b.addEventListener("click",function(){setTab(b.dataset.tab);});});
   document.getElementById("shownormals").addEventListener("change",function(e){
     SHOW_NORMALS=e.target.checked; inView.draw(); if(curTab==="vs")outVs.draw();});
+  wireDelay("dvertex"); wireDelay("dprimitive"); wireDelay("dpixel");
+  document.getElementById("dreset").addEventListener("click",function(){
+    ["dvertex","dprimitive","dpixel"].forEach(function(id){
+      var el=document.getElementById(id);el.value=0;
+      document.getElementById(id+"v").textContent="0 ms";});
+    delaysTouched=true; pushDelays();});
   setTab("vs");
   poll();
   setInterval(poll, 250);

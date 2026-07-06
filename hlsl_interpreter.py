@@ -3,6 +3,7 @@ import math
 import re
 import os
 import struct
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Union, Optional
@@ -6976,8 +6977,16 @@ class HLSLInterpreter:
                 canonical[key] = value
 
             results.append(canonical)
-            if _live is not None and (row_index % _step == 0 or row_index + 1 == execute_count):
-                _live.set_vs_progress(row_index + 1, execute_count)
+            if _live is not None:
+                # Per-vertex animation delay (read live so the web slider takes
+                # effect at once). When pacing, update progress every vertex for a
+                # smooth animation; otherwise throttle to keep overhead low.
+                d = _live.get_delay('vertex')
+                if d > 0:
+                    _live.set_vs_progress(row_index + 1, execute_count)
+                    time.sleep(d)
+                elif row_index % _step == 0 or row_index + 1 == execute_count:
+                    _live.set_vs_progress(row_index + 1, execute_count)
 
         if _live is not None:
             _live.set_vs_progress(execute_count, execute_count)
@@ -7518,8 +7527,14 @@ class HLSLInterpreter:
             if TRACE.ps_pixels:
                 TRACE.ps_pixel(pixel.quad_lane, input_data, pixel.ps_output_color)
 
-            if _live is not None and (_pix_i % _ps_step == 0 or _pix_i + 1 == _ps_total):
-                _live.set_ps_progress(_pix_i + 1, _ps_total)
+            if _live is not None:
+                # Per-pixel animation delay (read live from the web slider).
+                d = _live.get_delay('pixel')
+                if d > 0:
+                    _live.set_ps_progress(_pix_i + 1, _ps_total)
+                    time.sleep(d)
+                elif _pix_i % _ps_step == 0 or _pix_i + 1 == _ps_total:
+                    _live.set_ps_progress(_pix_i + 1, _ps_total)
 
         if _live is not None:
             _live.set_ps_progress(_ps_total, _ps_total)

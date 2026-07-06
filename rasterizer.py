@@ -1,5 +1,6 @@
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
@@ -180,9 +181,32 @@ class Rasterizer:
         self._primitive_id_counter = 0
         self._pixels: List[Pixel] = []
         self.stats = self._new_stats()
+        # Optional live-animation view (WebMeshView): when set, rasterize()
+        # shares its growing pixel list and reports per-primitive progress so the
+        # browser animates pixels appearing, and honours a per-primitive delay.
+        self._anim_view = None
 
         if config_path:
             self.load_config(config_path)
+
+    def set_animation_hook(self, view):
+        """Attach a WebMeshView for live rasterizer progress/animation. Pass None
+        to detach. Only used when the view exposes bind_rast_pixels."""
+        self._anim_view = view if (view is not None and
+                                   hasattr(view, 'bind_rast_pixels')) else None
+
+    def _anim_primitive_done(self):
+        """Report one finished primitive to the live view and apply the
+        per-primitive animation delay (read live so slider changes take effect).
+        Uses stats['primitives'] as the running count and the total bound at
+        bind_rast_pixels time."""
+        view = self._anim_view
+        if view is None:
+            return
+        view.set_rast_progress(self.stats['primitives'], None, len(self._pixels))
+        d = view.get_delay('primitive')
+        if d > 0:
+            time.sleep(d)
 
     @staticmethod
     def _new_stats() -> Dict[str, int]:
@@ -291,6 +315,23 @@ class Rasterizer:
         self.clear_pixels()
         self.stats = self._new_stats()
 
+        # Live animation: share the growing pixel list + total primitive count.
+        if self._anim_view is not None:
+            n = len(results)
+            if primitive_topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+                total_prims = n // 3
+            elif primitive_topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
+                total_prims = max(0, n - 2)
+            elif primitive_topology == D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+                total_prims = n // 2
+            elif primitive_topology == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP:
+                total_prims = max(0, n - 1)
+            elif primitive_topology == D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+                total_prims = n
+            else:
+                total_prims = 0
+            self._anim_view.bind_rast_pixels(self._pixels, total_prims)
+
         if primitive_topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
             self._rasterize_triangle_list(results)
         elif primitive_topology == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP:
@@ -303,6 +344,9 @@ class Rasterizer:
             self._rasterize_point_list(results)
 
         self.stats['pixels'] = len(self._pixels)
+        if self._anim_view is not None:
+            self._anim_view.set_rast_progress(
+                self.stats['primitives'], self.stats['primitives'], len(self._pixels))
         return self._pixels
 
     def _rasterize_triangle_list(self, vertices: List[Dict[str, Any]]):
@@ -317,6 +361,7 @@ class Rasterizer:
             )
             self.stats['primitives'] += 1
             self._tally(self._rasterize_triangle(tri))
+            self._anim_primitive_done()
 
     def _rasterize_triangle_strip(self, vertices: List[Dict[str, Any]]):
         """Rasterize triangle strip"""
@@ -331,6 +376,7 @@ class Rasterizer:
             )
             self.stats['primitives'] += 1
             self._tally(self._rasterize_triangle(tri))
+            self._anim_primitive_done()
 
     def _rasterize_line_list(self, vertices: List[Dict[str, Any]]):
         """Rasterize line list - every 2 vertices form a line"""
@@ -339,6 +385,7 @@ class Rasterizer:
         for i in range(0, len(vertices) - 1, 2):
             self.stats['primitives'] += 1
             self._tally(self._rasterize_line(vertices[i], vertices[i + 1], i // 2))
+            self._anim_primitive_done()
 
     def _rasterize_line_strip(self, vertices: List[Dict[str, Any]]):
         """Rasterize line strip"""
@@ -347,12 +394,14 @@ class Rasterizer:
         for i in range(len(vertices) - 1):
             self.stats['primitives'] += 1
             self._tally(self._rasterize_line(vertices[i], vertices[i + 1], i))
+            self._anim_primitive_done()
 
     def _rasterize_point_list(self, vertices: List[Dict[str, Any]]):
         """Rasterize point list"""
         for i, vertex in enumerate(vertices):
             self.stats['primitives'] += 1
             self._tally(self._rasterize_point(vertex, i))
+            self._anim_primitive_done()
 
     def _rasterize_point(self, vertex: Dict[str, Any], primitive_id: int) -> str:
         """Rasterize a point primitive. Returns 'clipped' or 'rasterized'."""
