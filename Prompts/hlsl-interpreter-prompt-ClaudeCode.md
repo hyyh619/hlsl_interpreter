@@ -3575,8 +3575,12 @@ Notice:
 
 **验证**：合成数据生成 HTML（11.8KB、doctype/占位替换/payload 注入/JSON 9 键/计数全对）；接线单测（模式解析 7 例 + 分派 3 例全对）；回归 152/152 全过（默认 none 路径零影响）。
 
-# 186
+# 186 改成动态web展示
 ## Prompts
+1. 请把view html静态页面展示，改为动态web页面显示
+2. 能够根据VS执行的进度，动态展示顶点绘制的进展
+3. 能够根据PS执行的进度，动态展示像素绘制的进展
+4. 能够动态开关显示当前顶点的法线向量
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3586,6 +3590,40 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+step185 的 `HtmlMeshView` 是**静态**一次性视图：把全部管线数据烘焙进一个 JSON 字面量，
+运行结束时才 `show()` 写出单个 `mesh_view.html` 并打开浏览器，什么都不动。本步把它做成
+**动态 web 视图**：后台起一个 stdlib `ThreadingHTTPServer`（无第三方依赖），浏览器边跑边
+轮询，实现 VS 逐顶点、PS 逐像素的实时进度展示，并支持法线向量的实时开关。
+
+**新文件 `web_mesh_view.py` — `WebMeshView`**：`HtmlMeshView`/`MeshView` 的 drop-in（同一套
+setter API），另加实时钩子 `bind_vs_results`/`set_vs_progress`/`bind_ps_pixels`/
+`set_ps_progress`/`set_phase`（其它视图无此方法，调用方用 `hasattr` 兜底）。服务两条路由：
+`GET /` 轮询页面、`GET /state` 加锁快照。**零拷贝快照**：不每顶点重建几何（O(n²)），而是
+共享解释器**正在 append 的那个 list**，每顶点只自增一个整数计数；`/state` 在浏览器轮询时
+（~4次/秒）才 `results_ref[:done]` 切片序列化。页面复用 step185 的投影/线框/像素图渲染，外加
+VS/PS **进度条**+ 阶段标签（init→vs→rasterizer→ps→done，自动跟随当前阶段）和 **"Show
+Normals" 复选框**（沿法线画短蓝线，实时开关、无需刷新）。
+
+**接线**：`hlsl_interpreter.py` 加 `WebMeshView` 导入 + `enable_mesh_view` 的 `'web'` 分支 +
+`executeVS_with_params`/`executePS_with_params` 里的实时钩子（都以 `_mesh_view_enabled and
+hasattr` 门控，tk/html/none 与 headless 回归路径完全惰性）。`render.py` 支持 `'web'` 模式、
+在 `rast.rasterize` 后喂光栅覆盖 + `set_phase('rasterizer')`、末尾 `set_phase('done')`。
+
+**抓到并修复的 bug**：首次联调 VS 会动、PS 却从 rasterizer 直接跳 done——因为 PS 跑在
+**另一个 `ps_interp`**（`_make_interpreter` 新建，`_mesh_view is None`），钩子从不触发。修：
+`executePS_with_params` 前把 VS 的 web 视图共享给 `ps_interp`（`hasattr(..,'bind_ps_pixels')`
+门控）。另修 `clear()`（VS 结束后 `show_input_mesh_from_params` 会调它）不再清零进度计数，
+避免完成的 VS 进度条回弹 0/0。
+
+**验证**：独立 server 单测（`/` 注入标题+法线开关、`/state` 反映 VS/PS 实时增长、phase→done）。
+在 `Collision-...event104.zip`（1149 顶点 / 46015 光栅片元 / 42726 PS 像素）web 模式跑全管线 +
+后台轮询，抓到实时序列 `vs 819→1149` → `rasterizer 46015` → `ps 256→…→42726` → `done`，
+VS 进度条保持 100%。四项需求全部达成。**回归 118/123，无新增回归**：5 个失败
+(witcher3 event1643/1834/1852/2322、manhattan event1041) 为既有失败——stash 掉改动后
+event1643 在干净 HEAD 仍 0/1110，且新代码在 mesh view 关闭（回归配置）时完全惰性。
+`Cases/Default.json` 改为 `mesh_view_mode: "web"`（顺手修正被忽略的大小写笔误
+`mesh_view_Mode`），默认运行即用动态视图。
 
 # 187
 ## Prompts

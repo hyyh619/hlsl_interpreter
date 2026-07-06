@@ -124,6 +124,12 @@ try:
 except ImportError:
     HTML_MESHVIEW_AVAILABLE = False
 
+try:
+    from web_mesh_view import WebMeshView
+    WEB_MESHVIEW_AVAILABLE = True
+except ImportError:
+    WEB_MESHVIEW_AVAILABLE = False
+
 
 DATA_TYPE_LIST = [
     'float4x4', 'float3x3',  # 矩阵类型
@@ -614,6 +620,19 @@ class HLSLInterpreter:
                 self._mesh_view = HtmlMeshView(
                     title="HLSL Interpreter - Mesh View (HTML)", out_path=html_path)
             self.log_output("Mesh view enabled (HTML)")
+            return
+
+        if mode == 'web':
+            if not WEB_MESHVIEW_AVAILABLE:
+                self.log_output("Warning: WebMeshView not available")
+                self._mesh_view_enabled = False
+                return
+            self._mesh_view_enabled = True
+            if self._mesh_view is None or not isinstance(self._mesh_view, WebMeshView):
+                self._mesh_view = WebMeshView(
+                    title="HLSL Interpreter - Mesh View (Web)")
+                self._mesh_view._log_output = self.log_output
+            self.log_output("Mesh view enabled (web, dynamic)")
             return
 
         # mode == 'tk'
@@ -6921,6 +6940,15 @@ class HLSLInterpreter:
         sem_to_key = self._get_output_semantic_to_key_map()
 
         results = []
+        # Live web mesh view: share the growing results list so the browser can
+        # animate VS progress (deliverable 2). No-op on tk/html/none viewers.
+        _live = self._mesh_view if (self._mesh_view_enabled and
+                                    hasattr(self._mesh_view, 'bind_vs_results')) else None
+        if _live is not None:
+            _live.set_primitive_topology(self.primitive_topology)
+            _live.bind_vs_results(results, execute_count)
+            _live.show(blocking=False)
+        _step = max(1, execute_count // 500)
         for row_index in range(execute_count):
             row_data = vertex_data[row_index]
             result_params = self._execute_void_main(
@@ -6948,6 +6976,11 @@ class HLSLInterpreter:
                 canonical[key] = value
 
             results.append(canonical)
+            if _live is not None and (row_index % _step == 0 or row_index + 1 == execute_count):
+                _live.set_vs_progress(row_index + 1, execute_count)
+
+        if _live is not None:
+            _live.set_vs_progress(execute_count, execute_count)
 
         return results
 
@@ -7425,7 +7458,17 @@ class HLSLInterpreter:
             'WORLDPOS': 'worldPos', 'WORLDPOS0': 'worldPos',
         }
 
-        for pixel in pixels:
+        # Live web mesh view: share the pixel list so the browser can animate
+        # PS progress as fragments are shaded (deliverable 3). No-op elsewhere.
+        _live = self._mesh_view if (self._mesh_view_enabled and
+                                    hasattr(self._mesh_view, 'bind_ps_pixels')) else None
+        _ps_total = len(pixels)
+        if _live is not None:
+            _live.bind_ps_pixels(pixels, _ps_total)
+            _live.show(blocking=False)
+        _ps_step = max(1, _ps_total // 500)
+
+        for _pix_i, pixel in enumerate(pixels):
             pixel.ps_output_color = None
             self._quad_inputs = pixel.quad_inputs
             self._quad_lane = pixel.quad_lane
@@ -7474,6 +7517,12 @@ class HLSLInterpreter:
 
             if TRACE.ps_pixels:
                 TRACE.ps_pixel(pixel.quad_lane, input_data, pixel.ps_output_color)
+
+            if _live is not None and (_pix_i % _ps_step == 0 or _pix_i + 1 == _ps_total):
+                _live.set_ps_progress(_pix_i + 1, _ps_total)
+
+        if _live is not None:
+            _live.set_ps_progress(_ps_total, _ps_total)
 
         # Clear quad context so VS / non-quad paths don't see stale state.
         self._quad_inputs = None

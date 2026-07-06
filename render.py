@@ -73,13 +73,16 @@ _MISS_CP = object()
 
 
 def _resolve_mesh_view_mode(config: dict) -> str:
-    """Pick the mesh-view mode: config 'mesh_view_mode' ('none'|'tk'|'html')
-    wins; otherwise fall back to the legacy boolean 'mesh_view_enabled'
-    (True -> 'tk', False -> 'none')."""
+    """Pick the mesh-view mode: config 'mesh_view_mode'
+    ('none'|'tk'|'html'|'web') wins; otherwise fall back to the legacy boolean
+    'mesh_view_enabled' (True -> 'tk', False -> 'none').
+
+    'web' is the dynamic server-backed viewer (WebMeshView) that animates
+    VS/PS progress live; 'html' is the one-shot static file (HtmlMeshView)."""
     mode = config.get('mesh_view_mode')
     if mode:
         m = str(mode).strip().lower()
-        return m if m in ('none', 'tk', 'html') else 'none'
+        return m if m in ('none', 'tk', 'html', 'web') else 'none'
     return 'tk' if config.get('mesh_view_enabled', False) else 'none'
 
 
@@ -1914,6 +1917,13 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     rast_stats = dict(rast.get_stats())
     vs_interp.log_output(f"Rasterized → {len(pixels)} pixels in {rast_time:.4f}s")
 
+    # Live web view: show the rasterizer coverage (pre-PS) as its own phase so
+    # the browser can display the fragment grid before pixel shading starts.
+    _mv = vs_interp._mesh_view
+    if mesh_view_enabled and _mv is not None and hasattr(_mv, 'set_phase'):
+        _mv.set_rasterizer_pixels(pixels)
+        _mv.set_phase('rasterizer')
+
     # Pipeline statistics accumulated across the stages, reported at the end and
     # mirrored into the MeshView status bar.
     rast_pixel_count = len(pixels)
@@ -2001,6 +2011,14 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
 
             ps_interp.log_output(f"\nExecuting Pixel Shader on {len(pixels_for_ps)} pixels...")
             ps_pixel_count = len(pixels_for_ps)
+            # Live web view: PS runs on a fresh ps_interp with no mesh view, so
+            # share the VS interpreter's viewer to it. The PS live hook only fires
+            # for WebMeshView (guarded by hasattr(..,'bind_ps_pixels')), so this
+            # is a no-op for the tk/html/none viewers.
+            if (mesh_view_enabled and vs_interp._mesh_view is not None
+                    and hasattr(vs_interp._mesh_view, 'bind_ps_pixels')):
+                ps_interp._mesh_view = vs_interp._mesh_view
+                ps_interp._mesh_view_enabled = True
             ps_start = time.time()
             ps_interp.executePS_with_params(
                 'main', ps_input_params, ps_output_params, pixels_for_ps, ps_code=ps_code
@@ -2153,6 +2171,8 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             vs_interp._mesh_view._draw_rasterizer_pixels()
             vs_interp._mesh_view._draw_pixel_shader_pixels()
             vs_interp._mesh_view._draw_output_merger_pixels()
+        if hasattr(vs_interp._mesh_view, 'set_phase'):
+            vs_interp._mesh_view.set_phase('done')
         vs_interp._mesh_view.show(blocking=False)
 
         while True:
