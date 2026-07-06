@@ -484,6 +484,8 @@ class HLSLInterpreter:
         self._cos = _TRIG_MODELS.get(trig_model, _TRIG_MODELS['libm'])[1]
         self._mesh_view = None                               # MeshView实例(用于显示输入和输出)
         self._mesh_view_enabled = False                      # 是否启用MeshView
+        self._trace_sink = None                              # 单项指令追踪缓冲(None=关闭)
+        self._trace_only = False                             # 追踪时是否抑制正常日志
         self.vertex_pool = VertexPool()                       # 顶点池
         self._log_cache = []                                 # 日志缓存
         self._log_cache_size = log_cache_size                # 日志缓存大小(字节)
@@ -857,6 +859,15 @@ class HLSLInterpreter:
     def debug_print(self, msg: str):
         """调试打印"""
         if self.debug and self._should_print and not self._in_derivative_eval:
+            # Single-item trace capture (web "Selected Vertex/Pixel Info"): when a
+            # sink is active, collect the per-statement lines and (in trace-only
+            # mode) skip the normal stdout/log so a trace click doesn't pollute
+            # the run log.
+            sink = self._trace_sink
+            if sink is not None:
+                sink.append(msg)
+                if self._trace_only:
+                    return
             self.log_output(msg)
 
     @staticmethod
@@ -7550,6 +7561,101 @@ class HLSLInterpreter:
         self._ps_main_func = None
 
         return pixels
+
+    # ------------------------------------------------- single-item instruction trace
+    def _trace_single_execution(self, code, main_func, input_params, output_params,
+                                input_data, row_index):
+        """Run ONE vertex/pixel with per-statement debug capture and return
+        (lines, result). Used by the web viewer's Selected Vertex/Pixel Info
+        panels — it forces debug on for just this execution, routes the [STMT]
+        lines to a buffer, and suppresses the normal run log. Restores all state
+        afterwards, so it is safe to call after the pipeline has finished."""
+        saved = (self.debug, self._should_print, self._eval_counter,
+                 self._in_derivative_eval, self._trace_sink, self._trace_only)
+        sink = []
+        self._trace_sink = sink
+        self._trace_only = True
+        self.debug = True
+        self._in_derivative_eval = False
+        self._eval_counter = 0  # so _execute_void_main makes _should_print True
+        try:
+            result = self._execute_void_main(
+                code, main_func, input_params, output_params, input_data, row_index)
+        except Exception as e:
+            sink.append(f"[TRACE ERROR] {type(e).__name__}: {e}")
+            result = None
+        finally:
+            (self.debug, self._should_print, self._eval_counter,
+             self._in_derivative_eval, self._trace_sink, self._trace_only) = saved
+        return sink, result
+
+    def trace_vs_vertex(self, index, main_func, input_params, output_params,
+                        vertex_data):
+        """Instruction trace for one VS vertex (index into vertex_data)."""
+        if not (0 <= index < len(vertex_data)):
+            return {'ok': False, 'error': f'vertex index {index} out of range'}
+        lines, _ = self._trace_single_execution(
+            self.hlsl_code, main_func, input_params, output_params,
+            vertex_data[index], index)
+        return {'ok': True, 'kind': 'vertex', 'index': index, 'lines': lines}
+
+    _PS_SEM_TO_PIXEL = {
+        'SV_POSITION': 'sv_pos',
+        'COLOR': 'color', 'COLOR0': 'color',
+        'TEXCOORD': 'texcoord', 'TEXCOORD0': 'texcoord',
+        'TEXCOORD1': 'texcoord2',
+        'NORMAL': 'normal', 'NORMAL0': 'normal',
+        'WORLDPOS': 'worldPos', 'WORLDPOS0': 'worldPos',
+    }
+
+    def trace_ps_pixel(self, pixel, main_func, ps_input_params, ps_output_params,
+                       code=None):
+        """Instruction trace for one PS pixel. Rebuilds the pixel's PS inputs the
+        same way executePS_with_params does (incl. quad context for derivatives)."""
+        code = code or self.hlsl_code
+        # Quad context so ddx/ddy neighbour-lane re-execution works.
+        self._quad_inputs = getattr(pixel, 'quad_inputs', None)
+        self._quad_lane = getattr(pixel, 'quad_lane', 0)
+        self._quad_lane_locals_cache = {}
+        self._quad_inputs_id = id(pixel.quad_inputs) if getattr(pixel, 'quad_inputs', None) else None
+        self._ps_input_params = ps_input_params
+        self._ps_output_params = ps_output_params
+        self._ps_code = code
+        self._ps_main_func = main_func
+
+        input_data = {}
+        for param in ps_input_params:
+            sem_base = param['semantic_base'].upper()
+            sem_idx = param['semantic_index']
+            sem_full = f'{sem_base}{sem_idx}' if sem_idx > 0 else sem_base
+            attr_name = self._PS_SEM_TO_PIXEL.get(sem_full,
+                                                  self._PS_SEM_TO_PIXEL.get(sem_base, ''))
+            if attr_name == 'sv_pos':
+                pixel_val = [float(pixel.x), float(pixel.y), float(pixel.depth), 1.0]
+            elif attr_name:
+                pixel_val = getattr(pixel, attr_name, None)
+                if pixel_val is None:
+                    pixel_val = self._default_value_for_type(param['type'])
+            else:
+                pixel_val = self._default_value_for_type(param['type'])
+            comp = self._type_component_count(param['type'])
+            if isinstance(pixel_val, list):
+                pixel_val = (pixel_val + [0.0] * comp)[:comp]
+            input_data[param['name']] = pixel_val
+
+        lines, _ = self._trace_single_execution(
+            code, main_func, ps_input_params, ps_output_params, input_data, 0)
+
+        self._quad_inputs = None
+        self._quad_lane = 0
+        self._quad_lane_locals_cache = {}
+        self._quad_inputs_id = None
+        self._ps_input_params = None
+        self._ps_output_params = None
+        self._ps_code = None
+        self._ps_main_func = None
+        return {'ok': True, 'kind': 'pixel', 'x': int(pixel.x), 'y': int(pixel.y),
+                'lines': lines}
 
     # 相对容差: golden 由 GPU 以 float32 计算, 解释器用 Python float64。对幅值很大的
     # 输出(如 o2.xy = clip_xy * screen_scale + screen_scale, screen_scale≈1024 时 o2≈2000),

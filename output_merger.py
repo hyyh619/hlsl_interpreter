@@ -160,6 +160,20 @@ class Depth:
         self._depth_buffer.clear()
         self._stencil_buffer.clear()
 
+    def snapshot_buffers(self):
+        """Copy the current depth/stencil buffers (for pre-draw state capture).
+        execute() writes into these buffers, so the web viewer's stage replay
+        snapshots them right after loading and restores before each re-run —
+        otherwise a second depth test sees the already-written depths and rejects
+        every fragment."""
+        return (dict(self._depth_buffer), dict(self._stencil_buffer))
+
+    def restore_buffers(self, snapshot):
+        """Restore depth/stencil buffers from a snapshot_buffers() result."""
+        d, s = snapshot
+        self._depth_buffer = dict(d)
+        self._stencil_buffer = dict(s)
+
     def load_pre_draw_depth_stencil(self, path: str) -> int:
         """Initialize the depth/stencil buffers from a pre-draw capture CSV.
 

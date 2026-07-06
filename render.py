@@ -1541,6 +1541,132 @@ def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
         log(f"DS stage error: {e}\n{traceback.format_exc()}")
 
 
+class _PipelineController:
+    """Bridges the WebMeshView to the already-built pipeline objects so the
+    browser can (a) replay a stage onward and (b) trace one vertex/pixel's
+    instruction stream. Constructed after the first full run with references to
+    the live interpreters/rasterizer/depth and the stage parameters; holds the
+    current vs_results / pixels so a later-stage replay reuses earlier output.
+    All replays serialise on a lock (the interpreter is not re-entrant)."""
+
+    _ORDER = ['vs', 'rasterizer', 'ps', 'om']
+
+    def __init__(self, view, *, vs_interp, ps_interp, rast, depth,
+                 vs_input_params, vs_output_params, vertex_data, execute_count,
+                 ps_input_params, ps_output_params, ps_code, ps_main,
+                 primitive_topology, effective_clamp, early_z, log,
+                 vs_results, pixels, depth_snapshot=None):
+        self.view = view
+        self.vs_interp = vs_interp
+        self.ps_interp = ps_interp
+        self.rast = rast
+        self.depth = depth
+        self.vs_input_params = vs_input_params
+        self.vs_output_params = vs_output_params
+        self.vertex_data = vertex_data
+        self.execute_count = execute_count
+        self.ps_input_params = ps_input_params
+        self.ps_output_params = ps_output_params
+        self.ps_code = ps_code
+        self.ps_main = ps_main
+        self.primitive_topology = primitive_topology
+        self.effective_clamp = effective_clamp
+        self.early_z = early_z
+        self.log = log
+        self.vs_results = vs_results
+        self.pixels = pixels
+        self.depth_snapshot = depth_snapshot
+        self._lock = threading.Lock()
+
+    # -------------------------------------------------------------- replay
+    def replay(self, stage):
+        if stage not in self._ORDER:
+            return {'ok': False, 'error': f'unknown stage {stage!r}'}
+        if not self._lock.acquire(blocking=False):
+            return {'ok': False, 'error': 'a replay is already running'}
+        try:
+            start = self._ORDER.index(stage)
+            self.log(f"[replay] re-running from stage '{stage}'")
+            if start <= 0:
+                self._run_vs()
+            if start <= 1:
+                self._run_rast()
+            if start <= 2:
+                self._run_ps()
+            if start <= 3:
+                self._run_om()
+            if hasattr(self.view, 'set_phase'):
+                self.view.set_phase('done')
+            return {'ok': True, 'stage': stage,
+                    'vertices': len(self.vs_results or []),
+                    'pixels': len(self.pixels or [])}
+        finally:
+            self._lock.release()
+
+    def _run_vs(self):
+        self.vs_interp.primitive_topology = self.primitive_topology
+        self.vs_results = self.vs_interp.executeVS_with_params(
+            'main', self.vs_input_params, self.vs_output_params,
+            self.vertex_data, execute_count=self.execute_count)
+        self.vs_interp.show_result_mesh_from_params(self.vs_results)
+
+    def _run_rast(self):
+        if hasattr(self.rast, 'set_animation_hook'):
+            self.rast.set_animation_hook(self.view)
+        # Restore the pre-draw depth buffer so the (early-Z) test isn't rejecting
+        # against depths written by the previous run.
+        if self.depth_snapshot is not None:
+            self.depth.restore_buffers(self.depth_snapshot)
+        self.pixels = self.rast.rasterize(self.vs_results, self.primitive_topology)
+        if self.early_z:
+            self.pixels = self.depth.execute(self.pixels, early_z=True)
+        self.view.set_rasterizer_pixels(self.pixels)
+        if hasattr(self.view, 'set_phase'):
+            self.view.set_phase('rasterizer')
+
+    def _run_ps(self):
+        if self.ps_interp is None or not self.pixels:
+            return
+        self.ps_interp._mesh_view = self.view
+        self.ps_interp._mesh_view_enabled = True
+        self.ps_interp.executePS_with_params(
+            self.ps_main, self.ps_input_params, self.ps_output_params,
+            self.pixels, ps_code=self.ps_code)
+
+    def _run_om(self):
+        if not self.pixels:
+            return
+        _clamp_output_colors(self.pixels, self.effective_clamp, self.log)
+        if not self.early_z:
+            if self.depth_snapshot is not None:
+                self.depth.restore_buffers(self.depth_snapshot)
+            self.pixels = self.depth.execute(self.pixels, early_z=False)
+        self.view.set_rasterizer_pixels(self.pixels)
+        self.view.set_output_merger_pixels(self.pixels)
+
+    # --------------------------------------------------------------- trace
+    def trace_vertex(self, index):
+        with self._lock:
+            return self.vs_interp.trace_vs_vertex(
+                index, 'main', self.vs_input_params, self.vs_output_params,
+                self.vertex_data)
+
+    def trace_pixel(self, x, y):
+        if self.ps_interp is None:
+            return {'ok': False, 'error': 'no pixel shader in this draw'}
+        target = None
+        for p in (self.pixels or []):
+            if int(p.x) == x and int(p.y) == y:
+                target = p
+                break
+        if target is None:
+            return {'ok': False, 'error': f'no rasterized pixel at ({x},{y})'}
+        with self._lock:
+            return self.ps_interp.trace_ps_pixel(
+                target, self.ps_main, self.ps_input_params,
+                self.ps_output_params, code=self.ps_code)
+
+
 def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     """Execute VS → Rasterizer → Depth → PS pipeline from extracted data folder."""
     # Config parameters
@@ -1968,6 +2094,11 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             f"depth test enabled (func=LESS, write=on)"
         )
 
+    # Snapshot the pre-draw depth/stencil buffers so the web viewer's stage
+    # replay can restore them (execute() writes depths; a second pass without a
+    # reset would reject every fragment).
+    _depth_snapshot = depth.snapshot_buffers()
+
     if early_z:
         pixels = depth.execute(pixels, early_z=True)
         depth_failed = rast_pixel_count - len(pixels)
@@ -1979,6 +2110,9 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # PS setup and execution
     # ============================================================
     no_ps = True
+    ps_interp = None
+    ps_input_params = ps_output_params = None
+    ps_code = None
     if os.path.exists(ps_hlsl) and pixels_for_ps:
         no_ps = False
         ps_interp = _make_interpreter(config, d3d.SHADER_STAGE_PS, log_file_path)
@@ -2185,6 +2319,19 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
             vs_interp._mesh_view._draw_output_merger_pixels()
         if hasattr(vs_interp._mesh_view, 'set_phase'):
             vs_interp._mesh_view.set_phase('done')
+        # Wire the stage-replay / instruction-trace controller (web viewer only).
+        if hasattr(vs_interp._mesh_view, 'set_controller'):
+            vs_interp._mesh_view.set_controller(_PipelineController(
+                vs_interp._mesh_view,
+                vs_interp=vs_interp, ps_interp=ps_interp, rast=rast, depth=depth,
+                vs_input_params=vs_input_params, vs_output_params=vs_output_params,
+                vertex_data=vertex_data, execute_count=execute_count,
+                ps_input_params=ps_input_params, ps_output_params=ps_output_params,
+                ps_code=ps_code, ps_main='main',
+                primitive_topology=primitive_topology, effective_clamp=effective_clamp,
+                early_z=early_z, log=vs_interp.log_output,
+                vs_results=vs_results, pixels=pixels,
+                depth_snapshot=_depth_snapshot))
         vs_interp._mesh_view.show(blocking=False)
 
         while True:

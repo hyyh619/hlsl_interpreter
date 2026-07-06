@@ -99,6 +99,15 @@ class WebMeshView:
         self._thread = None
         self._opened = False
 
+        # Pipeline controller (set by render.py) enabling stage replay and
+        # per-vertex / per-pixel instruction tracing from the browser.
+        self._controller = None
+
+    def set_controller(self, controller):
+        """Attach a pipeline controller exposing replay(stage) / trace_vertex(i)
+        / trace_pixel(x, y). Enables the Replay buttons and Info-panel traces."""
+        self._controller = controller
+
     # ------------------------------------------------------------ bookkeeping
     def _bump(self):
         self._seq += 1
@@ -266,6 +275,10 @@ class WebMeshView:
             self._rast_total = total_primitives or 0
             self._rast_done = 0
             self._rast_pixel_count = 0
+            # Drop the previous run's final pixels so the snapshot shows the live
+            # growing list (matters on replay, where finals were already set).
+            self._rasterizer_pixels = []
+            self._output_merger_pixels = []
             self._phase = 'rasterizer'
             self._bump()
 
@@ -287,6 +300,9 @@ class WebMeshView:
             self._ps_pixels_ref = pixels_ref
             self._ps_total = total or 0
             self._ps_done = 0
+            # On replay the previous final pixels would mask the live PS slice.
+            self._rasterizer_pixels = []
+            self._output_merger_pixels = []
             self._phase = 'ps'
             self._bump()
 
@@ -313,6 +329,27 @@ class WebMeshView:
         """Current delay (seconds) for 'vertex' | 'primitive' | 'pixel'. Read
         LIVE by the pipeline each iteration so slider changes take effect at once."""
         return self._delays.get(kind, 0.0)
+
+    # ------------------------------------------------- controller-routed actions
+    def _route_replay(self, stage: str) -> dict:
+        c = self._controller
+        if c is None:
+            return {'ok': False, 'error': 'no controller (replay unavailable)'}
+        try:
+            return c.replay(stage)
+        except Exception as e:
+            return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+
+    def _route_trace(self, kind: str, a: int, b: int) -> dict:
+        c = self._controller
+        if c is None:
+            return {'ok': False, 'error': 'no controller (trace unavailable)'}
+        try:
+            if kind == 'vertex':
+                return c.trace_vertex(a)
+            return c.trace_pixel(a, b)
+        except Exception as e:
+            return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
 
     # ------------------------------------------------- tk-parity no-op hooks
     def _draw_rasterizer_pixels(self):
@@ -439,6 +476,31 @@ class WebMeshView:
                     body = json.dumps({'delays': dict(view._delays)},
                                       separators=(',', ':')).encode('utf-8')
                     self._send(200, body, 'application/json')
+                elif path == '/replay':
+                    # Re-run from a stage onward: /replay?stage=vs|rasterizer|ps|om
+                    q = urllib.parse.parse_qs(parts[1] if len(parts) > 1 else '')
+                    stage = (q.get('stage', ['vs'])[0]).lower()
+                    result = view._route_replay(stage)
+                    self._send(200, json.dumps(result, separators=(',', ':')).encode('utf-8'),
+                               'application/json')
+                elif path == '/trace_vertex':
+                    q = urllib.parse.parse_qs(parts[1] if len(parts) > 1 else '')
+                    try:
+                        i = int(q['i'][0])
+                    except (KeyError, ValueError, IndexError):
+                        i = -1
+                    result = view._route_trace('vertex', i, 0)
+                    self._send(200, json.dumps(result, separators=(',', ':')).encode('utf-8'),
+                               'application/json')
+                elif path == '/trace_pixel':
+                    q = urllib.parse.parse_qs(parts[1] if len(parts) > 1 else '')
+                    try:
+                        x = int(q['x'][0]); y = int(q['y'][0])
+                    except (KeyError, ValueError, IndexError):
+                        x = y = -1
+                    result = view._route_trace('pixel', x, y)
+                    self._send(200, json.dumps(result, separators=(',', ':')).encode('utf-8'),
+                               'application/json')
                 else:
                     self._send(404, b'not found', 'text/plain')
 
@@ -516,8 +578,23 @@ _PAGE = r"""<!doctype html>
   .tabs button.active{background:#33335a;color:#fff;}
   .ctl{padding:4px 8px;font-size:12px;color:#aab;}
   .ctl label{margin-right:10px;}
-  #info{width:340px;min-height:600px;padding:8px;white-space:pre-wrap;
-    font-size:12px;overflow:auto;}
+  .ctl button{background:#33335a;color:#fff;border:1px solid #2a2a44;border-radius:3px;
+    cursor:pointer;padding:2px 8px;font:inherit;margin-right:3px;}
+  .replay{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center;
+    padding:5px 8px;background:#20203a;border:1px solid #2a2a44;border-radius:4px;}
+  .replay b{color:#cdeeff;font-weight:bold;margin-right:2px;}
+  .replay button{background:#2a4a3a;color:#cfe;border:1px solid #3a5a4a;border-radius:3px;
+    cursor:pointer;padding:3px 10px;font:inherit;}
+  .replay button:hover{background:#356048;}
+  .replay button:disabled{opacity:.5;cursor:default;}
+  #replaymsg{color:#9fb;}
+  #info,#pxinfo{width:340px;padding:8px;white-space:pre-wrap;
+    font-size:12px;overflow:auto;max-height:640px;}
+  #info{min-height:250px;}
+  #pxinfo{min-height:250px;}
+  .trace{margin-top:6px;font-size:11px;color:#bcd;border-top:1px solid #2a2a44;padding-top:5px;}
+  .trace .stmt{color:#8fd;}
+  .trace .res{color:#fd9;}
   .k{color:#8ad;}
 </style></head><body>
 <header>
@@ -537,6 +614,14 @@ _PAGE = r"""<!doctype html>
     <span class="d">Primitive (Rast) <input type="range" id="dprimitive" min="0" max="200" step="1" value="0"><span class="val" id="dprimitivev">0 ms</span></span>
     <span class="d">Pixel (PS) <input type="range" id="dpixel" min="0" max="50" step="0.5" value="0"><span class="val" id="dpixelv">0 ms</span></span>
     <button id="dreset" style="background:#33335a;color:#fff;border:1px solid #2a2a44;border-radius:3px;cursor:pointer;padding:2px 8px;font:inherit;">Reset</button>
+  </div>
+  <div class="replay">
+    <b>Replay stage:</b>
+    <button data-stage="vs">&#9654; Vertex Shader</button>
+    <button data-stage="rasterizer">&#9654; Rasterizer</button>
+    <button data-stage="ps">&#9654; Pixel Shader</button>
+    <button data-stage="om">&#9654; Output Merger</button>
+    <span id="replaymsg"></span>
   </div>
 </header>
 <div class="wrap">
@@ -559,11 +644,17 @@ _PAGE = r"""<!doctype html>
     <div class="ctl" id="octl">
       <label>Zoom <input type="range" id="ozoom" min="0.1" max="5" step="0.05" value="1"></label>
     </div>
+    <div class="ctl" id="pctl" style="display:none;">
+      Zoom <button id="pzin">&#43;</button><button id="pzout">&#8722;</button><button id="pzreset">Reset</button>
+      <span id="pzval">1.0x</span> &nbsp; click a pixel to trace its PS
+    </div>
     <canvas id="outcanvas" width="620" height="360"></canvas>
   </div>
   <div class="panel">
     <h3>Selected Vertex Info</h3>
-    <div id="info">Right-click a vertex to inspect.</div>
+    <div id="info">Right-click a vertex to inspect its VS instruction trace.</div>
+    <h3>Selected Pixel Info</h3>
+    <div id="pxinfo">Click a pixel (Rasterizer / Pixel Shader / Output Merger tab) to trace its PS instructions.</div>
   </div>
 </div>
 <script>
@@ -588,11 +679,12 @@ function vcolor(v){
   return "rgb("+r+","+g+","+b+")";
 }
 // A view over one canvas; verts is re-read from DATA each draw so live updates show.
-function makeView(canvas, getVerts, zoomEl, onSelect){
+function makeView(canvas, getVerts, zoomEl, onSelect, isActive){
   // Start with a mild tilt so the mesh isn't dead-on axis-aligned: with rx=ry=0
   // the camera looks straight down z, so normals facing +/-z (very common)
   // project to zero length and are invisible. The tilt gives them screen extent.
   var rx=22, ry=-32, ox=0, oy=0, zoom=1, sel=-1, dragging=false, last=null;
+  function active(){ return isActive ? isActive() : true; }
   function transform(p){
     var ax=rx*Math.PI/180, ay=ry*Math.PI/180;
     var cx=Math.cos(ax), sx=Math.sin(ax), cy=Math.cos(ay), sy=Math.sin(ay);
@@ -665,12 +757,12 @@ function makeView(canvas, getVerts, zoomEl, onSelect){
       var d=(p[0]-mx)*(p[0]-mx)+(p[1]-my)*(p[1]-my);if(d<bd){bd=d;best=i;}}
     return best;
   }
-  canvas.addEventListener("mousedown",function(e){dragging=true;last=[e.offsetX,e.offsetY];});
-  canvas.addEventListener("mousemove",function(e){if(dragging&&last){ry+=(e.offsetX-last[0])*0.5;rx+=(e.offsetY-last[1])*0.5;last=[e.offsetX,e.offsetY];draw();}});
+  canvas.addEventListener("mousedown",function(e){if(!active())return;dragging=true;last=[e.offsetX,e.offsetY];});
+  canvas.addEventListener("mousemove",function(e){if(!active())return;if(dragging&&last){ry+=(e.offsetX-last[0])*0.5;rx+=(e.offsetY-last[1])*0.5;last=[e.offsetX,e.offsetY];draw();}});
   window.addEventListener("mouseup",function(){dragging=false;last=null;});
-  canvas.addEventListener("contextmenu",function(e){e.preventDefault();
+  canvas.addEventListener("contextmenu",function(e){if(!active())return;e.preventDefault();
     sel=pick(e.offsetX,e.offsetY);draw();if(onSelect)onSelect(sel);});
-  canvas.addEventListener("wheel",function(e){e.preventDefault();
+  canvas.addEventListener("wheel",function(e){if(!active())return;e.preventDefault();
     zoom*=(e.deltaY<0?1.1:0.9);if(zoomEl)zoomEl.value=zoom;draw();},{passive:false});
   if(zoomEl)zoomEl.addEventListener("input",function(){zoom=parseFloat(zoomEl.value);draw();});
   return {draw:draw, setSel:function(i){sel=i;draw();}, getSel:function(){return sel;}};
@@ -696,20 +788,60 @@ function vinfo(idx){
   document.getElementById("info").textContent = out || "No vertex selected.";
 }
 
-var inView, outVs, octx;
-function syncSel(i){ if(outVs)outVs.setSel(i); vinfo(i); }
-function syncSelO(i){ if(inView)inView.setSel(i); vinfo(i); }
+// Render a captured instruction trace (list of [STMT]/=> lines) into an element.
+function renderTrace(el, header, res){
+  if(!res){el.textContent=header+"\n(no response)";return;}
+  if(!res.ok){el.textContent=header+"\nTrace unavailable: "+(res.error||"?");return;}
+  var lines=res.lines||[];
+  var html="<b>"+header+"</b>\n<div class='trace'>";
+  for(var i=0;i<lines.length;i++){
+    var ln=lines[i];
+    var cls = ln.indexOf("=>")>=0 ? "res" : (ln.indexOf("[STMT]")>=0 ? "stmt" : "");
+    var esc = ln.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    html += cls ? ("<span class='"+cls+"'>"+esc+"</span>\n") : (esc+"\n");
+  }
+  html+="</div>";
+  el.innerHTML=html;
+}
+function fetchJSON(p, cb){
+  fetch(p,{cache:"no-store"}).then(function(r){return r.json();}).then(cb).catch(function(){cb(null);});
+}
 
+var inView, outVs, octx;
+function syncSel(i){ if(outVs)outVs.setSel(i); vinfo(i); traceVertex(i); }
+function syncSelO(i){ if(inView)inView.setSel(i); vinfo(i); traceVertex(i); }
+function traceVertex(i){
+  if(i<0){return;}
+  var el=document.getElementById("info");
+  el.textContent+="\n\n(loading VS instruction trace for vertex "+i+"...)";
+  fetchJSON("/trace_vertex?i="+i,function(res){
+    var head="VS instruction trace — vertex "+i;
+    vinfo(i);  // reset the info text, then append trace below it
+    var base=document.getElementById("info").textContent;
+    document.getElementById("info").innerHTML="";
+    var pre=document.createTextNode(base+"\n\n");
+    document.getElementById("info").appendChild(pre);
+    var span=document.createElement("span");
+    renderTrace(span, head, res);
+    document.getElementById("info").appendChild(span);
+  });
+}
+
+// Pixel-view zoom/pan state (Rasterizer/PS/OM tabs) + last transform (for
+// click->pixel inversion) + selected pixel marker.
+var pxZoom=1, pxOx=0, pxOy=0, pxXform=null, pxSel=null;
 function drawPixels(pixels, shaded){
   var cv=document.getElementById("outcanvas"), W=cv.width, H=cv.height;
   octx.fillStyle="#1a1a2e"; octx.fillRect(0,0,W,H);
-  if(!pixels||!pixels.length){octx.fillStyle="#667";octx.fillText("(no pixels yet)",20,20);return;}
+  if(!pixels||!pixels.length){octx.fillStyle="#667";octx.fillText("(no pixels yet)",20,20);pxXform=null;return;}
   var mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;
   for(var i=0;i<pixels.length;i++){var p=pixels[i];
     mnx=Math.min(mnx,p[0]);mny=Math.min(mny,p[1]);mxx=Math.max(mxx,p[0]);mxy=Math.max(mxy,p[1]);}
   var pw=mxx-mnx+1, ph=mxy-mny+1;
   var sc=Math.min((W-8)/pw,(H-8)/ph); if(sc<=0)sc=1;
-  var ox=(W-pw*sc)/2, oy=(H-ph*sc)/2, cell=Math.max(1,sc);
+  sc*=pxZoom;
+  var ox=(W-pw*sc)/2 + pxOx, oy=(H-ph*sc)/2 + pxOy, cell=Math.max(1,sc);
+  pxXform={mnx:mnx,mny:mny,sc:sc,ox:ox,oy:oy,cell:cell};
   for(var i=0;i<pixels.length;i++){var p=pixels[i];
     var col;
     if(shaded && p[3]>=0) col="rgb("+p[3]+","+p[4]+","+p[5]+")";
@@ -717,6 +849,19 @@ function drawPixels(pixels, shaded){
     octx.fillStyle=col;
     octx.fillRect(ox+(p[0]-mnx)*sc, oy+(p[1]-mny)*sc, cell, cell);
   }
+  // highlight the selected pixel
+  if(pxSel){
+    octx.strokeStyle="#ffdd33"; octx.lineWidth=2;
+    octx.strokeRect(ox+(pxSel[0]-mnx)*sc-1, oy+(pxSel[1]-mny)*sc-1, cell+2, cell+2);
+    octx.lineWidth=1;
+  }
+}
+// Invert the last drawPixels transform: screen (mx,my) -> pixel (x,y) or null.
+function pickPixel(mx,my){
+  if(!pxXform)return null;
+  var x=Math.floor((mx-pxXform.ox)/pxXform.sc)+pxXform.mnx;
+  var y=Math.floor((my-pxXform.oy)/pxXform.sc)+pxXform.mny;
+  return [x,y];
 }
 function renderOutput(){
   if(curTab==="vs")outVs.draw();
@@ -728,7 +873,13 @@ function setTab(name){
   curTab=name;
   document.querySelectorAll("#otabs button").forEach(function(b){b.classList.toggle("active",b.dataset.tab===name);});
   document.getElementById("octl").style.display=(name==="vs")?"block":"none";
+  document.getElementById("pctl").style.display=(name==="vs")?"none":"block";
   renderOutput();
+}
+function setPxZoom(z){
+  pxZoom=Math.max(0.2,Math.min(40,z));
+  document.getElementById("pzval").textContent=pxZoom.toFixed(1)+"x";
+  if(curTab!=="vs")renderOutput();
 }
 
 function refreshHeader(){
@@ -802,12 +953,23 @@ function wireDelay(id){
   });
 }
 
+// Selected-pixel PS instruction trace.
+function tracePixel(x,y){
+  pxSel=[x,y];
+  var el=document.getElementById("pxinfo");
+  el.textContent="Pixel ("+x+","+y+")\n(loading PS instruction trace...)";
+  if(curTab!=="vs")renderOutput();
+  fetchJSON("/trace_pixel?x="+x+"&y="+y,function(res){
+    renderTrace(el, "PS instruction trace — pixel ("+x+","+y+")", res);
+  });
+}
+
 (function(){
   octx=document.getElementById("outcanvas").getContext("2d");
   inView=makeView(document.getElementById("incanvas"), function(){return DATA.input;},
     document.getElementById("izoom"), syncSel);
   outVs=makeView(document.getElementById("outcanvas"), function(){return DATA.output;},
-    document.getElementById("ozoom"), syncSelO);
+    document.getElementById("ozoom"), syncSelO, function(){return curTab==="vs";});
   document.querySelectorAll("#otabs button").forEach(function(b){
     b.addEventListener("click",function(){setTab(b.dataset.tab);});});
   document.getElementById("shownormals").addEventListener("change",function(e){
@@ -818,6 +980,44 @@ function wireDelay(id){
       var el=document.getElementById(id);el.value=0;
       document.getElementById(id+"v").textContent="0 ms";});
     delaysTouched=true; pushDelays();});
+
+  // Pixel-tab zoom buttons (deliverable 1).
+  document.getElementById("pzin").addEventListener("click",function(){setPxZoom(pxZoom*1.4);});
+  document.getElementById("pzout").addEventListener("click",function(){setPxZoom(pxZoom/1.4);});
+  document.getElementById("pzreset").addEventListener("click",function(){pxOx=0;pxOy=0;setPxZoom(1);});
+
+  // Pixel-tab interactions on the output canvas (only when a pixel tab is active).
+  var oc=document.getElementById("outcanvas"), pdrag=false, plast=null, pmoved=false;
+  oc.addEventListener("wheel",function(e){
+    if(curTab==="vs")return; e.preventDefault();
+    setPxZoom(pxZoom*(e.deltaY<0?1.1:0.9));
+  },{passive:false});
+  oc.addEventListener("mousedown",function(e){
+    if(curTab==="vs")return; pdrag=true; pmoved=false; plast=[e.offsetX,e.offsetY];});
+  oc.addEventListener("mousemove",function(e){
+    if(curTab==="vs"||!pdrag||!plast)return;
+    var dx=e.offsetX-plast[0], dy=e.offsetY-plast[1];
+    if(Math.abs(dx)+Math.abs(dy)>3)pmoved=true;
+    pxOx+=dx; pxOy+=dy; plast=[e.offsetX,e.offsetY]; renderOutput();});
+  window.addEventListener("mouseup",function(){pdrag=false;plast=null;});
+  oc.addEventListener("click",function(e){
+    if(curTab==="vs"||pmoved)return;
+    var xy=pickPixel(e.offsetX,e.offsetY);
+    if(xy)tracePixel(xy[0],xy[1]);});
+
+  // Replay buttons (deliverable 2).
+  document.querySelectorAll(".replay button").forEach(function(b){
+    b.addEventListener("click",function(){
+      var stage=b.dataset.stage, msg=document.getElementById("replaymsg");
+      msg.textContent="replaying "+stage+"...";
+      document.querySelectorAll(".replay button").forEach(function(x){x.disabled=true;});
+      fetchJSON("/replay?stage="+stage,function(res){
+        document.querySelectorAll(".replay button").forEach(function(x){x.disabled=false;});
+        if(res&&res.ok)msg.textContent="replayed "+stage+" ✓ ("+(res.vertices||0)+" verts, "+(res.pixels||0)+" px)";
+        else msg.textContent="replay failed: "+((res&&res.error)||"?");
+      });
+    });});
+
   setTab("vs");
   poll();
   setInterval(poll, 250);

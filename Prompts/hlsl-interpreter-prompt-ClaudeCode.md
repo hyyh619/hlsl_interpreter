@@ -3710,8 +3710,12 @@ Notice:
 **回归 118/123**，与 step186/187 一致——5 个失败为既有；延迟默认 0、headless 回归（mesh view 关闭）
 从不挂动画钩子。
 
-# 189
+# 189 动态 web 视图的rasterizer动画显示
 ## Prompts
+1. 对Rasterizer/Pixel Shader/Output Merger窗口提供缩放按钮
+2. 对整个渲染进程中的VS/Rasterizer/PS/Output Merger阶段提供重放的按钮，可以重新执行指定的绘制流程
+3. 创建一个selected Pixel info窗口，selected Pixel info窗口执行某一个被选择的Pixel的PS指令，显示每条指令执行的结果
+4. selected Vertex Info窗口，也需要显示完整的Vertex Shader指令流每条指令执行过程和结果
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3721,6 +3725,43 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+四项需求，其中 2/3/4 都需要 **web server 按需回调解释器**（首轮跑完主线程在 stdin 循环空闲时）。
+`ThreadingHTTPServer` 每请求一线程，故 `/replay`、`/trace_*` 在某个 handler 线程跑时 `/state`
+轮询照常在别的线程进行——重放动画依旧实时。控制器用锁串行化解释器访问（解释器非可重入）。
+
+**指令追踪（需求 3、4）**：解释器 debug 开启时本就逐语句发 `[STMT] … => …`。不另建 tracer，
+而是捕获这些行给单个项：`debug_print` 加 `_trace_sink`——置位时把语句行收进缓冲，`_trace_only`
+模式抑制正常 stdout/log（点一次追踪不污染运行日志）。`_trace_single_execution()` 强开 debug、
+重置 `_eval_counter` 使这一次 `_should_print` 为真、跑 `_execute_void_main` 再恢复全部状态（管线
+跑完后调用安全）。`trace_vs_vertex(index,…)` 追一个顶点；`trace_ps_pixel(pixel,…)` 按
+`executePS_with_params` 同样方式重建像素 PS 输入（含 ddx/ddy 的 quad 上下文）再追踪。
+
+**阶段重放（需求 2）**：`_PipelineController`（render.py）捕获已建的解释器/光栅器/深度对象+各阶段
+参数+当前 `vs_results`/`pixels`。`replay(stage)` 从该阶段起重跑（`vs→rasterizer→ps→om`）并喂给
+web 视图重放动画。**深度有状态**：`execute()` 会写入深度，二次跑会拒掉所有片元——加
+`Depth.snapshot_buffers()`/`restore_buffers()`，预绘制缓冲快照一次、每次 rast/om 重放前恢复。
+（验证：`replay vs` 从 `pixels=0` 修成 `pixels=42726`。）
+
+**像素视图缩放（需求 1）**：`drawPixels` 现应用像素视图 zoom+pan 并记录变换；`pctl` 为
+Rasterizer/PS/OM 页签显示 **+ / − / Reset** 按钮（另加滚轮缩放、拖拽平移）。`makeView` 加 `isActive`
+门控，使 VS 线框的拖拽旋转在像素页签激活时不触发。
+
+**接线**：`WebMeshView` 新路由 `GET /replay?stage=`、`/trace_vertex?i=`、`/trace_pixel?x=&y=` 派发
+给控制器（`set_controller`）。右键顶点→`traceVertex` 取回并在 Selected Vertex Info 下渲染 VS 指令
+流；左键像素（像素页签）→`tracePixel` 在新建 **Selected Pixel Info** 面板显示 PS 指令流并高亮所选
+像素。`bind_rast_pixels`/`bind_ps_pixels` 清掉上一轮 final 像素缓冲，使重放从空开始而非显示旧结果。
+
+**改动**：`hlsl_interpreter.py`（`_trace_sink`/`_trace_only`、`debug_print` sink、三个 trace 方法）、
+`output_merger.py`（`snapshot_buffers`/`restore_buffers`）、`web_mesh_view.py`（控制器钩子+3 路由、
+像素缩放/平移+按钮、Selected Pixel Info 面板、重放按钮、顶点/像素追踪取回与渲染、`isActive` 门控、
+bind_* 清 stale final）、`render.py`（`_PipelineController` 重放+追踪+深度快照恢复、上提 PS 引用、
+预绘制深度快照、控制器注册）。
+
+**验证**：页面含全部新控件。`Collision-...event104` 全管线经实时 server：`trace_vertex 0`→ok 61 行
+`[STMT]`/`[DECL]`；`trace_pixel (394,298)`→ok 15 行；`replay ps`→ok(42726px)；`replay vs`→ok
+(1149 顶点、**42726 px**——深度恢复确认，修前为 0)。**回归 118/123 不变**——trace/replay 路径在
+headless（无 mesh view、`_trace_sink` 为 None）完全惰性，`debug_print` 未置 sink 时与原行为一致。
 
 # 190
 ## Prompts
