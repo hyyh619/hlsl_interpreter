@@ -4063,3 +4063,32 @@ float 读=隐式 asfloat），但解释器 `<<`/`+` 返回普通 int，`r0.x≈4
 新 case**。BlackMyth 四 frame 批次已在上一步 step196 全部追加进 csv（且因四元数/切线帧支未整例
 通过而保留在 Dump、未入回归）。本次无需追加、运行、修复，工作区停在 `c940533`，无代码改动。
 详见 `Sessions/hlsl-interpreter-step197-dump-scan-no-new-cases.md`。
+
+# 198 EndlessSpace2 新 draw case —— 位选择 `&` 的 `_RawBits` 需穿透 FMA 路径
+
+扫描 `Dump/` 得 8 个未登记新 case（全 EndlessSpace2：1740/1953/1980/2092/2876/2991/3061/3093），
+全部追加进 `dump_case.csv`。运行（回归口径）：1740/1953/1980/2092/2876 **直接通过**；
+2991 **失败→修复后 1536/1536**；3061、3093 未整例通过（保留）。
+
+**根因（2991）**：失败集中在尾部 72 个连续顶点，`o0`(SV_POSITION)≈1e10 巨值。单顶点 trace 定位到
+DXBC 位选择惯用法 `r0 = (int4)r4 & (int4)mask`（mask 为 movc/cmp 的全 1/全 0），结果本应保留
+r4 的**浮点位模式**供下游按 float 读回。解释器 AND 结果正确（整数位模式）但：(1) `&` 分支留成普通
+int（历史上 `&|^>>%` 多喂 itof，故不打标 `_RawBits`）；(2) 更关键——消费它的是 `mad`(`a*b+c`)，
+走 `_try_fma`/`_fma`，**该融合路径从不做** `_coerce_rawbits_for_float_op`，把巨整数当数值相乘 →
+`1116106601 * cb1[17].x` → 万亿垃圾。mask=0 的通过顶点 `&0=0` 位置恰为 0，故只有可见顶点暴露。
+
+**修复**（`hlsl_interpreter.py`，两处）：① `execute_binary_op` 的 `&` 改逐 lane：操作数 lane ∈
+`{0,-1,0xFFFFFFFF}`（选择 mask 特征）时结果包 `_RawBits(_wrap_i32(res))`，否则普通 int（真整数 `&`
+不用全 1 恒等 mask，`&0` 按 int/asfloat 皆 0，安全）。② `_try_fma` 调 `_fma` 前对 `(a,b,c)` 做
+新增变参 `_coerce_rawbits_list(...)`（与成对版 `_coerce_rawbits_for_float_op` 同语义，成对版复用其逻辑）。
+
+**回归**：沙箱 45s/调用、后台进程不跨调用存活，用可续跑自建 runner（配置写 outputs，规避 mount
+不可删文件）跑完全部 154 例 → **151 PASS**（含 2991 1536/1536；顺带补入原只在 Dump 的
+`BlackMyth_frame14374_event3393` 到 Cases，30960/30960）。3 个非通过均 `git checkout` 回退基线
+A/B 证明**逐字节相同 / 纯超时**，与本改动无关，无回归。
+
+**收尾**：2991 入回归 CSV+拷进 Cases；删 Dump 中 5 个直接通过 + 已修复入回归的 2991；保留
+3061（退化 `rcp(0)=inf`→nan）、3093（SV_VertexID+StructuredBuffer draw 无 golden 无法校验）。
+详见 `Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.md`。
+
+## Git commit: 1dce6b9（已本地提交到 main；本沙箱无 git 凭据，HTTPS 无用户名，push 未成功，需在有凭据环境 `git push origin main`）

@@ -1530,14 +1530,31 @@ class HLSLInterpreter:
             else:
                 result = int(left) | int(right)
         elif op == '&':
+            # DXBC bit-select idiom: `and rDst, rSrc, rMask` where rMask is a
+            # movc/cmp result — all-ones (0xFFFFFFFF/-1) or all-zeros per lane —
+            # either preserves rSrc's bits or clears them. 3Dmigoto renders it
+            # as `(int4)rSrc & (int4)rMask`, and the masked bit pattern is then
+            # read back as a FLOAT downstream (e.g. EndlessSpace2's
+            # `o0 = cb1[k] * ((int4)r4 & mask)` position select). Tag such a
+            # result _RawBits so a float ALU op asfloat-reinterprets it (see
+            # _coerce_rawbits_for_float_op) instead of using the huge integer
+            # bit value. A genuine integer `&` never uses an all-ones identity
+            # mask (it would be a no-op), so keying on the sentinel mask lanes
+            # keeps integer index math (e.g. `x & 7`) on the plain-int path.
+            def _and_lane(l, r):
+                li, ri = int(l), int(r)
+                res = li & ri
+                if ri in (0, -1, 0xFFFFFFFF) or li in (0, -1, 0xFFFFFFFF):
+                    return _RawBits(self._wrap_i32(res))
+                return res
             if isinstance(left, list) and isinstance(right, list):
-                result = [int(l) & int(r) for l, r in zip(left, right)]
+                result = [_and_lane(l, r) for l, r in zip(left, right)]
             elif isinstance(left, list):
-                result = [int(l) & int(right) for l in left]
+                result = [_and_lane(l, right) for l in left]
             elif isinstance(right, list):
-                result = [int(left) & int(r) for r in right]
+                result = [_and_lane(left, r) for r in right]
             else:
-                result = int(left) & int(right)
+                result = _and_lane(left, right)
         elif op in ('^', '<<', '>>', '%'):
             # Bitwise xor / shifts (mask to 32-bit, as HLSL ints are 32-bit) and
             # integer modulo. Used by particle/quaternion shaders for index math.
@@ -1732,6 +1749,12 @@ class HLSLInterpreter:
         a = self.evaluate_syntax_tree(mul.left, local_vars)
         b = self.evaluate_syntax_tree(mul.right, local_vars)
         c = self.evaluate_syntax_tree(other, local_vars)
+        # A _RawBits operand (a masked/shifted register bit pattern, e.g. the
+        # `(int4)r4 & mask` position-select in EndlessSpace2) consumed by this
+        # float `mad` is read AS a float by the GPU. asfloat-reinterpret it
+        # before fusing, mirroring _coerce_rawbits_for_float_op on the
+        # non-fused ALU path — otherwise the huge integer bit value leaks in.
+        a, b, c = self._coerce_rawbits_list([a, b, c])
         return self._fma(a, b, c, c_sign)
 
     @staticmethod
@@ -6537,6 +6560,40 @@ class HLSLInterpreter:
                         for e in x]
             return x
         return _conv(left), _conv(right)
+
+    def _coerce_rawbits_list(self, vals):
+        """Variadic form of _coerce_rawbits_for_float_op: asfloat-reinterpret
+        every _RawBits in `vals` iff the context is float (at least one genuine
+        float operand present); otherwise leave the bit patterns intact for
+        integer arithmetic. Used by the fused multiply-add path, which combines
+        three operands at once."""
+        def _any_float(x):
+            if isinstance(x, float):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, float) for e in x)
+            return False
+
+        def _any_raw(x):
+            if isinstance(x, _RawBits):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, _RawBits) for e in x)
+            return False
+
+        if not any(_any_raw(v) for v in vals):
+            return vals
+        if not any(_any_float(v) for v in vals):
+            return vals
+
+        def _conv(x):
+            if isinstance(x, _RawBits):
+                return self._bits_to_float(x)
+            if isinstance(x, list):
+                return [self._bits_to_float(e) if isinstance(e, _RawBits) else e
+                        for e in x]
+            return x
+        return [_conv(v) for v in vals]
 
     @staticmethod
     def _bitcast_to_int(v, signed: bool):
