@@ -4124,3 +4124,15 @@ step 198 登记进根 csv（3061 退化 `rcp(0)=inf`→nan、3093 无 golden 无
 任何改索引的 git 操作都 `fatal: Unable to create '.git/index.lock'`，加之无 git 凭据，**无法
 commit/push**（本次亦无解释器修复需提交）。建议用户在本机清 `index.lock`、解决 `Docs/` 遗留
 unmerged 冲突并 `git push`。详见 `Sessions/hlsl-interpreter-step200-dump-scan-heaven-frame-cases-pass.md`。
+
+# 201 扫描 Dump 新 draw case —— 本次无新增；git 阻塞已清除
+
+集合对比 `Dump/*.zip`（139 个）与规范 `./dump_case.csv`（145 条）：差集为空，**没有任何未登记的
+新 case**。本次无需追加、运行、修复，**未改动任何解释器代码 / 回归清单 / dump_case.csv**。
+（注：`Dump/dump_case.csv` 为陈旧副本，用它比对会误报 16 个「新」case，实际都已在根 csv 登记，已排除。）
+
+**git 状态（相较 step 198/199/200 的重要变化）**：先前反复记录的遗留阻塞已**全部清除**——
+`.git/index.lock` 已不存在、`Docs/` unmerged 冲突已解决、`git rev-list origin/main...HEAD` = `0 0`
+（本地 main 与 origin/main 完全同步，step 198 修复 `3bb9e72` 及后续 docs 提交 `b941107` 均已在
+origin）。即无待推送的领先提交，仓库干净。详见
+`Sessions/hlsl-interpreter-step201-dump-scan-no-new-cases.md`。
