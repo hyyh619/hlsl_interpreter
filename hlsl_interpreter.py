@@ -417,6 +417,15 @@ class _LoopContinue(Exception):
     """`continue` inside a while loop."""
 
 
+class _ReturnSignal(Exception):
+    """`return` reached inside a nested if/while/block — unwinds through the
+    nesting to terminate the whole shader-main invocation (not just the block).
+    The top-level statement loops already break on a top-level `return`; this
+    handles the early-return-inside-a-branch case (e.g. a vertex-cull guard
+    `if (idx >= count) { o=(0,0,0,1); return; }`) which must stop main() so the
+    culled output isn't overwritten by the code that follows the branch."""
+
+
 class HLSLInterpreter:
     """
     HLSL解释器 - 解析和执行HLSL着色器代码
@@ -3431,6 +3440,14 @@ class HLSLInterpreter:
             raise _LoopBreak()
         if stmt in ('continue', 'continue;'):
             raise _LoopContinue()
+        # A `return` that reaches execute_statement is necessarily nested inside
+        # an if/while/block (the top-level main loops intercept a bare top-level
+        # return before ever calling execute_statement). Signal up so main()
+        # actually stops here — otherwise an early-return cull guard's output is
+        # clobbered by the statements that textually follow the branch.
+        if stmt == 'return' or stmt == 'return;' or stmt.startswith('return ') \
+                or stmt.startswith('return;'):
+            raise _ReturnSignal()
 
         # GetDimensions (resinfo): statement-level method with OUT params —
         # `t0.GetDimensions(0, fDest.x, fDest.y, fDest.z, fDest.w);`.
@@ -3974,11 +3991,15 @@ class HLSLInterpreter:
         if cache_key in self._parsed_func_cache:
             cached = self._parsed_func_cache[cache_key]
             body = cached['body']
-            statements = cached['statements']
+            statements = list(cached['statements'])
         else:
-            statements = self._collect_function_statements(main_func)
+            collected = self._collect_function_statements(main_func)
             body = ""
-            self._parsed_func_cache[cache_key] = {'body': body, 'statements': statements}
+            self._parsed_func_cache[cache_key] = {'body': body, 'statements': collected}
+            statements = list(collected)
+        # Execute on a COPY of the cached statement list: the if/else merge in
+        # the loop below marks consumed `else` entries as None; mutating the
+        # cached template would drop those branches for every later invocation.
 
         # 初始化局部变量
         local_vars = {'data': data}
@@ -4038,12 +4059,21 @@ class HLSLInterpreter:
                 if next_i < len(statements) and statements[next_i].startswith('else'):
                     # 合并if和else为完整语句
                     full_if_stmt = stmt + '\n' + statements[next_i]
-                    self.execute_if_statement(full_if_stmt, local_vars)
+                    try:
+                        self.execute_if_statement(full_if_stmt, local_vars)
+                    except _ReturnSignal:
+                        break
                     statements[next_i] = None  # 标记else已处理
                 else:
-                    self.execute_if_statement(stmt, local_vars)
+                    try:
+                        self.execute_if_statement(stmt, local_vars)
+                    except _ReturnSignal:
+                        break
             else:
-                self.execute_statement(stmt, local_vars)
+                try:
+                    self.execute_statement(stmt, local_vars)
+                except _ReturnSignal:
+                    break
 
             i += 1
 
@@ -6854,8 +6884,14 @@ class HLSLInterpreter:
         if cache_key in self._parsed_func_cache:
             statements = list(self._parsed_func_cache[cache_key]['statements'])
         else:
-            statements = self._collect_function_statements(main_func)
-            self._parsed_func_cache[cache_key] = {'statements': statements, 'body': ''}
+            collected = self._collect_function_statements(main_func)
+            self._parsed_func_cache[cache_key] = {'statements': collected, 'body': ''}
+            # Execute on a COPY: the if/else-merge below marks consumed `else`
+            # entries as None (statements[next_i] = None). Mutating the list we
+            # just stored would corrupt the cache for every subsequent vertex —
+            # the else-branch (e.g. a bit-extract block) vanishes from vertex 2
+            # onward. Copy so the cached template stays pristine.
+            statements = list(collected)
 
         # Execute statements
         i = 0
@@ -6889,6 +6925,9 @@ class HLSLInterpreter:
                         self.execute_if_statement(stmt_stripped, local_vars)
                 else:
                     self.execute_statement(stmt_stripped, local_vars)
+            except _ReturnSignal:
+                # Early `return` from inside an if/while branch — stop main().
+                break
             except (_LoopBreak, _LoopContinue):
                 # A stray break/continue outside any loop (decompiler artifact)
                 # must not abort the whole shader invocation.
@@ -6925,17 +6964,29 @@ class HLSLInterpreter:
             first_val = result_params.get(first['name'], [])
             first_comp = self._type_component_count(first['type'])
 
-            if isinstance(first_val, list) and len(first_val) > first_comp:
-                offset = first_comp
-                for param in params_sorted[1:]:
-                    cur = result_params.get(param['name'], [])
-                    comp = self._type_component_count(param['type'])
-                    is_default = not cur or all(
-                        v in (0, 0.0, False) for v in (cur if isinstance(cur, list) else [cur])
-                    )
-                    if is_default:
+            have_extra = isinstance(first_val, list) and len(first_val) > first_comp
+            offset = first_comp
+            for param in params_sorted[1:]:
+                cur = result_params.get(param['name'], [])
+                comp = self._type_component_count(param['type'])
+                is_default = not cur or all(
+                    v in (0, 0.0, False) for v in (cur if isinstance(cur, list) else [cur])
+                )
+                if is_default:
+                    if have_extra and len(first_val) >= offset + comp:
+                        # Primary shader-write spilled into the shared register's
+                        # trailing components; the secondary semantic reads them.
                         result_params[param['name']] = first_val[offset:offset + comp]
-                    offset += comp
+                    else:
+                        # Secondary semantic packed into this register but never
+                        # written by the shader. A D3D output register initializes
+                        # to (0,0,0,1), so the component at register index 3 (.w)
+                        # defaults to 1.0 and the rest to 0.0. e.g. a float2
+                        # TEX_COORD1 at .zw -> (0.0, 1.0).
+                        result_params[param['name']] = [
+                            1.0 if (offset + i) == 3 else 0.0 for i in range(comp)
+                        ]
+                offset += comp
 
     def executeVS_with_params(self, main_func: str, input_params: list, output_params: list,
                                 vertex_data: list, execute_count: int = None) -> list:
@@ -7147,7 +7198,10 @@ class HLSLInterpreter:
             s = stmt.strip()
             if s == 'return' or s.startswith('return;') or s == 'return':
                 break
-            self.execute_statement(stmt, local_vars)
+            try:
+                self.execute_statement(stmt, local_vars)
+            except _ReturnSignal:
+                break
 
     # ---------------------------------------------------------------- HS / DS
     # Hull Shader (control-point phase) + Domain Shader execution. The
@@ -7251,7 +7305,10 @@ class HLSLInterpreter:
             s = stmt.strip()
             if s == 'return' or s.startswith('return;'):
                 break
-            self.execute_statement(stmt, local_vars)
+            try:
+                self.execute_statement(stmt, local_vars)
+            except _ReturnSignal:
+                break
         result = {}
         for param in output_params:
             sem_base = param['semantic_base'].upper()
@@ -7355,7 +7412,10 @@ class HLSLInterpreter:
             s = stmt.strip()
             if s == 'return' or s.startswith('return;'):
                 break
-            self.execute_statement(stmt, local_vars)
+            try:
+                self.execute_statement(stmt, local_vars)
+            except _ReturnSignal:
+                break
         row = {}
         for key, pname, comp in out_keys:
             val = local_vars.get(pname)

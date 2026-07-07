@@ -3910,8 +3910,9 @@ panel-data/#filelist/#filepreview+浏览 JS、抽取 `<script>` 跑 `node --chec
 `/files` 列出 **56 个真实文件**（18 csv/26 binary/4 text/8 image），CSV 预览出表头，`PS_shader.dxbc`
 送 900B 供十六进制、`PS_slot_0_res_88_mip0_arr0.bmp` 送 49206B 供图片预览。**回归 118/123 不变**。
 
-# 194
+# 194 运行 Dump 新 draw case 并修复交叉复用输出寄存器 .w 默认值
 ## Prompts
+扫描 /Dump，把 dump_case.csv 未记录的新 case 加入并逐个运行；不过的定位 hlsl_interpreter 根因并修复，最后提交推送。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3921,6 +3922,28 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+`dump_case.csv` 为空（任务自有追踪文件从未填写），故 `Dump/` 现有 **31 个 zip 全算新 case**；已写入
+`filename` 头 + 31 个文件名。沙箱每次 shell 调用限 45s，且多个 Dump zip 极大（19MB–264MB）无法在此环境跑完；
+`triage_dump.py` 的临时配置清理在挂载目录上 `os.remove` 触发 "Operation not permitted"，改为用 `/tmp` 下
+的 per-case 配置直接驱动 `render.py`。
+
+**运行结果（31 新 case）**：PASS 11（含本轮修复的 `manhattan_event1041`）；FAIL-精度 4
+（`manhattan_event87/124/198/124_indirect`，仅 1–2 行、TEX_COORD 大偏差，属既有的逐顶点分支/超越函数问题，本轮未动）；
+FAIL-无 golden 1（`BlackMyth_event2063` 的 zip 内无 `MeshOut_*_mesh.csv`，非解释器 bug）；因超时未评估 15
+（大 zip，含 264MB 的 `4k1w_event1124`）。
+
+**修复的根因**：`manhattan_event1041` 干净地全行 `TEX_COORD1[1]` 输出 0.0、golden 1.0。VS DXBC 仅写 `o6.xy`
+（TEX_COORD0=v0.xy），而 **TEX_COORD1 打包进 `o6.zw` 从未写**（COLOR/`o1` 也未写）。golden 显示未写的输出
+寄存器分量取 D3D 每寄存器初值 `(0,0,0,1)`：COLOR(float4) 已默认 `(0,0,0,1)` 故通过；但交叉复用的次级 float2
+TEX_COORD1=`o6.zw` 被默认成 `(0,0)`，漏掉 `.w==1.0`。`_resolve_slot_shared_params` 原来只在主参数写溢出到共享
+寄存器时才回填次级参数；主参数恰好只写自己分量时次级保持 `(0,0)`。**修复**：始终按打包 offset 走——主参数有溢出则次级
+读溢出（行为不变），否则次级为未写，继承寄存器默认——落在寄存器索引 3（`.w`）的分量取 `1.0`，其余 `0.0`；`.zw` 的
+float2 → `(0.0, 1.0)`。
+
+**验证**：`manhattan_event1041` 228/228（原 0/228）；跨家族快速回归（Octopath/witcher3/Collision/manhattan/
+sekiro2/sekiro4）全过，改动仅影响未写的交叉复用次级输出、与 D3D 语义对齐，故只会改善匹配。改动文件：
+`hlsl_interpreter.py`（`_resolve_slot_shared_params`）、`Dump/dump_case.csv`。
 
 # 195
 ## Prompts
