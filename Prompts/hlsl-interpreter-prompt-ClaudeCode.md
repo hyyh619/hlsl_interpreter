@@ -4056,3 +4056,10 @@ float 读=隐式 asfloat），但解释器 `<<`/`+` 返回普通 int，`r0.x≈4
 新 case 的 `sv_position` 从 `-2.7e13`→`-0.078`（golden `-0.118`），但四元数/切线帧重构支仍令
 `o1.xyz(TEXCOORD11)=0`，**未整例通过** → 不删 zip、不入回归，留作后续。详见
 `Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.md`。
+
+# 197 扫描 Dump 新 draw case —— 本次无新增
+
+集合对比 `Dump/*.zip`（123 个）与 `dump_case.csv`（123 条）：差集为空，**没有任何未登记的
+新 case**。BlackMyth 四 frame 批次已在上一步 step196 全部追加进 csv（且因四元数/切线帧支未整例
+通过而保留在 Dump、未入回归）。本次无需追加、运行、修复，工作区停在 `c940533`，无代码改动。
+详见 `Sessions/hlsl-interpreter-step197-dump-scan-no-new-cases.md`。
