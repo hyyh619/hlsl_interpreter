@@ -58,5 +58,13 @@
 ## 5. 结论
 
 本小时扫描：`Dump/` 139 个 zip 全部已登记在规范 `dump_case.csv`，**无新增 draw case**，
-无需运行 / 修复 / 提交。相较上一次运行的唯一变化是**仓库 git 阻塞（index.lock 残留、Docs 冲突、
-领先未推送）已清除，main 与 origin 同步**。
+无需运行 / 修复。相较上一次运行的唯一变化是**仓库 git 阻塞（index.lock 残留、Docs 冲突）已清除**，
+扫描时 main 与 origin 同步。
+
+## 6. 本次 git 提交结果（补记）
+
+本 Session 文档 + Prompts 摘要已**本地提交**：`4216e29 docs(step201): hourly dump scan — no new
+cases; note git blockers cleared`（2 files, +74）。**push 失败**：`fatal: could not read Username for
+'https://github.com'` —— 本沙箱仍无 git 凭据（HTTPS 无用户名）。故本地 main 现领先 origin/main 1 个提交。
+提交过程有若干 `.git/objects/tmp_obj_* Operation not permitted` 的清理告警（mount 禁删文件所致），
+但提交本身成功。**建议用户在本机 `git push origin main`** 推送该 docs 提交。
