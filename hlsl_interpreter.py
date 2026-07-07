@@ -5975,6 +5975,13 @@ class HLSLInterpreter:
                 vals = list(struct.unpack_from(f'<{comp_count}f', raw))
         except struct.error:
             return [0.0] * comp_count if comp_count > 1 else 0.0
+        # B8G8R8A8 / B8G8R8X8 store bytes in memory order B,G,R,A, but the input
+        # assembler delivers them to the shader as .x=R, .y=G, .z=B, .w=A. Swap
+        # R and B so `v.x` is red (BlackMyth's B8G8R8A8_UNORM vertex colour fed
+        # sRGB-decoded into COLOR1 had .x/.z swapped; symmetric all-1.0 colours
+        # hid it on the sibling attribute).
+        if fmt_u.startswith('B8G8R8') and len(vals) >= 3:
+            vals[0], vals[2] = vals[2], vals[0]
         if comp_count == 1:
             return vals[0]
         return vals

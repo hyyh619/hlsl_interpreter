@@ -4139,8 +4139,7 @@ origin）。即无待推送的领先提交，仓库干净。详见
 
 # 202 修复blackmyth 0/N问题
 ## Prompts
-修复下列问题
-Every one is a BlackMyth vertex-compression shader producing 0/N — the exact quaternion/tangent-frame path step196 flagged as unsolved (e.g. event6689 = 0/47973, event4713 = 0/48). Not a size or timeout issue — the interpreter runs them fine, they just don't match golden yet.
+修复 BlackMyth 顶点压缩解码 shader 的 0/N 全失败（step196/198 之后仍未解决的"四元数/切线帧重构支"）。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4151,8 +4150,19 @@ Notice:
 
 ## Claude Code Session
 
-# 203
+用最小失败标本 `BlackMyth_frame19470_event7117`（仅 6 顶点）逐语句 [STMT] 轨迹定位到**两处通用的解析器/控制流根因**（详见 `Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.md`）：
+
+1. **cast 贪婪吞掉三元表达式**（`hlsl_syntax_tree.py`）：`(int)r5.z ? A : B` 被解析成 `(int)(r5.z ? A : B)`，把选中分支**值截断为 0**，使切线基向量 `r5.xyz` 整支归零（位置对所有顶点坍缩成同值、切线符号翻转）。三元条件运算符在 HLSL 里**优先级最低**，修复是把 top-level `?` 的检测移到 cast/位运算守卫**之前**。
+
+2. **`;` 后的 `else` 被拆成孤儿语句**（`hlsl_interpreter.py` `GenerateStmts`）：`if (c) s; else if(..){..} else ..` 在 `s` 后的 `;` 处被切断，`else if` 分支静默丢弃 → `ubfe` 位域提取（切线符号 bit）从未执行。`}` 后已有的 `else` 前瞻没覆盖 `;` 的情形；修复是给 top-level `;` 切分加同样的 `else` 前瞻。
+
+**结果**：`event7117` `0/6 → 6/6`；批量复跑此前 0/N 的小 BlackMyth 另新增通过 `event8441/8484/2939/5690`。全量回归 **151/154**，与 step198 基线逐一致（3 个未过均为已证无关的既有失败，`BlackMyth_event3393` 仍 30960/30960）→ **零回归**。已把 `event7117` 加入回归套件锁死修复。两处都是**通用正确性修复**，非 BlackMyth 专用补丁。仍有 `event8040`（COLOR1 分量互换）、`event9319` 等**不同根因**的 BlackMyth 失败，留作后续。
+
+
+# 203 修复BlackMyth剩余case的问题
 ## Prompts
+修复下列BlackMyth问题
+Not every BlackMyth case is fixed — the remaining fails are distinct root causes: event8040 has a COLOR1 .x/.z component swap; event9319/3256/9526/9829 show a deeper decode variant (TEXCOORD11/TEXCOORD7 still off). Those are separate follow-ups, flagged in the session log.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4162,6 +4172,14 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage.md`。
+
+**修复 `event8040`（B8G8R8A8 顶点色 R/B 通道交换）**：这是个简单的 sRGB 顶点色 shader（非压缩解码那支）。`COLOR1.x`/`.z` 对调——`ATTRIBUTE4 : B8G8R8A8_UNORM` 在内存里按 B,G,R,A 排布，但输入装配交给 shader 时是 `.x=R,.y=G,.z=B,.w=A`。`_decode_vertex_element` 对 `UNORM/1字节` 直接按内存序 `[B,G,R,A]` 解码，漏了 R/B 交换（同 shader 的 `ATTRIBUTE3` 也是 B8G8R8A8 但数据全 1.0，交换不可见，所以 `COLOR0` 碰巧对）。修复：解码后若格式以 `B8G8R8` 开头则交换分量 0 与 2。`event8040` `0/6 → 6/6`，通用修复，已入回归。
+
+**定位但未修 `event9319` 家族（3256/9526/9829/15293_8040）**：这是与 step201 修好的 `event7117` **不同的、更复杂的**骨骼/morph 顶点解码 shader。逐语句轨迹：法线 `TEXCOORD10` 正确，但切线 `TEXCOORD11`、世界坐标 `TEXCOORD7` 错。关键：`o0`(法线) 因本例 `r15.x=r15.y≈0` 实际只等于 `r15.z*r18`（基第 2 列），**并不约束基第 0/1 列**；而 `o1`(切线) 重度依赖基第 0/1 列。确认 `r2.xyz` 到输出间无覆盖（解释器数据流无误）→ 切线错是**基第 0/1 列与真机不符**。矛盾在于同段解码代码在 `event7117` 上整例通过，故差异应来自输入数据装载或数据相关分支；无逐语句 golden 难以确证，贸然改动风险高（易砸已通过例），本轮**不改**，如实记录。
+
+**回归**：全量 **152/155**（新增 `event7117`），3 个未过均为与本改动无关的既有失败（`witcher16834`、`OldWorld_1034/2767`）→ B8G8R8A8 修复零回归。`event8040` 也已加入回归。诚实记录：本轮修 1 个、留 5 个（不同根因）。
 
 # 204
 ## Prompts
@@ -5340,23 +5358,3 @@ Notice:
 ## Claude Code Session
 
 # 302
-## Prompts
-
-修复 BlackMyth 顶点压缩解码 shader 的 0/N 全失败（step196/198 之后仍未解决的"四元数/切线帧重构支"）。
-
-Notice:
-把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
-把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
-
-
-## Git commit: 
-
-## Claude Code Session
-
-用最小失败标本 `BlackMyth_frame19470_event7117`（仅 6 顶点）逐语句 [STMT] 轨迹定位到**两处通用的解析器/控制流根因**（详见 `Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.md`）：
-
-1. **cast 贪婪吞掉三元表达式**（`hlsl_syntax_tree.py`）：`(int)r5.z ? A : B` 被解析成 `(int)(r5.z ? A : B)`，把选中分支**值截断为 0**，使切线基向量 `r5.xyz` 整支归零（位置对所有顶点坍缩成同值、切线符号翻转）。三元条件运算符在 HLSL 里**优先级最低**，修复是把 top-level `?` 的检测移到 cast/位运算守卫**之前**。
-
-2. **`;` 后的 `else` 被拆成孤儿语句**（`hlsl_interpreter.py` `GenerateStmts`）：`if (c) s; else if(..){..} else ..` 在 `s` 后的 `;` 处被切断，`else if` 分支静默丢弃 → `ubfe` 位域提取（切线符号 bit）从未执行。`}` 后已有的 `else` 前瞻没覆盖 `;` 的情形；修复是给 top-level `;` 切分加同样的 `else` 前瞻。
-
-**结果**：`event7117` `0/6 → 6/6`；批量复跑此前 0/N 的小 BlackMyth 另新增通过 `event8441/8484/2939/5690`。全量回归 **151/154**，与 step198 基线逐一致（3 个未过均为已证无关的既有失败，`BlackMyth_event3393` 仍 30960/30960）→ **零回归**。已把 `event7117` 加入回归套件锁死修复。两处都是**通用正确性修复**，非 BlackMyth 专用补丁。仍有 `event8040`（COLOR1 分量互换）、`event9319` 等**不同根因**的 BlackMyth 失败，留作后续。
