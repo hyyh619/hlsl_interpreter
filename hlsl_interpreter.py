@@ -1424,6 +1424,10 @@ class HLSLInterpreter:
         # Collapse a list-of-lists operand to its first row so we degrade to a
         # wrong-but-finite value instead of crashing.
         if op in ('+', '-', '*', '/'):
+            # A raw register bit pattern (_RawBits) consumed by a float ALU op is
+            # read AS a float (asfloat), not as its integer value. Reinterpret
+            # before the numeric branches below.
+            left, right = self._coerce_rawbits_for_float_op(left, right)
             if isinstance(left, list) and left and isinstance(left[0], list):
                 left = left[0]
             if isinstance(right, list) and right and isinstance(right[0], list):
@@ -1537,12 +1541,21 @@ class HLSLInterpreter:
         elif op in ('^', '<<', '>>', '%'):
             # Bitwise xor / shifts (mask to 32-bit, as HLSL ints are 32-bit) and
             # integer modulo. Used by particle/quaternion shaders for index math.
+            # A LEFT shift is the tell-tale of the GPU float-reconstruction idiom
+            # `asfloat((exp << 23) + bias)`: the result is a register bit pattern
+            # meant to be read back as a float, so tag `<<` results _RawBits so a
+            # downstream float ALU op asfloat-reinterprets them (see
+            # _coerce_rawbits_for_float_op). Other bitwise results (`^`, `>>`,
+            # `%`, `&`, `|`) commonly feed integer-to-float VALUE conversions
+            # (itof/utof) and must stay plain ints, or passing cases regress.
             def _bit(a, b):
                 ia, ib = int(a) & 0xFFFFFFFF, int(b) & 0xFFFFFFFF
                 if op == '^':
                     r = ia ^ ib
                 elif op == '<<':
                     r = (ia << (ib & 31)) & 0xFFFFFFFF
+                    r = r - 0x100000000 if r >= 0x80000000 else r
+                    return _RawBits(r)
                 elif op == '>>':
                     r = ia >> (ib & 31)
                 else:  # '%' — operate on the signed values
@@ -6474,6 +6487,56 @@ class HLSLInterpreter:
             self.log_output("Repaired ishr cast signedness from disasm "
                             f"({shrs.count('i')} arithmetic shift(s)).")
         return out
+
+    @staticmethod
+    def _bits_to_float(bits) -> float:
+        """Reinterpret a 32-bit integer pattern as a float32 (asfloat). The GPU
+        idiom `asfloat((exp << 23) + bias)` builds a float exponent in the
+        integer pipe, then reads the register as a float; the interpreter must
+        bitcast rather than use the raw integer value."""
+        b = int(bits) & 0xFFFFFFFF
+        try:
+            return struct.unpack('<f', struct.pack('<I', b))[0]
+        except (struct.error, ValueError, OverflowError):
+            return float(bits)
+
+    def _coerce_rawbits_for_float_op(self, left, right):
+        """A `_RawBits` value is a raw register bit pattern (from an integer bit
+        chain like `(uint)x << 23`). When such a register is consumed by a FLOAT
+        ALU op — i.e. the partner operand is a genuine float — DXBC reads its
+        bits AS a float, so the `_RawBits` must be asfloat-reinterpreted rather
+        than used as its (huge) integer value. This drives BlackMyth's packed
+        position-decompression shaders, where `r2.xyz * r0.xxx` multiplies a
+        decoded float vector by an `asfloat(exp<<23)` scale. If neither side
+        carries a genuine float the context is integer arithmetic and the raw
+        bits pass through untouched."""
+        def _any_float(x):
+            if isinstance(x, float):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, float) for e in x)
+            return False
+
+        def _any_raw(x):
+            if isinstance(x, _RawBits):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, _RawBits) for e in x)
+            return False
+
+        if not (_any_raw(left) or _any_raw(right)):
+            return left, right
+        if not (_any_float(left) or _any_float(right)):
+            return left, right  # pure-integer context: leave bit patterns alone
+
+        def _conv(x):
+            if isinstance(x, _RawBits):
+                return self._bits_to_float(x)
+            if isinstance(x, list):
+                return [self._bits_to_float(e) if isinstance(e, _RawBits) else e
+                        for e in x]
+            return x
+        return _conv(left), _conv(right)
 
     @staticmethod
     def _bitcast_to_int(v, signed: bool):

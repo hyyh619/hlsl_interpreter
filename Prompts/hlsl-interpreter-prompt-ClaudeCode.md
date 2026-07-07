@@ -4037,3 +4037,22 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+# 196 运行 Dump 新 draw case（BlackMyth 批次），修复 `asfloat(exp<<23)` 位模式被当整数值用
+
+`Dump/` 新增 84 个 case（全部 BlackMyth，frame12199/14374/15293/19470），已全部追加进
+`Dump/dump_case.csv`。抽样运行**一律 0/N**，且量级荒诞（`sv_position ≈ -2.7e13`）。
+
+**根因**：这批是 BlackMyth 顶点位置/法线**压缩解码** shader，用 `asfloat((exp<<23)+bias)` 惯用法在
+整数管线里构造 float 的位模式，随后按 float 读回缩放解码向量。DXBC 寄存器带类型（`ishl` 写位、`mul` 按
+float 读=隐式 asfloat），但解释器 `<<`/`+` 返回普通 int，`r0.x≈41亿` 直接乘进 `r2.xyz*r0.xxx` → 万亿垃圾。
+
+**修复**（`hlsl_interpreter.py`）：新增 `_bits_to_float`（asfloat）与 `_coerce_rawbits_for_float_op`
+（`+-*/` 中 `_RawBits` 遇真浮点即先 asfloat，纯整数上下文透传）；`execute_binary_op` 把**左移 `<<`**
+结果打标 `_RawBits`（`<<23` 是塞指数位的 float 重构标志），其余 `& | ^ >> %` 保持普通 int。
+
+**教训**：初版把所有位运算都打标 `_RawBits`，砸了回归例 `BlackMyth_frame14374_event3393`
+（30960→305）；收窄到**只标 `<<`** 后回归恢复满分、巨值 bug 仍修好。抽样 14 个各家族回归例全 PASS。
+新 case 的 `sv_position` 从 `-2.7e13`→`-0.078`（golden `-0.118`），但四元数/切线帧重构支仍令
+`o1.xyz(TEXCOORD11)=0`，**未整例通过** → 不删 zip、不入回归，留作后续。详见
+`Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.md`。
