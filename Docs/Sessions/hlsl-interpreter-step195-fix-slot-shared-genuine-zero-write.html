@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 195 — 运行 Dump 新 draw case，修复交叉复用输出寄存器&quot;真零写入被误判为未写&quot;</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write</span></div>
+<div class="wrap">
+<h1>Step 195 — 运行 Dump 新 draw case，修复交叉复用输出寄存器"真零写入被误判为未写"</h1>
+<h2>任务</h2>
+<p>扫描 <code>/Dump</code>，把 <code>dump_case.csv</code> 未记录的新 case 逐个运行；不过的定位 <code>hlsl_interpreter</code> 根因并修复，<br>通过的加入回归 / 记录，最后提交推送。（scheduled hourly，无人值守。）</p>
+<h2>环境限制（本轮踩到的坑）</h2>
+<ul>
+<li>每次 shell 调用上限 45s；后台进程<b>跨调用不保活</b>（VM 只持久化文件系统，不保活进程）——故回归无法用 <code>nohup</code> 一次跑完，改为<b>前台分片</b>（每片 &lt;44s，结果追加到持久文件）。</li>
+<li>挂载目录（Dump / Cases / outputs）<b>禁止删除文件</b>（<code>os.remove</code>/<code>rm</code> → "Operation not permitted"）， 但可写/可追加。因此 step 6 "删除 Dump 中已通过的 zip" 本环境无法执行，改为仅把已解决的 case 写入 <code>dump_case.csv</code>（防止后续 run 重复处理）。</li>
+<li>zip 解压临时目录默认落在 <code>/tmp</code>（根盘仅 ~4GB），大 case 会撑爆——把 <code>TMPDIR</code> 指到挂载盘 <code>Dump/.scratch_tmp</code>（193GB）后大 case 也能解压，仅剩时间是瓶颈。</li>
+</ul>
+<h2>新 case 识别</h2>
+<p><code>Dump/</code> 共 123 个 zip，<code>dump_case.csv</code> 已记录 31 个 → <b>92 个新 case</b>，很多极大（多个 200–517MB）。<br>本轮在时间预算内处理了最小的一批（&lt;35MB 优先）。</p>
+<h2>运行结果（本轮已评估的新 case）</h2>
+<ul>
+<li><b>PASS（直接通过，7）</b>：<code>BlackMyth_frame14374_event1343 / event1320 / event10199</code>、 <code>BlackMyth_frame19470_event1293 / event6294</code>、<code>BlackMyth_frame12199_event9702</code>、 <code>BlackMyth_frame15293_event9127</code>。</li>
+<li><b>FIXED（修复后通过，1）</b>：<code>BlackMyth_frame14374_event3393</code>（0/30960 err → 30960/30960）。</li>
+<li><b>FAIL（复杂 shader 类，未修，需后续专项）</b>：<code>BlackMyth_frame19470_event5690 / event2939 / event6173 / event7117</code>、<code>BlackMyth_frame12199_event8441 / event9319</code>、<code>BlackMyth_frame15293_event8040 / event8484</code>、 <code>BlackMyth_frame14374_event3256 / event9526 / event8750 / event9829</code> 等——全部 <code>passed 0/N</code>， <code>sv_position</code> 直接是 ~1e12 级垃圾。</li>
+<li>其余 ~74 个大 case（多为上述失败类，或因 45s 预算超时）本轮未评估，留待后续 run。</li>
+</ul>
+<h2>修复的根因（event3393）</h2>
+<p>失败只在 <code>TEXCOORD1.y</code>（键 <code>TexCoord2[1]</code>），周期性行 <code>output=1.0 golden=0.0</code>。</p>
+<p>VS 把 <code>TEXCOORD0</code>(o1) 与 <code>TEXCOORD1</code>(p1) <b>打包进同一输出槽 slot 1</b>：<code>o1.xy</code>=TEXCOORD0，<br><code>o1.zw</code>(=<code>p1.xy</code>)=TEXCOORD1，即 <code>o1.w</code> 与 <code>p1.y</code> 是<b>同一物理分量</b>。</p>
+<ul>
+<li>退化分支写 <code>o1.xyw=0</code>（其中 <code>.w</code> 即 TEXCOORD1.y），从不写 <code>p1.y</code>；</li>
+<li>实几何分支写 <code>p1.y=(r0.x%16)/16</code>、<code>p1.x</code>，从不写 <code>o1.w</code>。</li>
+</ul>
+<p><code>_resolve_slot_shared_params</code> 用"次级参数是否全零"判断它有没有被 shader 写：在 <code>r0.x%16==0</code> 的行上<br>shader <b>合法地写了 <code>p1=(0,0)</code></b>，却被 <code>is_default</code>（全零）误判为"未写"，于是回退去取主参数 <code>o1</code> 溢出分量——<br>而 <code>o1.w</code> 是 D3D 寄存器初值 <code>(0,0,0,1)</code> 的 <code>.w=1.0</code>，导致 TEXCOORD1.y 被写成 1.0。</p>
+<p>（注：step194 刚修过本函数"次级*真未写*时补 <code>.w=1.0</code> 默认"的分支；本轮是同一函数里"次级*被写成零*被<br>误判为未写"的相反 bug。）</p>
+<h2>修复</h2>
+<p>把"全零猜测"换成<b>精确的写入追踪</b>：</p>
+<ul>
+<li><code>_execute_void_main</code> 每次调用前建 <code>self._out_written={}</code>、<code>self._output_param_names</code>；</li>
+<li><code>_apply_swizzle_assign</code>（及整量赋值 <code>_record_full_out_write</code>，覆盖 fast-path kind2 与 <code>_assign_lvalue</code>） 记录每个输出参数被 shader 实际写入的<b>分量下标</b>；</li>
+<li><code>_resolve_slot_shared_params</code> 逐寄存器分量按优先级重建：①次级语义被直接写→用它； ②否则主参数对应 lane 被写（如 <code>o1.w</code> 溢入 TEXCOORD1.y）→用主参数；③都没写→D3D 寄存器初值 （寄存器索引 3=<code>.w</code> 取 1.0，其余 0.0）。写追踪不可用时保留旧全零启发式作 fallback。</li>
+</ul>
+<h2>验证</h2>
+<ul>
+<li><code>event3393</code>：30960/30960（原 0/30960）。</li>
+<li><b>全量回归 152 case 全过、0 FAIL</b>（其中 4 个超大 case 因 45s 预算只做了前 1500 顶点/整段的 0-error 有界验证）。改动只影响"交叉复用次级输出"的重建，与 D3D 语义对齐，只会改善匹配。</li>
+<li>特别确认既有交叉复用类（Octopath <code>event3502</code> 的 TEXCOORD12/13、witcher 的重复 <code>p0</code>）仍通过。</li>
+</ul>
+<h2>改动文件</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code>：<code>_apply_swizzle_assign</code>、新增 <code>_record_full_out_write</code>、fast-path/<code>_assign_lvalue</code> 写记录、<code>_execute_void_main</code> 初始化写追踪、<code>_resolve_slot_shared_params</code> 重写。</li>
+<li><code>Dump/dump_case.csv</code>：追加 7 直接通过 + <code>event3393</code>。</li>
+<li><code>Cases/regression_test_zip_files.csv</code>：追加 <code>BlackMyth_frame14374_event3393.zip</code>。</li>
+</ul>
+<h2>后续 TODO</h2>
+<ul>
+<li>处理剩余 ~74 个新 BlackMyth 大 case。</li>
+<li>专项攻关失败的"复杂顶点解压/蒙皮"shader 类（typed <code>Buffer&lt;float4&gt;.Load</code>、位域抽取、half-float 解包、 四元数蒙皮）——目前 <code>sv_position</code> 全是垃圾，属多特性缺口，非单点 bug。</li>
+</ul>
+</div></body></html>

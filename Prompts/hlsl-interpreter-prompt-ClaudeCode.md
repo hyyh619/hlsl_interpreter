@@ -4092,3 +4092,35 @@ A/B 证明**逐字节相同 / 纯超时**，与本改动无关，无回归。
 详见 `Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.md`。
 
 ## Git commit: 1dce6b9（已本地提交到 main；本沙箱无 git 凭据，HTTPS 无用户名，push 未成功，需在有凭据环境 `git push origin main`）
+
+# 199 扫描 Dump 新 draw case —— 本次无新增
+
+集合对比 `Dump/*.zip` 与**规范 `dump_case.csv`（仓库根 `./dump_case.csv`）**：差集为空，**没有任何未登记的
+新 case**。`Dump/` 仅剩 `EndlessSpace2_event3061`、`EndlessSpace2_event3093` 两个 zip，二者均已在
+step 198 登记进根 csv（3061 退化 `rcp(0)=inf`→nan、3093 无 golden 无法校验，皆保留、未动）。本次无需
+追加、运行、修复，**未改动任何解释器代码 / 回归清单 / dump_case.csv**。
+
+**注意（遗留 git 状态）**：`git status` 显示 `Docs/` 下若干生成文档处于 unmerged（UU/AA）冲突，且
+`.git/index.lock` 残留、该 mount 禁止删除文件 → 沙箱侧 `git add/commit/push` 会失败。冲突**仅限
+`Docs/`**，核心解释器代码完好；HEAD 仍为 `3bb9e72`（step 198 修复），领先 origin 1 提交未推送。
+本次刻意不做 git 手术，**建议用户在本机**解决 `Docs/` 冲突、清理 `index.lock`、`git push` 现有领先提交。
+详见 `Sessions/hlsl-interpreter-step199-dump-scan-no-new-cases.md`。
+
+# 200 扫描 Dump 新 draw case —— 14 例全部直接通过，无需修复
+
+集合对比 `Dump/*.zip` 与规范 `./dump_case.csv`，得 **14 个未登记新 case**：
+`Frame-frame9222_event1734/1971` 与 `heaven_frame2596_event65/801/1944/2134/7347/7416/7448/7582/7611/8284/8537/8928`。
+其中 13 个本就已在回归清单（`Cases/` 下已有 zip），仅 `heaven_frame2596_event65` 为真正全新。
+
+用 `triage_dump.py --list ... --vs-only` 运行（VS-vs-golden 口径），**14 例全部直接通过**：0 条
+`Error:`、golden 全行匹配（如 1734=8475/8475、event65=19095/19095、event8928=7248/7248 等）。
+**未发现需要修复的解释器缺陷，未改动任何 `hlsl_interpreter` 代码。**
+
+**收尾**：14 个 case 名全部追加进 `dump_case.csv`（现 146 行）。按任务约定「直接通过只登记
+`dump_case.csv`、不入回归」，未改回归清单（13 个本就在回归里）。
+
+**环境限制（同 step 198/199，非任务失败）**：本 mount 禁止删除/重命名文件 → (1) 无法从 `Dump/`
+删除已通过 zip（保留原地，已登记故下次扫描会跳过）；(2) `.git/index.lock` 残留且不可删除，
+任何改索引的 git 操作都 `fatal: Unable to create '.git/index.lock'`，加之无 git 凭据，**无法
+commit/push**（本次亦无解释器修复需提交）。建议用户在本机清 `index.lock`、解决 `Docs/` 遗留
+unmerged 冲突并 `git push`。详见 `Sessions/hlsl-interpreter-step200-dump-scan-heaven-frame-cases-pass.md`。

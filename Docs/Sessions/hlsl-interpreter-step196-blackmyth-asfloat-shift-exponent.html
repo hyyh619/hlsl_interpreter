@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 196 — 运行 Dump 新 draw case（BlackMyth 批次），修复 asfloat(exp&lt;&lt;23) 位模式被当整数值用</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent</span></div>
+<div class="wrap">
+<h1>Step 196 — 运行 Dump 新 draw case（BlackMyth 批次），修复 <code>asfloat(exp&lt;&lt;23)</code> 位模式被当整数值用</h1>
+<p>Date: 2026-07-07</p>
+<h2>任务</h2>
+<p>Scheduled hourly develop run（无人值守）。扫描 <code>/Dump</code>，把 <code>Dump/dump_case.csv</code> 未记录的新<br>case 记录并逐个运行；不过的定位 <code>hlsl_interpreter</code> 根因并修复；修复后能过的加入回归、直接过的记录<br>并删 zip；最后提交推送，并把思考/执行/结果写入本文件。</p>
+<h2>环境限制</h2>
+<ul>
+<li>每次 shell 调用上限 45s，进程跨调用不保活；<code>Dump/</code> 里新 case 多为 BlackMyth 大包（4MB–500MB）， 完整回归（<code>Cases/regression_test_zip_files.csv</code> ~155 例，最大 264MB）在本环境<b>跑不完</b>。</li>
+<li><code>triage_dump.py</code> 的临时配置清理 <code>os.remove</code> 在挂载盘上会 <code>Operation not permitted</code>，故沿用上轮做法： 用 <code>/tmp</code> 下的 per-case 配置直接驱动 <code>render.py</code>，日志也写 <code>/tmp</code>。</li>
+</ul>
+<h2>扫描结果</h2>
+<p><code>Dump/</code> 现有 123 个 zip，<code>Dump/dump_case.csv</code> 只记录了 39 个 → <b>84 个新 case</b>（全部 BlackMyth，<br>frame12199 / 14374 / 15293 / 19470 四帧）。已将 84 个文件名追加进 <code>Dump/dump_case.csv</code>（现 123 行 + 表头）。</p>
+<h2>运行 &amp; 症状（新 case 一致失败）</h2>
+<p>抽样运行最小的若干个（event5690 / 8441 / 9319 / 8040 / 9526 …），<b>全部 0/N 通过</b>，且量级荒诞：</p>
+<pre><code>Row 0 sv_position[0]: output=-27098221641728.0  golden=-0.118441
+Row 0 TEXCOORD7[2]:   output=73876753205952512.0 golden=8186.586426</code></pre>
+<p>buffer 全部正常加载（StructuredBuffer t0/t1/t2、typed Buffer t3=R16G16_FLOAT / t4=R8G8B8A8_SNORM），<br>不是数据缺失，是解释器算错。</p>
+<h2>根因：<code>asfloat((exp&lt;&lt;23)+bias)</code> 的位模式被当成整数值参与浮点乘</h2>
+<p>VS 是 BlackMyth 的<b>顶点位置/法线压缩解码</b> shader，核心一句：</p>
+<pre><code>r0.x = (uint)r4.z &lt;&lt; 23;          // 把指数塞进 float 的指数位
+r0.x = (int)r0.x + 0xf8800000;    // 加偏置，构造出一个 float 的位模式
+...
+r2.xyz = r2.xyz * r0.xxx;         // 之后按 float 读回（隐式 asfloat）→ 缩放解码向量</code></pre>
+<p>DXBC 里寄存器是<b>带类型</b>的：<code>ishl</code>/<code>iadd</code> 写的是位，随后的 <code>mul</code> 按 float 读回即隐式 <code>asfloat</code>。<br>解释器不跟踪寄存器类型：<code>&lt;&lt;</code> 与 <code>+</code> 都返回<b>普通 Python int</b>，于是 <code>r0.x</code> ≈ 0xf88xxxxx ≈ 41 亿，<br><code>r2.xyz * r0.xxx</code> 直接乘上 41 亿 → sv_position 变成万亿级垃圾。</p>
+<p>解释器本有 <code>_RawBits</code>（int 子类）用来标记“这是寄存器位模式”（原先只有 <code>bfrev</code> 结果会打标），<br>但位运算结果没有打标，所以这条链断了。</p>
+<h2>修复（<code>hlsl_interpreter.py</code>）</h2>
+<ol>
+<li>新增 <code>_bits_to_float(bits)</code>：把 32-bit 整数位模式按 float32 重解释（asfloat）。</li>
+<li>新增 <code>_coerce_rawbits_for_float_op(left, right)</code>：在 <code>+ - * /</code> 里，若一侧是 <code>_RawBits</code>（位模式） 而另一侧含<b>真浮点</b>，说明这是一次浮点 ALU 运算，把 <code>_RawBits</code> 先 <code>asfloat</code> 再算；两侧都无真浮点 （纯整数上下文）则原样透传，不动位模式。在 <code>execute_binary_op</code> 的算术分支开头调用它。</li>
+<li><code>execute_binary_op</code> 里把<b>左移 <code>&lt;&lt;</code></b> 的结果打标为 <code>_RawBits</code>——<code>&lt;&lt; 23</code> 正是“往指数位塞值”的 float 重构惯用法标志。<b>其余位运算（<code>&amp; | ^ &gt;&gt; %</code>）保持普通 int</b>：它们常喂给 整数→浮点的<b>数值</b>转换（itof/utof），若一并打标会把这些值错误 asfloat。</li>
+</ol>
+<h3>关键教训：范围过宽会砸回归</h3>
+<p>初版把 <code>&amp; | ^ &lt;&lt; &gt;&gt;</code> 全部打标 <code>_RawBits</code>，虽然新 case 的 sv_position 立刻从万亿降到个位数，<br>但<b>回归例 <code>BlackMyth_frame14374_event3393</code> 从 30960/30960 掉到 305/30960</b>（该 shader 的位运算结果<br>是当整数值再转 float 的）。收窄到<b>只标 <code>&lt;&lt;</code></b> 后，回归恢复满分，新 case 的巨值 bug 依旧修好。</p>
+<h2>验证</h2>
+<p>不能跑完整回归（预算），抽样 14 个覆盖各 bit-math 家族的回归例，全部 PASS：<br><code>Octopath 102/4014/283/1031/1852</code>、<code>witcher 22484/7889/2774/994/1450/895</code>、<code>Collision event28</code>、<br><code>manhattan event50</code>、<code>sekiro2 event1089</code>，以及<b>曾被初版砸掉、现已恢复的 <code>BlackMyth_frame14374_event3393</code>（30960/30960）</b>。</p>
+<p>新 case（如 event8441）效果：<code>sv_position[0]</code> 从 <code>-27,098,221,641,728</code> → <code>-0.0777</code>（golden <code>-0.1184</code>），<br>巨值 bug 消除。但<b>仍未整例通过</b>：残留 <code>TEXCOORD11(o1.xyz)=0</code>（法线/切线帧四元数重构那一支还有问题）、<br><code>sv_position</code> 尚差 ~0.04 的精度、trailing-float3 分量错位等，属于该压缩解码 shader 的更深问题，本轮未处理。</p>
+<h2>结论 / 后续</h2>
+<ul>
+<li>84 个新 case 已全部记录进 <code>Dump/dump_case.csv</code>。</li>
+<li>无 case 直接通过、也无 case 经本轮修复后<b>整例</b>通过 → 不删除任何 zip，不新增回归条目。</li>
+<li>本轮修复是独立且正确的 bug 修复（<code>asfloat(exp&lt;&lt;23)</code> 位模式）——已确认不砸回归——故照常提交。</li>
+<li>待办：BlackMyth 顶点压缩解码的四元数/切线帧重构支（<code>r2.xyz</code> 归零）是下一步整例通过的关键。</li>
+</ul>
+</div></body></html>
