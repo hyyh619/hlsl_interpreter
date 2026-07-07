@@ -829,17 +829,36 @@ C3 改动会改变 `(int)floatattr` 的语义，AI 担心破坏既有的打包-u
 - `MEMORY.md` —— 索引，每条一行，会话开始时全量载入。
 - 每个 `*.md` —— 一条经验事实，带 `type`（user/feedback/project/reference）。
 
-本项目已有的记忆（节选）：
-| 记忆文件 | 内容 | 避免的重复劳动 |
-|---|---|---|
-| `golden-vs-mesh-sv-position-first` | golden CSV 把 SV_Position 列排在最前，要按位置而非表头映射 | C2 分析时无需重新推导列序，直接确认 o6 对得上 |
-| `per-vertex-binary-vb-decode-r10a2` | NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2 | 不必重新逆向顶点格式 |
-| `raw-img-texture-loading` | 纹理按 DXGI 格式从 .img 读、BC7 回退 BMP | 直接复用，不重造 |
-| `witcher3-array-cbuffers-instanced-inputs` | 数组 cbuffer 与实例化输入的加载与坑 | C1 的背景知识 |
+§4.1.2 已经从"输入数据流"的角度介绍过这套机制，并**完整展开**了两条示例（`golden-vs-mesh-sv-position-first`、`per-vertex-binary-vb-decode-r10a2`，另提及 `raw-img-texture-loading`、`witcher3-array-cbuffers-instanced-inputs`）。本节换一个角度——**"避免重复开发"**——再给一批**与 §4.1.2 不重复**的记忆，每条都能回溯到本仓库对应的 `Sessions/` 步骤（记忆的实质就是把那一轮的根因/结论沉淀下来，供后续会话召回）。
 
-> **如何避免重复开发**：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带"为什么"和"怎么用"），并在 `MEMORY.md` 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样**同一个坑只踩一次**——例如 golden 列序错位这种反直觉点，靠记忆一次性记住，后续所有 witcher case 都不再重新困惑。
+### 9.1 更多记忆示例（均可回溯到对应 Session）
+
+这些都是**"当时啃了很久、且后续同类 case 还会再遇到"**的事实——正是最值得写进记忆、避免下次从零再啃一遍的东西：
+
+| 记忆文件（`type`） | 记的是什么（事实） | 帮 AI 省掉的重复劳动 | 来源 Session |
+|---|---|---|---|
+| `gpu-ftz-denormal-flush-to-zero`（project） | GPU 对反规格化数（denormal）做 **FTZ**（flush-to-zero）：`cb12[271].z` 的字节是 `0x00000001`（`1.4e-45`），GPU 当 `0`，三元 `denormal ? a : b` 走 **false** 分支；解释器保留非零 denormal 会走错分支 | 再遇到"大气散射/光照数学差一点点、疑似精度长尾"时，**先怀疑 denormal 分支**，不再误判成"不可解的精度长尾" | [step120](Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.md) |
+| `dxbc-asfloat-bitpattern-through-fma`（project） | DXBC 寄存器**带类型**：`ishl`/`+` 构造的是 float 的**位模式**，随后按 float 读回（隐式 `asfloat`）；解释器的 `<<`/`+` 返回普通 int，会把 41 亿这种整数直接乘进向量 → 万亿级垃圾。位选择 `&` 的结果也要**穿透 FMA 路径**再当 float 用 | 每个 BlackMyth / EndlessSpace2 顶点**压缩解码** shader 不必重新逆向"这个数到底是整数值还是 float 位模式" | [step196](Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.md) · [step198](Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.md) |
+| `topology-list-vs-strip-trust-iaprimitives`（project） | `pipeline_state.csv` 里的图元拓扑枚举**不可靠**（会把 triangle **LIST 谎报成 STRIP**）；真机 `pipeline_statistics.csv` 的 `IAPrimitives` 才是 ground truth | 遇到"颜色偏亮/整片错色但 VS 数学没错"时，**先核对真机图元数**，不再去 PS 数学里瞎找 | [step100](Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md) |
+| `sv-vertexid-from-raw-ib`（project） | 必须从 **raw 索引缓冲**（`ib_res_*.bin`）还原真实 `SV_VertexID`；否则每个顶点都读 `Buffer<float4>` texcoord 表的**元素 0**（Octopath 就栽在这） | 再遇到用 `SV_VertexID` 索引 typed-buffer 的 case，直接接 raw IB，不再从 CSV 的 `IDX` 列绕 | [step118](Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.md) |
+| `reused-output-register-genuine-zero`（project） | 交叉复用的输出寄存器上，一次**真实写入 `0.0`** 不能被当成"未写入的默认值"——否则 `.w` 等分量会被错误地填默认值 | 再遇到多个 `out` 参数复用同一寄存器槽位的 case，直接按"写过就是写过（含 0）"处理 | [step194](Sessions/hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default.md) · [step195](Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.md) |
+| `rasterizer-d3d11-top-left-subpixel-snap`（reference） | D3D11 光栅化规范：**§3.4.1** 顶点 x/y 吸附到 `n.8`（1/256 子像素）、覆盖测试取像素中心 `(x+0.5,y+0.5)`；**§3.4.2.1** 左上填充规则（采样落在边上时只有上/左边算覆盖） | 任何"共享边 overdraw / 接缝瑕疵"直接套这份规范配方，不用重查 spec | [step101](Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.md) |
+| `autonomous-cron-env-constraints`（feedback） | 无人值守 cron 环境的硬约束：**每次 shell ≤45s**、**后台进程跨调用不保活**（VM 只持久化文件系统）、**挂载目录禁止删除文件**（`rm`→Operation not permitted）、`/tmp` 仅 ~4GB（大 case 要把 `TMPDIR` 指到挂载盘） | 每个每小时轮次不必重新撞这些墙——回归改**前台分片**跑、已通过的 case 写进 `dump_case.csv` 而非删 zip、大 case 先改 `TMPDIR` | [step195](Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.md) |
+
+### 9.2 记忆的两面价值：既"跳过死路"，也要"复核暂缓"
+
+记忆最典型的用法是把一轮的 **`## Blocked classes`**（§1.4）沉淀成"别再试"的先验，让下轮直接跳过——但**"无解"分两种，记忆要区别对待**：
+
+- **真死路（记下就长期跳过）**：如"**四元数 typed-buffer 的 SNORM/UNORM 无法区分**"——`capture 根本没记录 view 的格式`，`R8G8B8A8_SNORM` 与 `UNORM` 在 dump 里字节一样、无从判别（§1.3 表里的 ❌ 项）。这类是**信息层面的死路**，写成一条 project/feedback 记忆后，后续会话读到就**合法跳过**，不在死路上空转。
+- **暂缓（记下但必须定期复核）**：如 event20899 一度被 [step119](Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.md) 判成"大气数学精度长尾、不可解"——但这其实是**误判**。[step120](Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.md) 重新用逐语句轨迹深挖，发现真因是 denormal 分支选错（FTZ），一行修复即绿（详见 §8.1）。
+
+> **要点**：所以记忆里"无解"的条目要**带上"为什么无解"**——是**信息缺失**（capture 没 dump 那层数据 → 真死路），还是**当时没查到根因**（→ 暂缓、待更厚的 dump 或更细的轨迹再复核，见 §4.4）。区分这两者，记忆才既能"止损"又不会"把可修的 bug 永久判死"。
+
+### 9.3 如何避免重复开发（机制 + 纪律）
+
+> **机制**：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带 `**Why:**` 和 `**How to apply:**`），并在 `MEMORY.md` 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样**同一个坑只踩一次**——上表每一条，都是某一轮啃了很久的结论，一旦入记忆，后续所有同类 case 直接命中、不再从零困惑。
 >
-> 纪律：① 不记录代码/git 已经记录的东西；② 先查重再写，宁可更新已有文件；③ 召回的记忆是"当时为真"的背景，引用到具体文件/函数时要先核实其仍存在。
+> **纪律**：① 不记录代码/git 已经记录的东西（结构、历史、`CLAUDE.md` 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"**当时为真**"的背景，引用到具体文件/函数时**要先核实其仍存在**；④ "无解"条目必须写清是**信息死路**还是**暂缓待复核**（见 §9.2）。
 
 ---
 

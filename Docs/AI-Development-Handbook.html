@@ -633,15 +633,28 @@ Comparison FAILED: Some output data does not match golden data</code></pre>
 <li><code>MEMORY.md</code> —— 索引，每条一行，会话开始时全量载入。</li>
 <li>每个 <code>*.md</code> —— 一条经验事实，带 <code>type</code>（user/feedback/project/reference）。</li>
 </ul>
-<p>本项目已有的记忆（节选）：</p>
+<p>§4.1.2 已经从"输入数据流"的角度介绍过这套机制，并<b>完整展开</b>了两条示例（<code>golden-vs-mesh-sv-position-first</code>、<code>per-vertex-binary-vb-decode-r10a2</code>，另提及 <code>raw-img-texture-loading</code>、<code>witcher3-array-cbuffers-instanced-inputs</code>）。本节换一个角度——<b>"避免重复开发"</b>——再给一批<b>与 §4.1.2 不重复</b>的记忆，每条都能回溯到本仓库对应的 <code>Sessions/</code> 步骤（记忆的实质就是把那一轮的根因/结论沉淀下来，供后续会话召回）。</p>
+<h3>9.1 更多记忆示例（均可回溯到对应 Session）</h3>
+<p>这些都是<b>"当时啃了很久、且后续同类 case 还会再遇到"</b>的事实——正是最值得写进记忆、避免下次从零再啃一遍的东西：</p>
 <table>
-<tr><th>记忆文件</th><th>内容</th><th>避免的重复劳动</th></tr>
-<tr><td><code>golden-vs-mesh-sv-position-first</code></td><td>golden CSV 把 SV_Position 列排在最前，要按位置而非表头映射</td><td>C2 分析时无需重新推导列序，直接确认 o6 对得上</td></tr>
-<tr><td><code>per-vertex-binary-vb-decode-r10a2</code></td><td>NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2</td><td>不必重新逆向顶点格式</td></tr>
-<tr><td><code>raw-img-texture-loading</code></td><td>纹理按 DXGI 格式从 .img 读、BC7 回退 BMP</td><td>直接复用，不重造</td></tr>
-<tr><td><code>witcher3-array-cbuffers-instanced-inputs</code></td><td>数组 cbuffer 与实例化输入的加载与坑</td><td>C1 的背景知识</td></tr>
+<tr><th>记忆文件（<code>type</code>）</th><th>记的是什么（事实）</th><th>帮 AI 省掉的重复劳动</th><th>来源 Session</th></tr>
+<tr><td><code>gpu-ftz-denormal-flush-to-zero</code>（project）</td><td>GPU 对反规格化数（denormal）做 <b>FTZ</b>（flush-to-zero）：<code>cb12[271].z</code> 的字节是 <code>0x00000001</code>（<code>1.4e-45</code>），GPU 当 <code>0</code>，三元 <code>denormal ? a : b</code> 走 <b>false</b> 分支；解释器保留非零 denormal 会走错分支</td><td>再遇到"大气散射/光照数学差一点点、疑似精度长尾"时，<b>先怀疑 denormal 分支</b>，不再误判成"不可解的精度长尾"</td><td><a href="Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">step120</a></td></tr>
+<tr><td><code>dxbc-asfloat-bitpattern-through-fma</code>（project）</td><td>DXBC 寄存器<b>带类型</b>：<code>ishl</code>/<code>+</code> 构造的是 float 的<b>位模式</b>，随后按 float 读回（隐式 <code>asfloat</code>）；解释器的 <code>&lt;&lt;</code>/<code>+</code> 返回普通 int，会把 41 亿这种整数直接乘进向量 → 万亿级垃圾。位选择 <code>&amp;</code> 的结果也要<b>穿透 FMA 路径</b>再当 float 用</td><td>每个 BlackMyth / EndlessSpace2 顶点<b>压缩解码</b> shader 不必重新逆向"这个数到底是整数值还是 float 位模式"</td><td><a href="Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.html">step196</a> · <a href="Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.html">step198</a></td></tr>
+<tr><td><code>topology-list-vs-strip-trust-iaprimitives</code>（project）</td><td><code>pipeline_state.csv</code> 里的图元拓扑枚举<b>不可靠</b>（会把 triangle <b>LIST 谎报成 STRIP</b>）；真机 <code>pipeline_statistics.csv</code> 的 <code>IAPrimitives</code> 才是 ground truth</td><td>遇到"颜色偏亮/整片错色但 VS 数学没错"时，<b>先核对真机图元数</b>，不再去 PS 数学里瞎找</td><td><a href="Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.html">step100</a></td></tr>
+<tr><td><code>sv-vertexid-from-raw-ib</code>（project）</td><td>必须从 <b>raw 索引缓冲</b>（<code>ib_res_*.bin</code>）还原真实 <code>SV_VertexID</code>；否则每个顶点都读 <code>Buffer&lt;float4&gt;</code> texcoord 表的<b>元素 0</b>（Octopath 就栽在这）</td><td>再遇到用 <code>SV_VertexID</code> 索引 typed-buffer 的 case，直接接 raw IB，不再从 CSV 的 <code>IDX</code> 列绕</td><td><a href="Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.html">step118</a></td></tr>
+<tr><td><code>reused-output-register-genuine-zero</code>（project）</td><td>交叉复用的输出寄存器上，一次<b>真实写入 <code>0.0</code></b> 不能被当成"未写入的默认值"——否则 <code>.w</code> 等分量会被错误地填默认值</td><td>再遇到多个 <code>out</code> 参数复用同一寄存器槽位的 case，直接按"写过就是写过（含 0）"处理</td><td><a href="Sessions/hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default.html">step194</a> · <a href="Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.html">step195</a></td></tr>
+<tr><td><code>rasterizer-d3d11-top-left-subpixel-snap</code>（reference）</td><td>D3D11 光栅化规范：<b>§3.4.1</b> 顶点 x/y 吸附到 <code>n.8</code>（1/256 子像素）、覆盖测试取像素中心 <code>(x+0.5,y+0.5)</code>；<b>§3.4.2.1</b> 左上填充规则（采样落在边上时只有上/左边算覆盖）</td><td>任何"共享边 overdraw / 接缝瑕疵"直接套这份规范配方，不用重查 spec</td><td><a href="Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.html">step101</a></td></tr>
+<tr><td><code>autonomous-cron-env-constraints</code>（feedback）</td><td>无人值守 cron 环境的硬约束：<b>每次 shell ≤45s</b>、<b>后台进程跨调用不保活</b>（VM 只持久化文件系统）、<b>挂载目录禁止删除文件</b>（<code>rm</code>→Operation not permitted）、<code>/tmp</code> 仅 ~4GB（大 case 要把 <code>TMPDIR</code> 指到挂载盘）</td><td>每个每小时轮次不必重新撞这些墙——回归改<b>前台分片</b>跑、已通过的 case 写进 <code>dump_case.csv</code> 而非删 zip、大 case 先改 <code>TMPDIR</code></td><td><a href="Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.html">step195</a></td></tr>
 </table>
-<blockquote><b>如何避免重复开发</b>：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带"为什么"和"怎么用"），并在 <code>MEMORY.md</code> 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样<b>同一个坑只踩一次</b>——例如 golden 列序错位这种反直觉点，靠记忆一次性记住，后续所有 witcher case 都不再重新困惑。<br>纪律：① 不记录代码/git 已经记录的东西；② 先查重再写，宁可更新已有文件；③ 召回的记忆是"当时为真"的背景，引用到具体文件/函数时要先核实其仍存在。</blockquote>
+<h3>9.2 记忆的两面价值：既"跳过死路"，也要"复核暂缓"</h3>
+<p>记忆最典型的用法是把一轮的 <b><code>## Blocked classes</code></b>（§1.4）沉淀成"别再试"的先验，让下轮直接跳过——但<b>"无解"分两种，记忆要区别对待</b>：</p>
+<ul>
+<li><b>真死路（记下就长期跳过）</b>：如"<b>四元数 typed-buffer 的 SNORM/UNORM 无法区分</b>"——<code>capture 根本没记录 view 的格式</code>，<code>R8G8B8A8_SNORM</code> 与 <code>UNORM</code> 在 dump 里字节一样、无从判别（§1.3 表里的 ❌ 项）。这类是<b>信息层面的死路</b>，写成一条 project/feedback 记忆后，后续会话读到就<b>合法跳过</b>，不在死路上空转。</li>
+<li><b>暂缓（记下但必须定期复核）</b>：如 event20899 一度被 <a href="Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html">step119</a> 判成"大气数学精度长尾、不可解"——但这其实是<b>误判</b>。<a href="Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">step120</a> 重新用逐语句轨迹深挖，发现真因是 denormal 分支选错（FTZ），一行修复即绿（详见 §8.1）。</li>
+</ul>
+<blockquote><b>要点</b>：所以记忆里"无解"的条目要<b>带上"为什么无解"</b>——是<b>信息缺失</b>（capture 没 dump 那层数据 → 真死路），还是<b>当时没查到根因</b>（→ 暂缓、待更厚的 dump 或更细的轨迹再复核，见 §4.4）。区分这两者，记忆才既能"止损"又不会"把可修的 bug 永久判死"。</blockquote>
+<h3>9.3 如何避免重复开发（机制 + 纪律）</h3>
+<blockquote><b>机制</b>：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带 <code>**Why:**</code> 和 <code>**How to apply:**</code>），并在 <code>MEMORY.md</code> 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样<b>同一个坑只踩一次</b>——上表每一条，都是某一轮啃了很久的结论，一旦入记忆，后续所有同类 case 直接命中、不再从零困惑。<br><b>纪律</b>：① 不记录代码/git 已经记录的东西（结构、历史、<code>CLAUDE.md</code> 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"<b>当时为真</b>"的背景，引用到具体文件/函数时<b>要先核实其仍存在</b>；④ "无解"条目必须写清是<b>信息死路</b>还是<b>暂缓待复核</b>（见 §9.2）。</blockquote>
 <hr>
 <h2>10 · b/c 两个开发部分的对比和优缺点总结</h2>
 <p>本项目历经两个 agent 周期（约从 step1 到 step123、2026-06-05 起）。以下特征基于 <code>Sessions/</code> 日志与提交历史的可见证据归纳。</p>

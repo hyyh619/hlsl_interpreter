@@ -1870,12 +1870,21 @@ ul,ol{padding-left:26px}
 <p><b>git 状态（相较 step 198/199/200 的重要变化）</b>：先前反复记录的遗留阻塞已<b>全部清除</b>——<br><code>.git/index.lock</code> 已不存在、<code>Docs/</code> unmerged 冲突已解决、<code>git rev-list origin/main...HEAD</code> = <code>0 0</code><br>（本地 main 与 origin/main 完全同步，step 198 修复 <code>3bb9e72</code> 及后续 docs 提交 <code>b941107</code> 均已在<br>origin）。即无待推送的领先提交，仓库干净。详见<br><a href="../Sessions/hlsl-interpreter-step201-dump-scan-no-new-cases.html"><code>Sessions/hlsl-interpreter-step201-dump-scan-no-new-cases.md</code></a>。</p>
 <h1 id="step-202">202 修复blackmyth 0/N问题</h1>
 <h2>Prompts</h2>
-<p>修复下列问题<br>Every one is a BlackMyth vertex-compression shader producing 0/N — the exact quaternion/tangent-frame path step196 flagged as unsolved (e.g. event6689 = 0/47973, event4713 = 0/48). Not a size or timeout issue — the interpreter runs them fine, they just don't match golden yet.</p>
+<p>修复 BlackMyth 顶点压缩解码 shader 的 0/N 全失败（step196/198 之后仍未解决的"四元数/切线帧重构支"）。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-203">203</h1>
+<p>用最小失败标本 <code>BlackMyth_frame19470_event7117</code>（仅 6 顶点）逐语句 [STMT] 轨迹定位到<b>两处通用的解析器/控制流根因</b>（详见 <a href="../Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.html"><code>Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.md</code></a>）：</p>
+<ol>
+<li><b>cast 贪婪吞掉三元表达式</b>（<code>hlsl_syntax_tree.py</code>）：<code>(int)r5.z ? A : B</code> 被解析成 <code>(int)(r5.z ? A : B)</code>，把选中分支<b>值截断为 0</b>，使切线基向量 <code>r5.xyz</code> 整支归零（位置对所有顶点坍缩成同值、切线符号翻转）。三元条件运算符在 HLSL 里<b>优先级最低</b>，修复是把 top-level <code>?</code> 的检测移到 cast/位运算守卫<b>之前</b>。</li>
+</ol>
+<ol>
+<li><b><code>;</code> 后的 <code>else</code> 被拆成孤儿语句</b>（<code>hlsl_interpreter.py</code> <code>GenerateStmts</code>）：<code>if (c) s; else if(..){..} else ..</code> 在 <code>s</code> 后的 <code>;</code> 处被切断，<code>else if</code> 分支静默丢弃 → <code>ubfe</code> 位域提取（切线符号 bit）从未执行。<code>}</code> 后已有的 <code>else</code> 前瞻没覆盖 <code>;</code> 的情形；修复是给 top-level <code>;</code> 切分加同样的 <code>else</code> 前瞻。</li>
+</ol>
+<p><b>结果</b>：<code>event7117</code> <code>0/6 → 6/6</code>；批量复跑此前 0/N 的小 BlackMyth 另新增通过 <code>event8441/8484/2939/5690</code>。全量回归 <b>151/154</b>，与 step198 基线逐一致（3 个未过均为已证无关的既有失败，<code>BlackMyth_event3393</code> 仍 30960/30960）→ <b>零回归</b>。已把 <code>event7117</code> 加入回归套件锁死修复。两处都是<b>通用正确性修复</b>，非 BlackMyth 专用补丁。仍有 <code>event8040</code>（COLOR1 分量互换）、<code>event9319</code> 等<b>不同根因</b>的 BlackMyth 失败，留作后续。</p>
+<h1 id="step-203">203 修复BlackMyth剩余case的问题</h1>
 <h2>Prompts</h2>
+<p>修复下列BlackMyth问题<br>Not every BlackMyth case is fixed — the remaining fails are distinct root causes: event8040 has a COLOR1 .x/.z component swap; event9319/3256/9526/9829 show a deeper decode variant (TEXCOORD11/TEXCOORD7 still off). Those are separate follow-ups, flagged in the session log.</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
@@ -2370,8 +2379,4 @@ ul,ol{padding-left:26px}
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
 <h1 id="step-302">302</h1>
-<h2>Prompts</h2>
-<p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
-<h2>Git commit:</h2>
-<h2>Claude Code Session</h2>
 </div></body></html>

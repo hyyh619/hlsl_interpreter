@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 202 — BlackMyth 收尾：B8G8R8A8 顶点色 R/B 通道交换（修复），骨骼/morph 解码变体（定位未修）</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage</span></div>
+<div class="wrap">
+<h1>Step 202 — BlackMyth 收尾：B8G8R8A8 顶点色 R/B 通道交换（修复），骨骼/morph 解码变体（定位未修）</h1>
+<p>Date: 2026-07-07</p>
+<h2>任务</h2>
+<p>继续修 step201 遗留的、<b>不同根因</b>的 BlackMyth 失败：</p>
+<ul>
+<li><code>event8040</code>：<code>COLOR1</code> 的 <code>.x</code>/<code>.z</code> 互换；</li>
+<li><code>event9319 / 3256 / 9526 / 9829 / 15293_8040</code>：更深的解码变体，<code>TEXCOORD11</code>/<code>TEXCOORD7</code> 仍错。</li>
+</ul>
+<h2>根因（已修复）：B8G8R8A8_UNORM 顶点属性未做 R/B 通道交换</h2>
+<p><code>event8040</code>（<code>frame19470</code>，6 顶点）是一个简单的 sRGB 顶点色解码 shader，不是压缩解码那支。<br>错误特征极干净：<code>COLOR1.x</code> 与 <code>COLOR1.z</code> <b>对调</b>（output[0]=sRGB(0.0)、golden[0]=sRGB(0.694)；<br>[2] 反之）。</p>
+<p>输入布局：<code>ATTRIBUTE4 : B8G8R8A8_UNORM</code>。<code>0.694</code> 是 <code>ia_vertex_data.csv</code> 里 <code>ATTRIBUTE4.z</code>，<br>而 golden 要求 shader 的 <code>v4.x = 0.694</code>。即 **B8G8R8A8 在内存里按 B,G,R,A 排布，但输入装配阶段<br>交给 shader 时是 <code>.x=R, .y=G, .z=B, .w=A</code>**——需要把 R 和 B（分量 0 与 2）对调。<br><code>_decode_vertex_element</code> 对 <code>UNORM/comp_byte_width==1</code> 直接 <code>unpack '&lt;4B'</code> 得到内存序 <code>[B,G,R,A]</code>，<br><b>漏了这次交换</b>。（同一 shader 的 <code>ATTRIBUTE3</code> 也是 B8G8R8A8，但数据恰好全 <code>1.0</code>，交换不可见，<br>所以 <code>COLOR0</code> 一直"碰巧对"，只有非对称的 <code>ATTRIBUTE4</code> 暴露 bug。）</p>
+<p><b>修复</b>（<code>hlsl_interpreter.py</code> <code>_decode_vertex_element</code>）：解码后，若格式以 <code>B8G8R8</code> 开头且<br>≥3 分量，交换 <code>vals[0]</code> 与 <code>vals[2]</code>。</p>
+<p><b>验证</b>：<code>event8040</code> <code>0/6 → 6/6</code>（走 binary VB 路径，命中此修复）。修复通用（任何 B8G8R8A8/<br>B8G8R8X8 顶点属性），非 BlackMyth 专用。</p>
+<h2>定位但未修：骨骼/morph 解码变体（<code>event9319</code> 家族）</h2>
+<p><code>event9319/3256/9526/9829/15293_8040</code> 是与 step201 修好的 <code>event7117</code> <b>不同的、更复杂的</b><br>顶点解码 shader：多了骨骼/morph 混合（<code>mad((int3)r0.zzz, int3(40,40,40), int3(1,3,7))</code> 逐 lane<br>算索引、从 <code>t0</code> 读多行矩阵），输出 <code>TEXCOORD10/11/7</code>。</p>
+<p>逐语句轨迹（row 0）结论：</p>
+<ul>
+<li><b><code>TEXCOORD10</code>（法线，o0）正确</b>；<code>TEXCOORD11</code>（切线，o1）与 <code>TEXCOORD7</code>（世界坐标，p6， 偏 ~6.5%）错。</li>
+<li>关键观察：<code>o0 = r15.zzz*r18 + r15.xyw</code>，而本例 <code>r15.x=r15.y≈0</code> → <code>o0</code> 实际只等于 <code>r15.z * r18</code>（基向量<b>第 2 列</b>）。也就是说 <b>o0 只校验了基第 2 列 <code>r6</code>/<code>r18</code> 与 <code>r15.z</code>， 并不约束基第 0/1 列 <code>r4/r5</code>（<code>r17</code>/<code>r2.xyw</code>）</b>。</li>
+<li><code>o1 = r16.x*r17 + r16.y*r2.xyw + r16.z*r18</code>，重度依赖 <code>r17</code>/<code>r2.xyw</code>（基第 0/1 列）。 确认 <code>r2.xyz</code> 在 tangent 算出后到 <code>o1.xyz=r2.xyz</code> 之间<b>没有被覆盖</b>（只 <code>r2.w</code> 被改）， 即解释器数据流无误——<b>切线之所以错，是基第 0/1 列与真机不符</b>。</li>
+</ul>
+<p>矛盾点：<b>同一段基解码代码在 step201 的 <code>event7117</code> 上整例通过</b>（含切线），说明解码逻辑本身对；<br>本例第 0/1 列却错、第 2 列对。差异只可能来自<b>输入数据装载</b>（本例基数据来自 <code>t1</code>，<code>event7117</code><br>来自 <code>t2</code>）或某条<b>数据相关的罕见分支</b>。在没有逐语句 golden 的情况下无法进一步确证，且贸然改动<br>风险高（易砸 <code>event7117</code> 等已通过例），故本轮<b>不改</b>，如实记录待后续。</p>
+<h2>回归</h2>
+<p>&lt;!-- REGRESSION_RESULT --&gt;</p>
+<h2>结论</h2>
+<ul>
+<li>修好 <code>event8040</code>（B8G8R8A8 顶点色 R/B 交换）——通用正确性修复，已加入回归。</li>
+<li><code>event9319</code> 骨骼/morph 变体定位到"基第 0/1 列与真机不符"，但根因未确证、未修，留作后续。</li>
+</ul>
+<p>诚实记录：本轮修 1 个、留 5 个（不同根因）。</p>
+</div></body></html>
