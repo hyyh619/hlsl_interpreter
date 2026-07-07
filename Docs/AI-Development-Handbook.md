@@ -4,10 +4,11 @@
 > 系统说明"如何与 AI 协作完成一个真实工程"。所有例子都取自本仓库的提交、
 > `Sessions/` 步骤日志与 `Prompts/` 提示词历史，可逐条核对。
 >
-> 本手册按**项目的两个开发周期**组织成三大部分：
+> 本手册按**项目的开发周期 + 自动化运维**组织成四大部分：
 > - **第一部分 · 项目总体介绍** —— 这是什么、怎么跑、怎么验证。
 > - **第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）** —— 从零搭骨架的协作方式。
 > - **第三部分 · 基于 ClaudeCode 的开发（攻坚期）** —— 真机数据攻坚长尾的协作方式。
+> - **第四部分 · 周期任务的创建和执行（自动化期）** —— 把开发/巡检交给定时任务无人值守闭环。
 
 ---
 
@@ -33,6 +34,14 @@
 8. 如何纠正 AI 的错误
 9. 记忆系统避免重复开发
 10. b/c 两个开发部分的对比和优缺点总结
+
+**第四部分 · 周期任务的创建和执行（自动化期）**
+1. 什么是周期任务、它解决什么问题
+2. 如何创建一个周期任务（调度 + 任务提示词 + 留痕）
+3. 周期任务如何执行（无人值守闭环）
+4. 例一：`hlsl-interpreter-hourly-develop`（每小时开发）
+5. 例二：`daily-hlsl-status-report`（每日巡检）
+6. 两个周期任务的对比与设计要点
 
 > 每节都附本仓库 `Prompts/` 提示词历史与 `Sessions/` 步骤日志的超链接，可逐条核对。
 
@@ -804,6 +813,139 @@ step 186–188 立起动态 Web 视图后，step 189–193 继续把它做深：
 step 194 则回到正确性主线：一次**逐指令 VS/PS 轨迹 + verify-by-log** 的组合把 `manhattan_event1041` 从 0/228 修到 228/228——VS 只写 `o6.xy`，`TEX_COORD1` 打包进从未写的 `o6.zw`，而 D3D 语义要求未写的输出寄存器分量取每寄存器初值 `(0,0,0,1)`；`_resolve_slot_shared_params` 原来只在主参数溢出时回填次级参数，遗漏了「主参数恰好只写自己分量」的情形。修复让未写的次级输出继承寄存器默认（落在索引 3 的 `.w` 取 `1.0`）。同一步还把空的 `dump_case.csv` 补齐为 `Dump/` 现有 31 个 zip 并逐个 triage（11 PASS / 4 精度 FAIL / 1 无 golden / 15 因体量超时未评估）。
 
 这条轨迹印证了第三部分的方法论在成熟阶段依旧成立：**先把执行过程"看得见"，再沿数据流回溯根因**——观测器的逐指令轨迹直接指向了未写寄存器的默认值这一根因，而回归/golden 比对继续充当裁判。
+
+---
+
+# 第四部分 · 周期任务的创建和执行（自动化期）
+
+> 前三部分讲的是**人坐在旁边、一轮轮和 AI 对话**推进项目。到了成熟阶段，很多工作是**重复且可判定**的——"有没有新 case、跑不跑得过、状态有没有变化"。这类工作没必要每次都靠人发起，可以交给**周期任务（scheduled / cron task）**：由定时调度器在固定时刻拉起一个**无人值守**的 Claude Code 会话，按一份**固定的任务提示词**跑完整条闭环（扫描 → 执行 → 修复 → 验证 → 提交 → 留痕），跑完即退出，下次到点再来。
+>
+> 本部分用本项目真实运行的两个周期任务作为例子：
+> - **`hlsl-interpreter-hourly-develop`**（每小时）——**开发型**：发现并攻克 `Dump/` 里的新 draw case，能修则修、修好进回归。
+> - **`daily-hlsl-status-report`**（每天）——**巡检型**：产出一份项目状态日报，并顺手把 `ReadMe.md` / 手册 / 站点刷新。
+
+## 1 · 什么是周期任务、它解决什么问题
+
+一个周期任务 = **调度（何时触发）** + **任务提示词（触发后做什么）** + **一个无人值守会话（谁来做）**。它和前三部分的交互式开发的根本区别是：**没有人在环里逐步纠偏**。因此它只适合两类工作：
+
+- **重复且高确定性**：每小时/每天都要做一遍，判据机器可判（有没有 `Error:`、`X==Y`、git 有没有新提交）。
+- **可自我兜底**：即使某次跑偏，也不会破坏主线——改动要么被回归 gate 拦住，要么只落在自己的留痕文件里，等人事后审阅。
+
+在本项目里，它正好接住第三部分留下的两类长尾负担：**① 源源不断新增的 draw dump**（人工一个个跑太累）；**② 每天的项目状态漂移**（提交了什么、哪块没提交、回归还绿不绿）。把它们交给周期任务后，人只需**事后读日报、审提交**，从"操作员"退到"验收者"。
+
+## 2 · 如何创建一个周期任务（调度 + 任务提示词 + 留痕）
+
+创建一个周期任务，实操上就是把三件事定下来：
+
+1. **起个名、定个频率**：给任务一个稳定的名字（如 `hlsl-interpreter-hourly-develop`）和 cron 频率（每小时 / 每天）。名字要能一眼看出"多久一次 + 干什么"。
+2. **写死一份任务提示词**：这是周期任务的灵魂。它和第三部分 §1 的交互式提示词写法一脉相承，但因为**无人在环**，对"提示词工程"的要求更苛刻：
+   - **Steps 写成有序清单**：把整条闭环拆成编号步骤，AI 照着走，不用即兴发挥。
+   - **判据必须机器可判**：什么叫"通过"要写死（本项目复用 `Error:` + `Total PASSED rows: X/Y` 的 X==Y 判据），不能留给 AI"自我感觉"。
+   - **给足边界（Notice / 不要做什么）**：例如"修好的才进回归、没修好的只记名并删 zip"——这正是第三部分 §1 反复强调的"约束比目标更重要"。
+   - **强制留痕**：要求把思考/执行/结果写进 `Sessions/hlsl-interpreter-stepN-*.md`，并把 summary 回填到 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md`——让每次无人值守的运行都**可追溯、可核对**。
+3. **约定产物与提交**：跑完要 `git commit && git push`，把留痕文件、状态报告一并入库。这样"人"第二天读 git log 和日报，就能验收昨晚发生的一切。
+
+> **一句话**：交互式开发里，纠偏靠人；周期任务里，纠偏靠**提示词里写死的判据 + 回归 gate + 事后审阅**。所以周期任务的提示词，本质是把第三部分那套"CLAUDE.md 常驻规则 + 可机判成功标准 + 强制留痕"**固化成一份可反复触发的脚本**。
+
+## 3 · 周期任务如何执行（无人值守闭环）
+
+到点后，调度器拉起一个**全新的、headless 的**会话（没有前一次的上下文），它读到的只有：**这份任务提示词** + **常驻的 `CLAUDE.md`** + **仓库当前状态**。然后照 Steps 跑：
+
+```
+定时触发 → 扫描仓库/Dump 现状 → 按 Steps 执行（跑管线 / 生成报告）
+         → 用机器判据验证 → 能修则修、否则记录 → commit & push
+         → 写 Sessions 留痕 + 回填 Prompts → 退出
+```
+
+**两个真实的执行约束**（这也是无人值守区别于交互式的地方，必须写进提示词或事后靠人补）：
+
+- **单次 shell 调用有 ~45s 预算**：`Dump/` 里的大 capture（19 MB–264 MB）在沙箱里跑不完。所以任务提示词允许"超预算的 case 不算失败、只记录不评估"——见例一的 15 个未评估 case。
+- **上下文是干净的**：每次触发都从零开始，所以**自跟踪文件**（如 `dump_case.csv`）就是它的"记忆"——靠它区分"哪些 case 已处理过、哪些是新的"，保证任务**幂等**（重复触发不重复劳动）。
+
+## 4 · 例一：`hlsl-interpreter-hourly-develop`（每小时开发）
+
+**任务提示词**（原文，Steps + Notice 双段式）：
+
+```
+Run the new draw case on the HLSL interpreter project located at .../hlsl_interpreter/Dump.
+Steps:
+ 1. Scan the folder .../Dump. If there is new case whose name is not in dump_case.csv.
+ 2. Add the new case's name to dump_case.csv.
+ 3. Run the new case.
+ 4. If the case cannot pass, find the root cause in hlsl_interpreter code and fix it.
+ 5. Commit the fix and push it to github.
+ 6. 修复后通过的 case 加入 regression test；没修复直接通过的把 case name 写入
+    dump_case.csv，并删除 Dump 文件夹中的 draw zip 文件。
+Notice:
+ - 把思考、执行和结果写入 Sessions/hlsl-interpreter-stepN-***.md（stepnum 按当前 step 值填）。
+ - 把 summary 填入 Prompts/hlsl-interpreter-prompt-ClaudeCode.md 对应的 Claude Code Session。
+```
+
+**它是一条"发现→攻克→固化"的开发闭环**，对应第三部分的方法论：`dump_case.csv` 是**自跟踪文件**（无人值守会话的"记忆"，实现幂等），回归套件是**固化闸门**，`Sessions/` + `Prompts/` 是**留痕**。
+
+**真实一次运行**（见 [`Sessions/hlsl-interpreter-step194-*.md`](Sessions/hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default.html)，2026-07-07）：触发时 `dump_case.csv` 是空的（0 字节），于是 `Dump/` 里的 **31 个 zip 全部算新**，逐个 triage：
+
+| 结果 | 数量 | 说明 |
+|---|---|---|
+| **PASS** | 11 | 直接通过（含本次新修好的 `manhattan_event1041`） |
+| **FAIL — 逐顶点精度** | 4 | `manhattan_event87/124/198/124_indirect`，1–2 行孤立大 diff，另一类根因，本次未攻 |
+| **FAIL — 无 golden** | 1 | `BlackMyth_event2063` 无 `MeshOut_*_mesh.csv`，数据缺失非 bug |
+| **未评估 — 超 45s 预算** | 15 | 大 capture（最大 264 MB），沙箱跑不完，**不算失败** |
+
+其中真正体现"能修则修"的是 `manhattan_event1041`：每行 `TEX_COORD1[1]` 都 output=`0.0` vs golden=`1.0`。逐指令轨迹显示 VS 只写了 `o6.xy`，而 `TEX_COORD1` 被打包进**从未写过的 `o6.zw`**——D3D 语义要求未写的输出寄存器分量取每寄存器初值 `(0,0,0,1)`。修 `_resolve_slot_shared_params` 让未写的次级输出继承寄存器默认后，`manhattan_event1041` 从 **0/228 → 228/228**，随即按 Step 6 **进回归**（`Cases/regression_test_zip_files.csv` 从 123 涨到 152）、commit & push。这一步的每个动作都可在 step194 session 与提交 `2cc8307` 里逐条核对。
+
+## 5 · 例二：`daily-hlsl-status-report`（每日巡检）
+
+**任务提示词**（原文节选）：
+
+```
+Produce a daily status report on the HLSL interpreter project located at .../hlsl_interpreter.
+Steps:
+ 1. Scan the folder; read key source & project files (README, main sources, tests, TODO, config).
+ 2. If it's a git repo, check recent activity: commits since yesterday, current branch, dirty files.
+ 3. Summarize state & changes: new/modified/removed files, progress, TODOs, test status, anything broken.
+ 4. Save to daily-status/status-YYYY-MM-DD.md (create the folder; use today's date). Clean Markdown.
+ 5. Commit status-YYYY-MM-DD.md and push to github.
+ 6. Based on current status, update ReadMe.md, Docs/AI-Development-Handbook*, Docs/index.html.
+    Commit & push.
+Keep it concise and focused on status and changes. If the folder is empty/inaccessible, note that.
+```
+
+**它是一条"观察→记录→同步文档"的巡检闭环**，与例一互补：例一**改代码**，例二**只读状态 + 刷文档**，几乎不碰解释器正确性，风险极低，非常适合无人值守。
+
+**真实产物**（见 [`daily-status/status-2026-07-07.md`](../daily-status/status-2026-07-07.md)）。报告结构稳定，每天同一套骨架，便于横向对比：
+
+- **Summary**：一句话定性昨天到今天的重心（如"视图深化 steps 189–193 + 一处未提交的正确性修复 step 194"）。
+- **Git activity**：列出昨日报告以来的新提交（如 `8f10895` step193 … `8dd37cf` step189），并核对 `origin/main == HEAD`。
+- **Uncommitted / in-progress**：点名工作树里**尚未提交**的真实改动（step 194 的 `hlsl_interpreter.py` 修改），提醒人去审。
+- **Dump triage / Test status**：复述回归口径（当前 152 case），并诚实标注"回归日志 stale、本次未全量重跑"——**不谎报绿**，这是巡检任务的底线。
+- **Needs attention**：把需要人介入的事项单列。
+
+跑完 Step 5/6 后，日报入库，`ReadMe.md`、`Docs/AI-Development-Handbook*`、`Docs/index.html` 一并刷新提交（见提交 `c32e83a`、`8236b88`）。第二天人只要读这份日报，就能不看代码地掌握"昨晚发生了什么、哪块要盯"。
+
+## 6 · 两个周期任务的对比与设计要点
+
+| 维度 | 例一 `hlsl-interpreter-hourly-develop` | 例二 `daily-hlsl-status-report` |
+|---|---|---|
+| 频率 | 每小时 | 每天 |
+| 性质 | **开发型**（改代码） | **巡检型**（读状态 + 刷文档） |
+| 触发对象 | `Dump/` 里的新 draw case | 整个仓库 + git 状态 |
+| 机器判据 | `Error:` + `X==Y`（回归口径） | git log / 工作树 / 回归口径（只读） |
+| 自跟踪"记忆" | `dump_case.csv` | 上一份 `status-*.md` |
+| 主要产物 | 修复提交 + 回归条目 + step session | `daily-status/status-*.md` + 文档刷新 |
+| 风险 | 中（动解释器，靠回归 gate 兜底） | 低（几乎只读） |
+| 留痕 | `Sessions/` + `Prompts/` 回填 | `daily-status/` + `ReadMe`/手册/站点 |
+
+**从这两个例子提炼的设计要点**（都是让无人值守可靠的关键）：
+
+1. **判据写死、可机判**：复用第三部分那套 `Error:` + `X==Y`——绝不让 AI"自我感觉良好"就算过（回想第二部分 [OpenCode #37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37) 的"假修复"教训，无人值守下这类假绿更危险）。
+2. **幂等 + 自跟踪文件**：每次触发上下文归零，靠 `dump_case.csv` / 上一份日报区分"新旧"，避免重复劳动、避免遗漏。
+3. **只固化"真绿"**：例一明确规定——**修复后通过的才进回归**；没修好、直接过的只记名并删 zip。回归套件的"金身"绝不被无人值守的乐观污染。
+4. **诚实优先**：例二宁可写"回归日志 stale、未全量重跑"，也不谎报一个通过数——留痕的价值在于**真实可核对**。
+5. **强制留痕 + 提交**：每次运行都落到 `Sessions/` / `daily-status/` 并 push，把"无人值守"变成"事后完全可审计"，人从操作员退为验收者。
+6. **接受环境边界**：把"~45s/调用预算、超大 capture 跑不完"写进任务约定，让超预算 case **只记录不误判为失败**——诚实标注未知，胜过强行下结论。
+
+> **与前三部分的关系**：周期任务不是新方法，而是把第三部分成熟的那套纪律（CLAUDE.md 常驻规则、可机判判据、回归 gate、记忆系统、强制留痕）**打包成一份可定时触发、无人值守的脚本**。前三部分回答"人和 AI 怎么协作把项目做出来"，第四部分回答"做出来之后，怎么让 AI 定时自己维护它、而人只需验收"。
 
 ---
 
