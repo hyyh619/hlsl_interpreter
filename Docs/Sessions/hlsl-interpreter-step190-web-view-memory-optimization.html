@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 190 — Cut the dynamic web viewer&#x27;s memory footprint</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step190-web-view-memory-optimization</span></div>
+<div class="wrap">
+<h1>Step 190 — Cut the dynamic web viewer's memory footprint</h1>
+<h2>Prompt</h2>
+<p>动态 web 视图显示太消耗内存，请优化内存开销。</p>
+<h2>Diagnosis</h2>
+<p>Two hotspots in <code>WebMeshView</code>, both scaling with pixel count (46k+ for a normal<br>draw):</p>
+<ol>
+<li><b>Persistent packed duplicates.</b> <code>set_rasterizer_pixels(pixels)</code> and <code>set_output_merger_pixels(pixels)</code> each built a full packed list (<code>[x,y,prim,r,g,b]</code> per pixel) and kept it — ~10 MB each for 46k pixels, on top of the interpreter's own Pixel objects. So ~20 MB of pure duplication.</li>
+</ol>
+<ol>
+<li><b>Per-poll re-serialization of everything, forever.</b> <code>_snapshot()</code> embedded <code>input</code> + <code>output</code> + <code>rasterizer</code> + <code>ps_pixels</code> + <code>output_merger</code> and the <code>/state</code> handler <code>json.dumps</code>'d the whole thing on <b>every poll (4×/sec)</b> — even when nothing changed. With 3× 46k-pixel arrays that's a ~3.2 MB string allocated 4 times a second for as long as the browser stays open, and the browser re-parses ~3.2 MB of JSON each time. Measured: a finished pipeline burned ~3.2 MB × 4/sec of transient garbage doing nothing.</li>
+</ol>
+<h2>Fix</h2>
+<p>Keep pixels as <b>references</b>, serve them <b>lazily</b>, and <b>cache</b> both payloads<br>so unchanged data is never rebuilt.</p>
+<ul>
+<li><b>Refs, not packed copies.</b> <code>set_rasterizer_pixels</code> / <code>set_output_merger_pixels</code> now just store the Pixel-list reference (<code>_rast_final</code> / <code>_om_final</code>). Packing to the compact JSON form happens on demand. Removes the ~20 MB duplication.</li>
+<li><b>Split heavy pixels out of <code>/state</code>.</b> <code>/state</code> is now lightweight — progress, stats, vertex arrays, pixel <b>counts</b>, and a <code>pixels_ver</code> — but no pixel arrays. A new <code>GET /pixels?which=rast|ps|om</code> returns the packed array for one view.</li>
+<li><b>Two-level cache.</b> <code>/state</code> bytes are cached by <code>_seq</code>; each <code>/pixels</code> view's bytes are cached by <code>_pixels_ver</code> (bumped only when pixel data actually changes, via <code>_bump_pixels</code>). So a browser polling a finished pipeline reuses the same cached <code>bytes</code> object — zero packing, zero <code>json.dumps</code>.</li>
+<li><b>Client fetches pixels lazily.</b> <code>renderOutput</code> draws pixel tabs from a client-side cache (<code>pixelCache</code> / <code>pixelCacheVer</code>); <code>ensurePixels(which)</code> fetches <code>/pixels?which=</code> only when <code>pixels_ver</code> changed, so zoom/pan/idle redraws are free and only the <i>active</i> tab ever transfers pixels.</li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>web_mesh_view.py</code> — <code>_rast_final</code>/<code>_om_final</code> refs; <code>_pixels_ver</code> + <code>_bump_pixels</code>; <code>_state_cache</code> / <code>_pixels_cache</code>; <code>_view_pixels</code> + <code>_pixels_body</code><ul>
+<li>lightweight <code>_state_body</code> (replaces <code>_snapshot</code>); <code>/pixels</code> route; client <code>pixelCache</code>/<code>ensurePixels</code> + <code>renderOutput</code> rewrite. (No changes to the pipeline, interpreter, or other viewers.)</li>
+</ul></li>
+</ul>
+<h2>Verification (real <code>event104</code>, 42726 pixels)</h2>
+<ul>
+<li><code>/state</code>: <b>350 KB</b> (vertices + progress only), <code>has pixel arrays: False</code> — down from ~3.2 MB when it carried 3× the pixel arrays.</li>
+<li><code>/pixels?which=rast|ps|om</code>: 42726 each, fetched on demand.</li>
+<li><b>Idle churn: ~19 KB net allocation over 30 <code>/state</code> polls</b> (~640 B/poll, just request overhead) vs. re-serializing ~3.2 MB per poll before — a ~99.98% reduction in steady-state allocation.</li>
+<li><code>/state</code> and <code>/pixels</code> return byte-identical cached responses when unchanged.</li>
+<li>Replay + vertex/pixel trace still work; live VS/rasterizer/PS animation and the normals toggle unaffected (verified endpoints).</li>
+<li>Regression: <b>118/123</b>, unchanged — the viewer is never instantiated on the headless regression path.</li>
+</ul>
+</div></body></html>

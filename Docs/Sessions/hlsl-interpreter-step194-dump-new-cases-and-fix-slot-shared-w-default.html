@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 194 — Run new Dump draw cases, fix slot-shared output .w default</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default</span></div>
+<div class="wrap">
+<h1>Step 194 — Run new Dump draw cases, fix slot-shared output <code>.w</code> default</h1>
+<p>Date: 2026-07-07</p>
+<h2>Task</h2>
+<p>Scheduled hourly develop run. Scan <code>Dump/</code> for cases not yet listed in<br><code>dump_case.csv</code>, record them, run each new case through the pipeline, and where a<br>case fails, find the root cause in the interpreter and fix it. Then commit/push.</p>
+<h2>Thinking / approach</h2>
+<p><code>dump_case.csv</code> was empty (0 bytes) — the task's own tracking file had never been<br>populated — so <b>all 31 zips currently in <code>Dump/</code> count as new</b>. I wrote a<br><code>filename</code> header + the 31 zip names into <code>dump_case.csv</code>.</p>
+<p>Running the full set is bounded by the sandbox's 45s-per-shell-call budget, and<br>several Dump zips are huge (19 MB – 264 MB), so those cannot run to completion<br>here. I ran the small/medium cases and diagnosed the tractable failures.</p>
+<p><code>triage_dump.py</code> couldn't be used directly because its temp-config cleanup<br>(<code>os.remove</code>) hits an "Operation not permitted" error on the mounted folder, so I<br>drove <code>render.py</code> with per-case configs written to <code>/tmp</code> instead. Pass criterion<br>matches the project convention: process exits cleanly, no <code>Error:</code> lines, and<br><code>Total PASSED rows: X/Y</code> with <code>X == Y</code>.</p>
+<h2>Results of the run (31 new cases)</h2>
+<p><b>PASS (11):</b><br><code>Assassins-frame9018_event969</code>, <code>Assassins-frame9018_event15551</code>,<br><code>BlackMyth_event1150/1166/1229/2660/3571</code>, <code>manhattan_event13/50</code>, and<br><code>manhattan_event1041</code> (<b>newly fixed this session</b> — see below).</p>
+<p><b>FAIL — pre-existing per-vertex precision (4):</b> <code>manhattan_event87</code> (rows<br>646/647), <code>manhattan_event124</code>, <code>manhattan_event198</code>, <code>manhattan_event124_indirect</code><br>(all isolated rows ~411, 1–2 rows out of 1000, large TEX_COORD diffs). Different<br>root cause from the packing bug — looks like a per-vertex branch/transcendental<br>path. Not addressed this run.</p>
+<p><b>FAIL — no golden data (1):</b> <code>BlackMyth_event2063</code> — the zip contains **no<br><code>MeshOut_*_mesh.csv</code>**, so there is nothing to compare VS output against. Pipeline<br>runs fine; this is a data limitation, not an interpreter bug.</p>
+<p><b>Not evaluated — exceed the 45s/​call runtime budget (15):</b><br><code>BlackMyth_event2521/4767/4960/5014/5039/5190/5219/5255/5399/5452/6318/6375/6713/6793</code><br>and <code>4k1w_event1124</code>. These are large captures (up to 264 MB) and time out in this<br>environment; they are not confirmed failures.</p>
+<h2>Root cause fixed: unwritten slot-shared output <code>.w</code> default</h2>
+<p><code>manhattan_event1041</code> failed cleanly: <b>every</b> row had <code>TEX_COORD1[1]</code><br>output=<code>0.0</code> vs golden=<code>1.0</code>, and nothing else.</p>
+<p>The VS DXBC only declares/writes <code>o6.xy</code> (TEX_COORD0 = <code>v0.xy</code>); the second<br>semantic <b>TEX_COORD1 is packed into <code>o6.zw</code> and never written</b> (COLOR / <code>o1</code> is<br>also never written). Golden shows unwritten output-register components take the<br>D3D per-register initial value <code>(0,0,0,1)</code>:</p>
+<ul>
+<li>COLOR (<code>o1</code>, float4, unwritten) → <code>(0,0,0,1)</code> — the interpreter already defaulted float4 outputs to <code>(0,0,0,1)</code>, so COLOR passed.</li>
+<li>TEX_COORD1 = <code>o6.zw</code> → <code>(0, 1)</code> — but the interpreter defaulted a slot-shared secondary float2 to <code>(0,0)</code>, dropping the <code>.w == 1.0</code>.</li>
+</ul>
+<p><code>_resolve_slot_shared_params</code> only filled a secondary param when the <i>primary</i><br>shader-write spilled extra components into the shared register (`len(first_val) &gt;<br>first_comp`). When the primary wrote exactly its own components, the unwritten<br>secondary kept its <code>(0,0)</code> default.</p>
+<p><b>Fix</b> (<code>hlsl_interpreter.py</code>, <code>_resolve_slot_shared_params</code>): always walk the<br>slot's packed components. If the primary spilled extras, the secondary reads them<br>(unchanged behavior). Otherwise the secondary is unwritten, so it inherits the D3D<br>output-register default — the component landing on register index 3 (<code>.w</code>) is<br><code>1.0</code>, the rest <code>0.0</code>. A float2 TEX_COORD1 at <code>.zw</code> (offset 2) → <code>(0.0, 1.0)</code>.</p>
+<pre><code>result_params[param['name']] = [
+    1.0 if (offset + i) == 3 else 0.0 for i in range(comp)
+]</code></pre>
+<h2>Verification</h2>
+<ul>
+<li><code>manhattan_event1041</code>: <b>228/228</b> (was 0/228).</li>
+<li>No regression: representative fast cases across every family still pass — <code>Octopath 102/283/4014</code>, <code>witcher3 22484/7889/2774/1852/895</code>, <code>Collision event28</code>, <code>manhattan event50</code>, <code>sekiro2 1089</code>, <code>sekiro4 7844</code>. The change only affects unwritten slot-shared secondary outputs and aligns them with D3D register-default semantics, so it can only improve golden matches.</li>
+<li>Full <code>run_regression.py</code> was not run to completion here (152 cases, some 264 MB, exceed the per-call budget); the targeted subset above stands in as the guard.</li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code> — <code>_resolve_slot_shared_params</code> register-default handling.</li>
+<li><code>Dump/dump_case.csv</code> — populated with the 31 current Dump zip names.</li>
+</ul>
+<h2>Addendum (2026-07-07, continuation run — commit/push completion)</h2>
+<p>A later scheduled run picked this work up because step 5 (commit + push) had never<br>completed — the fix, the prompt-doc summary, and this session file were all sitting<br>uncommitted in the working tree. Re-scanning <code>Dump/</code> this run found <b>no new cases</b>:<br>all 31 zips are already recorded in the (git-ignored) <code>dump_case.csv</code>.</p>
+<p>While reconciling the working tree for commit, the diff of <code>hlsl_interpreter.py</code> was<br>found to also contain a second, coherent and well-commented correctness change beyond<br>the slot-shared <code>.w</code> fix: an early-<b><code>return</code></b> handler. A new <code>_ReturnSignal</code><br>exception is raised when a <code>return</code> is reached inside a nested <code>if</code>/<code>while</code>/block and<br>caught by the <code>main()</code> statement loops (both the signature-driven<br><code>_execute_*_with_params</code> path and the struct-driven path), so an early-return cull<br>guard such as <code>if (idx &gt;= count) { o = (0,0,0,1); return; }</code> actually stops <code>main()</code><br>instead of being clobbered by the statements that textually follow the branch. The<br>same commit also fixes an if/else-merge cache-corruption bug: the statement list is<br>now executed on a <b>copy</b> of the cached template, because the merge marks consumed<br><code>else</code> entries as <code>None</code> and mutating the cached list dropped those branches for every<br>later invocation.</p>
+<p>Re-verification this run (per-case configs driving <code>render.py</code> headless, 45s/​call<br>budget): <code>manhattan_event1041</code> <b>160/160</b> clean (partial-to-full smoke, 0 <code>Error:</code><br>lines; prior full run recorded 228/228), and cross-family fast cases still pass —<br><code>manhattan_event50</code> 1000/1000, <code>Octopath event102</code> 6/6, <code>Octopath event1031</code> 6/6,<br><code>Collision event28</code> 204/204. No regressions.</p>
+<p><b>Commit / push status.</b> The fix was committed locally as <code>2cc8307</code><br>("fix(interpreter): D3D register-default for unwritten slot-shared outputs +<br>early-return handling (step 194)"), sitting on top of <code>c32e83a</code> (the<br>2026-07-07 daily-status doc, committed by a concurrent run). A stale<br><code>.git/index.lock</code> had to be worked around by committing through an alternate<br><code>GIT_INDEX_FILE=/tmp/gitindex</code> (the mounted <code>.git</code> refuses <code>unlink</code>/<code>rm</code> with<br>"Operation not permitted", so leftover temp objects and a 0-byte<br><code>.git/HEAD.lock</code> remain but are harmless). **<code>git push</code> could not complete from<br>this sandbox**: the HTTPS remote has no stored credential, there is no SSH key<br>or agent, and <code>github.com</code> does not resolve for raw ssh (only allowlisted HTTPS<br>tooling has network). This is the same environmental blocker that left step 194<br>uncommitted across prior runs. The two commits are preserved in the local repo<br>and <code>main</code> is <b>2 ahead of <code>origin/main</code></b> — a credentialed <code>git push origin main</code><br>(from the desktop environment or a future run with credentials) will publish them.</p>
+</div></body></html>

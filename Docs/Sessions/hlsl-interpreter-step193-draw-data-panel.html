@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 193 — &quot;Draw Data&quot; panel: browse &amp; preview the raw zip</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step193-draw-data-panel</span></div>
+<div class="wrap">
+<h1>Step 193 — "Draw Data" panel: browse &amp; preview the raw zip</h1>
+<h2>Prompt</h2>
+<p>动态 web 视图增加窗口显示当前执行的原始 draw zip data：</p>
+<ol>
+<li>窗口左边是列表展示 zip data 内的文件；</li>
+<li>窗口右边是预览视图，可以预览 raw data / csv 文件 / image 文件；</li>
+<li>窗口默认摆放在最下面。</li>
+</ol>
+<h2>Design</h2>
+<p>A new draggable panel (<code>panel-data</code>, "Draw Data") with a left file list and a<br>right preview, backed by two new server routes reading the extracted zip folder.<br>The temp folder lives for the whole interactive session (it is only<br><code>shutil.rmtree</code>'d after <code>_execute_pipeline</code> returns, which blocks on the stdin<br>loop), so the server can read it while the user browses.</p>
+<h3>Server (<code>web_mesh_view.py</code>)</h3>
+<ul>
+<li><code>set_data_folder(path)</code> — render.py points it at the extracted zip folder right after enabling the viewer (before VS), so the list is ready when the page opens.</li>
+<li><code>GET /files</code> → JSON <code>[{name, size, kind}]</code> from an <code>os.walk</code>, where <code>kind</code> ∈ <code>image | csv | text | binary</code> by extension.</li>
+<li><code>GET /file?name=&lt;rel&gt;</code> → file bytes. Images are sent with the right image MIME (<code>image/bmp</code> etc.); text/csv decoded UTF-8 (errors replaced); binary as <code>application/octet-stream</code>. Non-image previews are capped at 512 KB.</li>
+<li><code>_resolve_safe</code> normalizes the path and rejects anything escaping the data folder (path-traversal guard → 404).</li>
+</ul>
+<h3>Client</h3>
+<ul>
+<li><code>panel-data</code> (width 1000) with <code>#filelist</code> (left) + <code>#filepreview</code> (right).</li>
+<li><code>loadFileList()</code> fetches <code>/files</code> once and renders a clickable list (name, size, kind).</li>
+<li><code>previewFile(f)</code> dispatches by kind: <b>image</b> → <code>&lt;img src="/file?..."&gt;</code>; <b>csv</b> → parsed into an HTML <code>&lt;table&gt;</code> (first 300 rows); <b>text</b> → <code>&lt;pre&gt;</code>; <b>binary</b> → fetched as an ArrayBuffer and rendered as a <b>hex dump</b>.</li>
+<li><b>Default at the bottom</b>: <code>tileLayout()</code> lays out the other panels with row wrapping, then docks <code>panel-data</code> on its own row below all of them. Layout key bumped <code>v2 → v3</code> so the new panel takes its default bottom slot.</li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>web_mesh_view.py</code> — <code>set_data_folder</code> + <code>_list_files</code>/<code>_file_kind</code>/ <code>_resolve_safe</code>/<code>_file_response</code>; <code>/files</code> and <code>/file</code> routes; <code>panel-data</code> markup + CSS; file-browser JS (<code>loadFileList</code>/<code>previewFile</code>/<code>hexdump</code>/ <code>csvTable</code>); <code>tileLayout</code> bottom-docking; <code>LAYOUT_KEY</code> v3.</li>
+<li><code>render.py</code> — <code>set_data_folder(data_folder)</code> at viewer-enable time.</li>
+</ul>
+<h2>Verification</h2>
+<ul>
+<li>Unit: fake data folder → <code>/files</code> returns correct kinds; hlsl/csv text and binary bytes served; <b>path traversal blocked (404)</b>; page carries <code>panel-data</code>/<code>#filelist</code>/<code>#filepreview</code> + the browser JS; <code>node --check</code> on the extracted script passes.</li>
+<li>End-to-end (<code>event104</code>): <code>/files</code> listed <b>56 real files</b> (18 csv, 26 binary, 4 text, 8 image); CSV header previewed; <code>PS_shader.dxbc</code> served (900 B) for hex; <code>PS_slot_0_res_88_mip0_arr0.bmp</code> served (49206 B) for image preview.</li>
+<li>Regression: <b>118/123</b>, unchanged — the viewer is never instantiated on the headless regression path.</li>
+</ul>
+</div></body></html>

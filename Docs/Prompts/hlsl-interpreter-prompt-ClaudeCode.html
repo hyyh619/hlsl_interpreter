@@ -1712,36 +1712,103 @@ ul,ol{padding-left:26px}
 <p><b>2. 逐项动画延迟（需求 2）</b>：<code>WebMeshView._delays={vertex,primitive,pixel}</code>（秒）+<br><code>set_delays</code>/<code>get_delay</code>，管线<b>每次迭代实时读取</b>故滑块即时生效。VS 循环每顶点 sleep<br><code>get_delay('vertex')</code>、rasterizer 每图元 sleep <code>'primitive'</code>、PS 每像素 sleep <code>'pixel'</code>；延迟&gt;0 时<br>逐项上报进度（平滑动画），否则维持 1/500 节流。控制面：<b>config 种子</b><br><code>anim_vertex_delay</code>/<code>anim_primitive_delay</code>/<code>anim_pixel_delay</code>（秒，在 enable_mesh_view 时注入）；<br><b>实时滑块</b>（ms）POST 到 <code>GET /set?vertex=..&amp;primitive=..&amp;pixel=..</code>，<code>/state.delays</code> 回填滑块<br>（不打断拖动中的用户），带 Reset 按钮。</p>
 <p><b>改动</b>：<code>web_mesh_view.py</code>（延迟状态/方法、rast 绑定与切片、<code>/set</code> 路由、Rast 条+三滑块+JS 接线、<br>自动跟随 rasterizer 阶段页签）、<code>rasterizer.py</code>（<code>import time</code>、动画钩子、五循环每图元回调）、<br><code>hlsl_interpreter.py</code>（<code>import time</code>、VS/PS 逐项延迟）、<code>render.py</code>（rasterize 前挂钩子、enable 时种子延迟）。</p>
 <p><b>验证</b>：独立单测——页面含 Rast 条+三滑块+<code>pushDelays</code>+<code>/set</code>；<code>GET /set?...</code> 更新 <code>get_delay</code> 并<br>反映到 <code>/state.delays</code>；<code>/state</code> 带 <code>rast</code> 块。全管线 <code>Collision-...event104</code>（1149 顶点/46015 光栅<br>像素/42726 PS 像素）设 <code>anim_primitive_delay=0.01</code> + 后台轮询：<b>抓到 99 个不同光栅阶段样本</b>，图元<br><code>3→6→10→…→383</code>、像素实时 <code>0→2078→3909→…→46015</code>，阶段 <code>vs→rasterizer→ps→done</code>。延迟节奏：<br><code>anim_vertex_delay=0.002</code> 使 VS 从 ~0.4s 增至 3.41s（<code>1149×2ms≈+2.3s</code>），确认逐顶点 sleep 生效。<br><b>回归 118/123</b>，与 step186/187 一致——5 个失败为既有；延迟默认 0、headless 回归（mesh view 关闭）<br>从不挂动画钩子。</p>
-<h1 id="step-189">189</h1>
+<h1 id="step-189">189 动态 web 视图的rasterizer动画显示</h1>
 <h2>Prompts</h2>
+<ol>
+<li>对Rasterizer/Pixel Shader/Output Merger窗口提供缩放按钮</li>
+<li>对整个渲染进程中的VS/Rasterizer/PS/Output Merger阶段提供重放的按钮，可以重新执行指定的绘制流程</li>
+<li>创建一个selected Pixel info窗口，selected Pixel info窗口执行某一个被选择的Pixel的PS指令，显示每条指令执行的结果</li>
+<li>selected Vertex Info窗口，也需要显示完整的Vertex Shader指令流每条指令执行过程和结果</li>
+</ol>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-190">190</h1>
+<p>四项需求，其中 2/3/4 都需要 <b>web server 按需回调解释器</b>（首轮跑完主线程在 stdin 循环空闲时）。<br><code>ThreadingHTTPServer</code> 每请求一线程，故 <code>/replay</code>、<code>/trace_*</code> 在某个 handler 线程跑时 <code>/state</code><br>轮询照常在别的线程进行——重放动画依旧实时。控制器用锁串行化解释器访问（解释器非可重入）。</p>
+<p><b>指令追踪（需求 3、4）</b>：解释器 debug 开启时本就逐语句发 <code>[STMT] … =&gt; …</code>。不另建 tracer，<br>而是捕获这些行给单个项：<code>debug_print</code> 加 <code>_trace_sink</code>——置位时把语句行收进缓冲，<code>_trace_only</code><br>模式抑制正常 stdout/log（点一次追踪不污染运行日志）。<code>_trace_single_execution()</code> 强开 debug、<br>重置 <code>_eval_counter</code> 使这一次 <code>_should_print</code> 为真、跑 <code>_execute_void_main</code> 再恢复全部状态（管线<br>跑完后调用安全）。<code>trace_vs_vertex(index,…)</code> 追一个顶点；<code>trace_ps_pixel(pixel,…)</code> 按<br><code>executePS_with_params</code> 同样方式重建像素 PS 输入（含 ddx/ddy 的 quad 上下文）再追踪。</p>
+<p><b>阶段重放（需求 2）</b>：<code>_PipelineController</code>（render.py）捕获已建的解释器/光栅器/深度对象+各阶段<br>参数+当前 <code>vs_results</code>/<code>pixels</code>。<code>replay(stage)</code> 从该阶段起重跑（<code>vs→rasterizer→ps→om</code>）并喂给<br>web 视图重放动画。<b>深度有状态</b>：<code>execute()</code> 会写入深度，二次跑会拒掉所有片元——加<br><code>Depth.snapshot_buffers()</code>/<code>restore_buffers()</code>，预绘制缓冲快照一次、每次 rast/om 重放前恢复。<br>（验证：<code>replay vs</code> 从 <code>pixels=0</code> 修成 <code>pixels=42726</code>。）</p>
+<p><b>像素视图缩放（需求 1）</b>：<code>drawPixels</code> 现应用像素视图 zoom+pan 并记录变换；<code>pctl</code> 为<br>Rasterizer/PS/OM 页签显示 <b>+ / − / Reset</b> 按钮（另加滚轮缩放、拖拽平移）。<code>makeView</code> 加 <code>isActive</code><br>门控，使 VS 线框的拖拽旋转在像素页签激活时不触发。</p>
+<p><b>接线</b>：<code>WebMeshView</code> 新路由 <code>GET /replay?stage=</code>、<code>/trace_vertex?i=</code>、<code>/trace_pixel?x=&amp;y=</code> 派发<br>给控制器（<code>set_controller</code>）。右键顶点→<code>traceVertex</code> 取回并在 Selected Vertex Info 下渲染 VS 指令<br>流；左键像素（像素页签）→<code>tracePixel</code> 在新建 <b>Selected Pixel Info</b> 面板显示 PS 指令流并高亮所选<br>像素。<code>bind_rast_pixels</code>/<code>bind_ps_pixels</code> 清掉上一轮 final 像素缓冲，使重放从空开始而非显示旧结果。</p>
+<p><b>改动</b>：<code>hlsl_interpreter.py</code>（<code>_trace_sink</code>/<code>_trace_only</code>、<code>debug_print</code> sink、三个 trace 方法）、<br><code>output_merger.py</code>（<code>snapshot_buffers</code>/<code>restore_buffers</code>）、<code>web_mesh_view.py</code>（控制器钩子+3 路由、<br>像素缩放/平移+按钮、Selected Pixel Info 面板、重放按钮、顶点/像素追踪取回与渲染、<code>isActive</code> 门控、<br>bind_* 清 stale final）、<code>render.py</code>（<code>_PipelineController</code> 重放+追踪+深度快照恢复、上提 PS 引用、<br>预绘制深度快照、控制器注册）。</p>
+<p><b>验证</b>：页面含全部新控件。<code>Collision-...event104</code> 全管线经实时 server：<code>trace_vertex 0</code>→ok 61 行<br><code>[STMT]</code>/<code>[DECL]</code>；<code>trace_pixel (394,298)</code>→ok 15 行；<code>replay ps</code>→ok(42726px)；<code>replay vs</code>→ok<br>(1149 顶点、<b>42726 px</b>——深度恢复确认，修前为 0)。<b>回归 118/123 不变</b>——trace/replay 路径在<br>headless（无 mesh view、<code>_trace_sink</code> 为 None）完全惰性，<code>debug_print</code> 未置 sink 时与原行为一致。</p>
+<h1 id="step-190">190 动态 web 视图显示太消耗内存</h1>
 <h2>Prompts</h2>
+<p>动态 web 视图显示太消耗内存，请优化内存开销</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-191">191</h1>
+<p><code>WebMeshView</code> 两处内存热点，都随像素数（普通 draw 46k+）线性膨胀：</p>
+<ol>
+<li><b>持久打包副本</b>：<code>set_rasterizer_pixels</code>/<code>set_output_merger_pixels</code> 各自把整份像素打包成 <code>[x,y,prim,r,g,b]</code> 列表并长期保留——46k 像素每份约 10MB，且解释器本就持有 Pixel 对象，纯重复约 20MB。</li>
+<li><b>每次轮询整体重序列化、永不停</b>：<code>_snapshot()</code> 把 <code>input+output+rasterizer+ps_pixels+output_merger</code> 全塞进去，<code>/state</code> 每次轮询（4 次/秒）<code>json.dumps</code> 整包——即使什么都没变。3×46k 像素数组 ≈ 每次 3.2MB 字符串、每秒 4 次，只要浏览器开着就一直分配，浏览器每次还要重新解析 3.2MB JSON。</li>
+</ol>
+<p><b>修复</b>：像素改为<b>引用</b>、<b>惰性</b>下发、双层<b>缓存</b>，未变的数据永不重建。</p>
+<ul>
+<li><b>引用而非打包副本</b>：<code>set_rasterizer_pixels</code>/<code>set_output_merger_pixels</code> 只存 Pixel 列表引用 （<code>_rast_final</code>/<code>_om_final</code>），打包按需进行——消除 ~20MB 重复。</li>
+<li><b>重像素移出 <code>/state</code></b>：<code>/state</code> 轻量化——进度/统计/顶点数组/像素<b>计数</b>+<code>pixels_ver</code>，不含像素数组； 新增 <code>GET /pixels?which=rast|ps|om</code> 单独返回某视图打包数组。</li>
+<li><b>两级缓存</b>：<code>/state</code> 字节按 <code>_seq</code> 缓存；每个 <code>/pixels</code> 视图字节按 <code>_pixels_ver</code> 缓存 （仅像素真正变化时经 <code>_bump_pixels</code> 递增）。浏览器轮询已完成的管线直接复用同一 <code>bytes</code> 对象—— 零打包、零 <code>json.dumps</code>。</li>
+<li><b>客户端惰性取像素</b>：<code>renderOutput</code> 从客户端缓存（<code>pixelCache</code>/<code>pixelCacheVer</code>）绘制像素页签； <code>ensurePixels(which)</code> 仅在 <code>pixels_ver</code> 变化时取 <code>/pixels?which=</code>，故缩放/平移/空闲重绘零开销、 且只有<b>当前</b>页签传像素。</li>
+</ul>
+<p><b>改动</b>：仅 <code>web_mesh_view.py</code>（refs、<code>_pixels_ver</code>/<code>_bump_pixels</code>、<code>_state_cache</code>/<code>_pixels_cache</code>、<br><code>_view_pixels</code>+<code>_pixels_body</code>+轻量 <code>_state_body</code> 取代 <code>_snapshot</code>、<code>/pixels</code> 路由、客户端<br><code>pixelCache</code>/<code>ensurePixels</code>+重写 <code>renderOutput</code>）。管线/解释器/其它视图未动。</p>
+<p><b>验证</b>（真实 <code>event104</code>，42726 像素）：<code>/state</code> <b>350KB</b>（仅顶点+进度）、<code>has pixel arrays: False</code>——<br>较原来携带 3×像素数组的 ~3.2MB 大降；<code>/pixels?which=</code> 各 42726、按需取；**空闲 30 次 <code>/state</code> 轮询净分配<br>仅 ~19KB**（~640B/次，纯请求开销），对比原来每次重序列化 ~3.2MB——空闲稳态分配降约 99.98%；<code>/state</code><br>与 <code>/pixels</code> 未变时返回字节完全相同的缓存。重放+顶点/像素追踪仍工作，实时动画与法线开关不受影响。<br><b>回归 118/123 不变</b>——headless 回归路径从不实例化该视图。</p>
+<h1 id="step-191">191 动态 web 视图可以动态拖动小窗口</h1>
 <h2>Prompts</h2>
+<p>动态 web 视图支持动态拖动网页上的小窗口进行不同的布局</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-192">192</h1>
+<p>纯前端改动（仅 <code>web_mesh_view.py</code> 页面模板，服务端/管线不动）：让三个面板（Input Vertices /<br>Output / Selected Info）可自由拖动排布，取代原来的固定 flex 行。</p>
+<ul>
+<li><b>自由定位</b>：<code>.wrap</code> 变为定位上下文（<code>position:relative</code>，min-height/width 由 JS 维护），每个 <code>.panel</code> 改 <code>position:absolute</code> 并有稳定 <code>id</code>（panel-input/output/info）。</li>
+<li><b>拖动把手</b>：每个面板加 <code>.titlebar</code>（<code>cursor:move</code>、<code>user-select:none</code>，名称+抓取符号），拖动只 绑在标题栏上——画布保留自身的旋转/平移/点击交互，Info 面板内部的 <code>&lt;h3&gt;</code> 分节标题也不会误触发移动。</li>
+<li><b>拖动机制</b>：<code>makeDraggable</code> 在标题栏左键 mousedown 后于 <code>document</code> 上跟踪 mousemove/mouseup （快速拖出标题栏也不断），更新 left/top 并夹到 ≥0；拖动中加 <code>.dragging</code> 抬升 z-index/阴影。</li>
+<li><b>持久化</b>：落点写入 <code>localStorage</code>（<code>hlsl_web_layout_v1</code>），加载时恢复，故布局跨刷新/重跑保留； <code>initPanels()</code> 应用已存布局，首次则左→右平铺（与旧观感一致）；<code>fitWrap()</code> 撑开容器并随窗口 resize 重算。<b>Reset Layout</b> 按钮清除已存布局并重新平铺。</li>
+</ul>
+<p><b>改动</b>：<code>web_mesh_view.py</code>——CSS（<code>.wrap</code>/<code>.panel</code>/<code>.titlebar</code>/<code>.dragging</code>）、面板标记（id+titlebar）、<br>头部 Reset Layout 按钮、拖动 JS（loadLayout/saveLayout/fitWrap/tileLayout/resetLayout/makeDraggable/<br>initPanels）并在 init IIFE 接线。</p>
+<p><b>验证</b>：页面含 3 面板各带 <code>.titlebar</code>、绝对定位、<code>cursor:move</code> 与拖动/持久化 JS+Reset 按钮<br>（标记齐全，3 面板 ⇔ 3 标题栏）；抽取页面 <code>&lt;script&gt;</code> 跑 <code>node --check</code> <b>语法通过</b>；服务端<br><code>/state</code> <code>/pixels</code> <code>/replay</code> <code>/trace_*</code> 不变。<b>回归 118/123 不变</b>（headless 回归从不实例化该视图）。</p>
+<h1 id="step-192">192 动态 web 视图selected VS/PS info窗口分成两个独立的</h1>
 <h2>Prompts</h2>
+<p>动态 web 视图selected Vertex/Pixel info窗口分成两个独立的</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-193">193</h1>
+<p>承接 step191（面板可拖动）：Selected Vertex Info 与 Selected Pixel Info 仍挤在同一个<br><code>panel-info</code> 窗口里（两个 <code>&lt;h3&gt;</code> 分节堆叠）。本步（纯前端 <code>web_mesh_view.py</code>）把它们拆成两个<br><b>独立可拖动</b>窗口：</p>
+<ul>
+<li><b>拆分面板</b>：<code>panel-info</code>（含 <code>#info</code>+<code>#pxinfo</code>）拆为 <code>panel-vertex</code>（标题 Selected Vertex Info， 体 <code>#info</code>）与 <code>panel-pixel</code>（标题 Selected Pixel Info，体 <code>#pxinfo</code>），各带自己的 <code>.titlebar</code>； 现有拖动系统（<code>initPanels</code>/<code>makeDraggable</code> 遍历所有 <code>.panel</code>）自动让二者独立拖动+持久化，无需额外接线。</li>
+<li><b>布局键升 v2</b>（<code>hlsl_web_layout_v1</code>→<code>v2</code>）：面板集合变了（<code>panel-info</code> 消失、新增两个 id），换键 避免恢复到定位旧合并面板的过期布局。</li>
+<li><b>默认平铺换行</b>：现有 4 个面板，单行左→右会把最后一个挤出屏幕，故 <code>tileLayout()</code> 在下一个面板超出 视口宽度时换行；<code>initPanels()</code> 无存档时用 <code>tileLayout()</code>，有存档时应用存档并把无位置的新面板补到最右。</li>
+</ul>
+<p><b>验证</b>：页面现 <b>4 面板/4 标题栏</b>，<code>panel-vertex</code>/<code>panel-pixel</code>/<code>#info</code>/<code>#pxinfo</code> 齐全、旧<br><code>panel-info</code> 已无、布局键为 v2；抽取 <code>&lt;script&gt;</code> 跑 <code>node --check</code> <b>语法通过</b>；服务端不变（顶点追踪仍<br>写 <code>#info</code>、像素追踪写 <code>#pxinfo</code>，元素 id 未变）。<b>回归 118/123 不变</b>（headless 回归不实例化该视图）。</p>
+<h1 id="step-193">193 动态 web 视图增加窗口显示原始的draw zip data</h1>
 <h2>Prompts</h2>
+<p>动态 web 视图增加窗口显示当前执行的原始draw zip data</p>
+<ol>
+<li>窗口左边是列表展示zip data内的文件</li>
+<li>窗口右边是预览视图，可以预览raw data/csv文件/image文件</li>
+<li>窗口默认摆放在最下面</li>
+</ol>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-194">194</h1>
+<p>新增可拖动面板 <code>panel-data</code>（"Draw Data"）：左列表 + 右预览，读取解压后的 zip 目录。该临时目录在整个<br>交互会话期间存在（仅在 <code>_execute_pipeline</code> 返回后才 <code>rmtree</code>，而它阻塞在 stdin 循环上），故服务端可边浏览边读。</p>
+<p><b>服务端（<code>web_mesh_view.py</code>）</b>：</p>
+<ul>
+<li><code>set_data_folder(path)</code>——render.py 在启用视图后（VS 之前）即指向解压目录，页面一打开列表就绪。</li>
+<li><code>GET /files</code> → <code>os.walk</code> 出 <code>[{name,size,kind}]</code>，<code>kind</code> 按扩展名分 image/csv/text/binary。</li>
+<li><code>GET /file?name=&lt;rel&gt;</code> → 文件字节：图片带正确 MIME（<code>image/bmp</code> 等）；text/csv 以 UTF-8 解码（错误替换）； binary 为 <code>application/octet-stream</code>。非图片预览截断到 512KB。<code>_resolve_safe</code> 规范化路径并拒绝越界 （路径穿越防护 → 404）。</li>
+</ul>
+<p><b>客户端</b>：<code>panel-data</code>（宽 1000）含 <code>#filelist</code>（左）+<code>#filepreview</code>（右）。<code>loadFileList()</code> 取一次<br><code>/files</code> 渲染可点列表（名/大小/类型）；<code>previewFile(f)</code> 按 kind 分派：<b>image</b>→<code>&lt;img&gt;</code>；<b>csv</b>→解析成<br>HTML <code>&lt;table&gt;</code>（前 300 行）；<b>text</b>→<code>&lt;pre&gt;</code>；<b>binary</b>→取 ArrayBuffer 做<b>十六进制转储</b>。<br><b>默认置底</b>：<code>tileLayout()</code> 先行/换行排其余面板，再把 <code>panel-data</code> 单独一行停到所有面板下方；布局键<br><code>v2→v3</code> 使新面板取默认底部位置。</p>
+<p><b>改动</b>：<code>web_mesh_view.py</code>（set_data_folder、<code>_list_files</code>/<code>_file_kind</code>/<code>_resolve_safe</code>/<code>_file_response</code>、<br><code>/files</code>+<code>/file</code> 路由、panel-data 标记+CSS+浏览 JS、tileLayout 置底、LAYOUT_KEY v3）；<code>render.py</code><br>（启用视图时 <code>set_data_folder(data_folder)</code>）。</p>
+<p><b>验证</b>：单测——假目录 <code>/files</code> 类型正确、hlsl/csv 文本与二进制字节可取、<b>路径穿越被挡（404）</b>、页面含<br>panel-data/#filelist/#filepreview+浏览 JS、抽取 <code>&lt;script&gt;</code> 跑 <code>node --check</code> 通过。端到端（<code>event104</code>）：<br><code>/files</code> 列出 <b>56 个真实文件</b>（18 csv/26 binary/4 text/8 image），CSV 预览出表头，<code>PS_shader.dxbc</code><br>送 900B 供十六进制、<code>PS_slot_0_res_88_mip0_arr0.bmp</code> 送 49206B 供图片预览。<b>回归 118/123 不变</b>。</p>
+<h1 id="step-194">194 运行 Dump 新 draw case 并修复交叉复用输出寄存器 .w 默认值</h1>
 <h2>Prompts</h2>
+<p>扫描 /Dump，把 dump_case.csv 未记录的新 case 加入并逐个运行；不过的定位 hlsl_interpreter 根因并修复，最后提交推送。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
+<p><code>dump_case.csv</code> 为空（任务自有追踪文件从未填写），故 <code>Dump/</code> 现有 <b>31 个 zip 全算新 case</b>；已写入<br><code>filename</code> 头 + 31 个文件名。沙箱每次 shell 调用限 45s，且多个 Dump zip 极大（19MB–264MB）无法在此环境跑完；<br><code>triage_dump.py</code> 的临时配置清理在挂载目录上 <code>os.remove</code> 触发 "Operation not permitted"，改为用 <code>/tmp</code> 下<br>的 per-case 配置直接驱动 <code>render.py</code>。</p>
+<p><b>运行结果（31 新 case）</b>：PASS 11（含本轮修复的 <code>manhattan_event1041</code>）；FAIL-精度 4<br>（<code>manhattan_event87/124/198/124_indirect</code>，仅 1–2 行、TEX_COORD 大偏差，属既有的逐顶点分支/超越函数问题，本轮未动）；<br>FAIL-无 golden 1（<code>BlackMyth_event2063</code> 的 zip 内无 <code>MeshOut_*_mesh.csv</code>，非解释器 bug）；因超时未评估 15<br>（大 zip，含 264MB 的 <code>4k1w_event1124</code>）。</p>
+<p><b>修复的根因</b>：<code>manhattan_event1041</code> 干净地全行 <code>TEX_COORD1[1]</code> 输出 0.0、golden 1.0。VS DXBC 仅写 <code>o6.xy</code><br>（TEX_COORD0=v0.xy），而 <b>TEX_COORD1 打包进 <code>o6.zw</code> 从未写</b>（COLOR/<code>o1</code> 也未写）。golden 显示未写的输出<br>寄存器分量取 D3D 每寄存器初值 <code>(0,0,0,1)</code>：COLOR(float4) 已默认 <code>(0,0,0,1)</code> 故通过；但交叉复用的次级 float2<br>TEX_COORD1=<code>o6.zw</code> 被默认成 <code>(0,0)</code>，漏掉 <code>.w==1.0</code>。<code>_resolve_slot_shared_params</code> 原来只在主参数写溢出到共享<br>寄存器时才回填次级参数；主参数恰好只写自己分量时次级保持 <code>(0,0)</code>。<b>修复</b>：始终按打包 offset 走——主参数有溢出则次级<br>读溢出（行为不变），否则次级为未写，继承寄存器默认——落在寄存器索引 3（<code>.w</code>）的分量取 <code>1.0</code>，其余 <code>0.0</code>；<code>.zw</code> 的<br>float2 → <code>(0.0, 1.0)</code>。</p>
+<p><b>验证</b>：<code>manhattan_event1041</code> 228/228（原 0/228）；跨家族快速回归（Octopath/witcher3/Collision/manhattan/<br>sekiro2/sekiro4）全过，改动仅影响未写的交叉复用次级输出、与 D3D 语义对齐，故只会改善匹配。改动文件：<br><code>hlsl_interpreter.py</code>（<code>_resolve_slot_shared_params</code>）、<code>Dump/dump_case.csv</code>。</p>
 <h1 id="step-195">195</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>

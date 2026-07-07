@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 189 — Pixel-view zoom, stage replay, and per-instruction Vertex/Pixel trace</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step189-replay-and-instruction-trace</span></div>
+<div class="wrap">
+<h1>Step 189 — Pixel-view zoom, stage replay, and per-instruction Vertex/Pixel trace</h1>
+<h2>Prompt</h2>
+<ol>
+<li>为 Rasterizer / Pixel Shader / Output Merger 窗口提供缩放按钮。</li>
+<li>为 VS / Rasterizer / PS / Output Merger 各阶段提供重放按钮，可重新执行指定的绘制流程。</li>
+<li>新建一个 "Selected Pixel Info" 窗口，执行某个被选中像素的 PS 指令，显示每条指令的结果。</li>
+<li>"Selected Vertex Info" 窗口也要显示完整的 VS 指令流每条指令的执行过程与结果。</li>
+</ol>
+<h2>Design</h2>
+<p>Items 2–4 need the <b>web server to invoke the interpreter on demand</b> (after the<br>first run, when the main thread is idle in the stdin loop). <code>ThreadingHTTPServer</code><br>already handles each request on its own thread, so a <code>/replay</code> or <code>/trace_*</code><br>request runs on a handler thread while <code>/state</code> polls continue on others — the<br>replay animation stays live. A controller serialises interpreter access with a<br>lock (the interpreter is not re-entrant).</p>
+<h3>Instruction trace (items 3, 4)</h3>
+<p>The interpreter already emits per-statement <code>[STMT] … =&gt; …</code> lines via<br><code>debug_print</code> when debug is on. Rather than build a parallel tracer, I capture<br>those lines for a single item:</p>
+<ul>
+<li><code>debug_print</code> gains a <code>_trace_sink</code>: when set, statement lines are appended to it, and in <code>_trace_only</code> mode the normal stdout/log is suppressed (a trace click doesn't pollute the run log).</li>
+<li><code>_trace_single_execution(...)</code> forces debug on, resets <code>_eval_counter</code> so <code>_should_print</code> is true for the one execution, runs <code>_execute_void_main</code>, and restores all state — safe to call after the pipeline finished.</li>
+<li><code>trace_vs_vertex(index, …)</code> traces one vertex; <code>trace_ps_pixel(pixel, …)</code> rebuilds the pixel's PS inputs exactly as <code>executePS_with_params</code> does (incl. quad context for ddx/ddy) and traces it.</li>
+</ul>
+<h3>Stage replay (item 2)</h3>
+<p><code>_PipelineController</code> (render.py) captures the built interpreters / rasterizer /<br>depth and the stage parameters plus the current <code>vs_results</code> / <code>pixels</code>.<br><code>replay(stage)</code> re-runs from that stage onward (<code>vs → rasterizer → ps → om</code>),<br>feeding the web view so the animation replays. <b>Depth is stateful</b>: <code>execute()</code><br>writes depths, so a second pass would reject every fragment — fixed by adding<br><code>Depth.snapshot_buffers()</code> / <code>restore_buffers()</code>, snapshotting the pre-draw<br>buffer once, and restoring before each rast/om replay. (Verified: <code>replay vs</code><br>went from <code>pixels=0</code> to <code>pixels=42726</code> after the fix.)</p>
+<h3>Pixel-view zoom (item 1)</h3>
+<p><code>drawPixels</code> now applies a pixel-view zoom + pan and records its transform;<br><code>/pctl</code> shows <b>+ / − / Reset</b> buttons for the Rasterizer/PS/OM tabs (plus wheel<br>zoom and drag pan). <code>makeView</code> gained an <code>isActive</code> guard so the VS wireframe's<br>drag/rotate handlers don't fire while a pixel tab is showing.</p>
+<h3>Wiring</h3>
+<ul>
+<li>New routes on <code>WebMeshView</code>: <code>GET /replay?stage=</code>, <code>/trace_vertex?i=</code>, <code>/trace_pixel?x=&amp;y=</code>, dispatched to the controller (<code>set_controller</code>).</li>
+<li>Right-click a vertex → <code>traceVertex</code> fetches and renders the VS trace under the Selected Vertex Info panel; left-click a pixel (pixel tab) → <code>tracePixel</code> shows the PS trace in the new Selected Pixel Info panel with the clicked pixel highlighted.</li>
+<li><code>bind_rast_pixels</code> / <code>bind_ps_pixels</code> now clear the previous run's final pixel buffers so replays animate from empty instead of showing stale finals.</li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>hlsl_interpreter.py</code> — <code>_trace_sink</code>/<code>_trace_only</code>; <code>debug_print</code> sink; <code>_trace_single_execution</code>, <code>trace_vs_vertex</code>, <code>trace_ps_pixel</code>.</li>
+<li><code>output_merger.py</code> — <code>snapshot_buffers</code> / <code>restore_buffers</code>.</li>
+<li><code>web_mesh_view.py</code> — controller hook + 3 routes; pixel-view zoom/pan + buttons; Selected Pixel Info panel; replay buttons; vertex/pixel trace fetch + render; <code>isActive</code> guard; bind_* clear stale finals.</li>
+<li><code>render.py</code> — <code>_PipelineController</code> (replay + trace, depth-snapshot restore); hoisted PS refs; pre-draw depth snapshot; controller registration.</li>
+</ul>
+<h2>Verification</h2>
+<ul>
+<li>Page serves with every new control (replay buttons, pixel zoom +/−/Reset, Selected Pixel Info panel, trace/replay fetch calls).</li>
+<li>Full pipeline on <code>Collision-...event104.zip</code> via the live server:<ul>
+<li><code>trace_vertex 0</code> → ok, 61 <code>[STMT]</code>/<code>[DECL]</code> lines.</li>
+<li><code>trace_pixel (394,298)</code> → ok, 15 lines.</li>
+<li><code>replay ps</code> → ok (42726 px); <code>replay vs</code> → ok (1149 verts, <b>42726 px</b> — depth-restore confirmed, was 0 before the fix).</li>
+</ul></li>
+<li>Regression: <b>118/123</b>, unchanged — trace/replay paths are inert on the headless path (no mesh view, <code>_trace_sink</code> None; <code>debug_print</code> behaves exactly as before when the sink is unset).</li>
+</ul>
+</div></body></html>

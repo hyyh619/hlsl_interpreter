@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 192 — Split &quot;Selected Info&quot; into two independent panels</title>
+<style>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step192-split-info-panels</span></div>
+<div class="wrap">
+<h1>Step 192 — Split "Selected Info" into two independent panels</h1>
+<h2>Prompt</h2>
+<p>动态 web 视图 selected Vertex/Pixel info 窗口分成两个独立的。</p>
+<h2>Context</h2>
+<p>Step 191 made the viewer panels draggable, but "Selected Vertex Info" and<br>"Selected Pixel Info" still lived inside a single <code>panel-info</code> window (two <code>&lt;h3&gt;</code><br>sections stacked in one draggable panel). The user wants them as two separate,<br>independently draggable windows.</p>
+<h2>Change (front-end only, <code>web_mesh_view.py</code> page template)</h2>
+<ul>
+<li><b>Split the panel.</b> <code>panel-info</code> (which held both <code>#info</code> and <code>#pxinfo</code>) is replaced by two panels:<ul>
+<li><code>panel-vertex</code> — titlebar "Selected Vertex Info", body <code>#info</code>.</li>
+<li><code>panel-pixel</code> — titlebar "Selected Pixel Info", body <code>#pxinfo</code>. Each has its own <code>.titlebar</code>, so the existing drag system (<code>initPanels</code> / <code>makeDraggable</code>, which iterate every <code>.panel</code>) makes both independently draggable and persisted with zero extra wiring.</li>
+</ul></li>
+<li><b>Bumped layout key</b> <code>hlsl_web_layout_v1</code> → <code>v2</code>: the panel set changed (<code>panel-info</code> is gone, two new ids exist), so a fresh key avoids restoring a stale layout that positioned the old combined panel.</li>
+<li><b>Row-wrapping default tile.</b> With 4 panels now, a single left-to-right row would push the last panel off-screen, so <code>tileLayout()</code> wraps to a new row when the next panel would exceed the viewport width. <code>initPanels()</code> uses <code>tileLayout()</code> for a fresh layout and, when a saved layout exists, applies it and appends any panel lacking a saved position after the rightmost.</li>
+</ul>
+<h2>Files changed</h2>
+<ul>
+<li><code>web_mesh_view.py</code> — panel markup (one panel → two), <code>LAYOUT_KEY</code> v2, <code>tileLayout()</code> row-wrapping, <code>initPanels()</code> fresh-vs-saved handling.</li>
+</ul>
+<h2>Verification</h2>
+<ul>
+<li>Page now serves <b>4 panels / 4 titlebars</b>; <code>panel-vertex</code>, <code>panel-pixel</code>, <code>#info</code>, <code>#pxinfo</code> all present; old <code>panel-info</code> gone; layout key is <code>hlsl_web_layout_v2</code>.</li>
+<li>Extracted the page <code>&lt;script&gt;</code> and ran <code>node --check</code> → <b>JS syntax OK</b>.</li>
+<li>Server endpoints unchanged (front-end only); vertex trace still targets <code>#info</code> and pixel trace <code>#pxinfo</code> (unchanged element ids).</li>
+<li>Regression: <b>118/123</b>, unchanged — the viewer is never instantiated on the headless regression path.</li>
+</ul>
+</div></body></html>

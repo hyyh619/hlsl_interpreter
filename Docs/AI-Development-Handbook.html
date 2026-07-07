@@ -1,220 +1,150 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI 辅助开发手册 — HLSL 解释器项目</title>
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 辅助开发手册 — 以 HLSL 解释器项目为例</title>
 <style>
-  :root{
-    --bg:#f6f7f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2733; --muted:#5a6573;
-    --accent:#2563eb; --green:#0f9d58; --amber:#b8770a; --red:#d64545; --line:#dde2e9;
-    --mono:"SF Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-    font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;
-    line-height:1.7;font-size:16px}
-  .wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
-  header.hero{padding:54px 22px 30px;background:
-    radial-gradient(1200px 400px at 20% -10%,rgba(37,99,235,.12),transparent),
-    radial-gradient(900px 360px at 90% 0%,rgba(15,157,88,.10),transparent);
-    border-bottom:1px solid var(--line)}
-  .hero h1{margin:0 0 8px;font-size:30px;letter-spacing:.3px}
-  .hero p{margin:6px 0;color:var(--muted);max-width:760px}
-  .tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent);
-    border:1px solid var(--line);border-radius:20px;padding:3px 11px;margin:8px 6px 0 0;background:var(--panel)}
-  h2{margin:46px 0 14px;font-size:23px;border-left:4px solid var(--accent);padding-left:12px}
-  h3{margin:26px 0 10px;font-size:18px;color:#2a3340}
-  h4{margin:20px 0 8px;font-size:15.5px;color:#2a3340}
-  p,li{color:#2f3a47}
-  code{font-family:var(--mono);font-size:13.5px;background:var(--panel2);border:1px solid var(--line);
-    border-radius:5px;padding:1px 6px;color:#0a52c0}
-  pre{background:#f3f5f8;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto}
-  pre code{background:none;border:none;padding:0;color:#2f3a47;font-size:13px;line-height:1.55}
-  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
-  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
-  th{background:var(--panel2);color:#2a3340}
-  tr:nth-child(even) td{background:#f3f5f8}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
-  .callout{border-left:4px solid var(--accent);background:#eaf2ff;border-radius:8px;padding:12px 16px;margin:16px 0}
-  .callout.green{border-color:var(--green);background:#e7f6ee}
-  .callout.amber{border-color:var(--amber);background:#fcf3df}
-  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
-  .grid3 .c{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:13px 14px}
-  .grid3 .c b{color:var(--accent)}
-  .c2 b{color:var(--green)} .c3 b{color:var(--amber)}
-  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:24px 0;
-    columns:2;column-gap:30px}
-  nav.toc a{color:#2f4d7a;text-decoration:none;display:block;padding:3px 0;font-size:14.5px}
-  nav.toc a:hover{color:var(--accent)}
-  .imgrow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
-  .imgrow figure{margin:0;background:#f3f5f8;border:1px solid var(--line);border-radius:10px;padding:8px}
-  .imgrow img{display:block;width:100%;height:auto;background:#000;border-radius:6px;image-rendering:pixelated}
-  .imgrow figcaption{font-size:12.5px;color:var(--muted);text-align:center;margin-top:6px}
-  @media(max-width:680px){.imgrow{grid-template-columns:1fr}}
-  figure.video{margin:16px 0;background:#000;border:1px solid var(--line);border-radius:12px;padding:8px;max-width:860px}
-  figure.video video{display:block;width:100%;height:auto;border-radius:8px;background:#000}
-  figure.video figcaption{font-size:12.5px;color:var(--muted);text-align:center;margin-top:8px}
-  /* SVG 图为自带深色底的图示卡片，保留深色容器以维持内部对比度 */
-  .svgbox{background:#0f1320;border:1px solid var(--line);border-radius:12px;padding:10px;margin:18px 0;overflow:auto}
-  svg{display:block;max-width:100%;height:auto}
-  .legend{font-size:12.5px;color:var(--muted);text-align:center;margin-top:6px}
-  .mono{font-family:var(--mono)}
-  .red{color:var(--red)} .grn{color:var(--green)} .amb{color:var(--amber)} .acc{color:var(--accent)}
-  .part{margin:54px 0 8px;padding:16px 20px;border-radius:12px;border:1px solid var(--line);
-    background:linear-gradient(100deg,rgba(37,99,235,.12),rgba(15,157,88,.10));}
-  .part h1{margin:0;font-size:25px;letter-spacing:.3px}
-  .part p{margin:6px 0 0;color:var(--muted);font-size:14px}
-  nav.toc .grp{font-weight:bold;color:#2a3340;display:block;margin:8px 0 2px;font-size:14px;break-after:avoid}
-  nav.toc .grp:first-child{margin-top:0}
-  @media(max-width:680px){nav.toc{columns:1}.grid3{grid-template-columns:1fr}}
-</style>
-</head>
+:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
+  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
+h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
+h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
+p,li{color:#d4dae4}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#bfe1ff}
+pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:#cdd6e4}
+tr:nth-child(even) td{background:#13161d}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#12202e;border-radius:8px;color:#c7d2de}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
 <body>
-<header class="hero">
-  <div class="wrap" style="padding:0">
-    <h1>AI 辅助开发手册</h1>
-    <p>以纯 Python 的 <b>D3D11 管线 / HLSL 解释器</b> 项目的真实开发记录为案例，系统说明如何与 AI 协作完成一个工程。所有例子取自本仓库的提交、<code>Sessions/</code> 步骤日志与 <code>Prompts/</code> 提示词历史。</p>
-    <div>
-      <span class="tag">C1 · 多数组 cbuffer</span>
-      <span class="tag">C2 · 反规格化数 FTZ</span>
-      <span class="tag">C3 · (int) 强转语义</span>
-      <span class="tag">step1 → step123</span>
-    </div>
-  </div>
-</header>
-
+<div class="top"><a href="index.html">← 文档首页</a> <span class="crumb">/ AI 辅助开发手册</span></div>
 <div class="wrap">
-
-<nav class="toc">
-  <span class="grp">第一部分 · 项目总体介绍</span>
-  <a href="#q0">0 · 项目概述</a>
-  <span class="grp">第二部分 · OpenCode + minimax-m2.7（奠基期）</span>
-  <a href="#qb0">0 · 本期开发载体：Collision case</a>
-  <a href="#qbflow">⟳ 人与 Agent 的开发流程闭环</a>
-  <a href="#qb1">1 · 如何给 AI 提供提示词</a>
-  <a href="#qb2">2 · 分析需求、生成开发计划</a>
-  <a href="#qb3">3 · 如何按计划执行</a>
-  <a href="#qb4">4 · 如何纠正 AI 的错误</a>
-  <a href="#qb5">5 · 如何进行调试</a>
-  <span class="grp">第三部分 · ClaudeCode（攻坚期）</span>
-  <a href="#q1">1 · 如何给 AI 提供提示词</a>
-  <a href="#q2">2 · 分析需求、生成开发计划</a>
-  <a href="#q3">3 · 如何按计划执行</a>
-  <a href="#q4">4 · 输入 / 输出数据流</a>
-  <a href="#q5">5 · 什么输出能帮助调试</a>
-  <a href="#q6">6 · 回归测试的建立与应用</a>
-  <a href="#q7">7 · TDD 在本项目的应用</a>
-  <a href="#q8">8 · 如何纠正 AI 的错误</a>
-  <a href="#q9">9 · 记忆系统避免重复开发</a>
-  <a href="#q10">10 · b/c 对比和优缺点总结</a>
-</nav>
-
-<!-- ============================ PART A ============================ -->
-<div class="part"><h1>第一部分 · 项目总体介绍</h1><p>这是什么、怎么跑、怎么验证。</p></div>
-
-<!-- Q0 -->
-<h2 id="q0">0 · 项目概述</h2>
-
-<h3>项目的目的</h3>
-<div class="callout green"><b>缘起（最初的目的）</b>：起因是一个非常具体的工程问题——作者当时在用 <b>AI Agent 实现 Irrlicht 游戏引擎的 DX11 video driver layer</b>，遇到 <b>VS（顶点着色器）计算不正确、导致渲染错误</b>。定位这类 bug 的常规做法是用 <b>RenderDoc 对 DXBC 反汇编指令</b>逐条调试，但反汇编<b>不直观、不方便看</b>；作者更想<b>直接运行 HLSL 高级语言指令</b>来查错。于是用 AI Agent 写了一个<b>简单的 HLSL 解释执行器</b>——这就是本项目的起点。</div>
-<p>从这个具体的调试需求出发，"用 AI 写解释器"这件事本身也变成了<b>一次关于 AI coding 的研究</b>——目标随开发推进逐步演化：</p>
-<div class="grid3">
-  <div class="c"><b>① 最初：一个 HLSL 调试器</b><br>为看清 Irrlicht DX11 driver 的 VS 计算问题而写——用"直接解释 HLSL"取代"读 DXBC 反汇编"，把调试拉回高级语言层面。</div>
-  <div class="c c2"><b>② 验证纯 AI coding 的边界</b><br>核心问题：在几乎不动手写代码、<b>全程由 AI 编程</b>的前提下，到底能做到什么程度？整个仓库正是这个实验的产物。</div>
-  <div class="c c3"><b>③ 长成完整 D3D 管线</b><br>从"解释一段样例 HLSL"逐步演化成一个<b>完整的 Direct3D 可编程图形管线</b>（VS→光栅化→深度/模板→PS→输出合并 + 纹理/cbuffer/回归体系）。</div>
-</div>
-<div class="callout"><b>④ 最终：draw dump 的验证与分析工具。</b> 项目最后落到一个实用目标上——<b>验证 draw dump 的正确性</b>，并能<b>逐语句、逐像素地分析某一个具体 Draw 的渲染过程</b>（哪一步的变换/光照/采样与真机 golden 对不上）。</div>
-<p>换句话说，这份手册既是"如何实现一个 HLSL 解释器"的记录，也是"<b>纯 AI coding 能做到什么样</b>"的一份真实答卷——后续各章的方法论，都是在这个前提下总结出来的。</p>
-
-<h3>这是什么</h3>
-<p>本项目是一个<b>纯 Python 实现的 Direct3D 11 图形管线软件仿真器</b>，核心特点是<b>直接解释执行 HLSL 着色器源码</b>——不编译、不调用 <code>eval</code>，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段，再把顶点着色器输出与真机捕获的 <b>golden 参考数据</b>逐分量对比，以此验证解释器的正确性。</p>
-<div class="svgbox">
-<svg viewBox="0 0 900 150" role="img" aria-label="D3D11 管线阶段与验证">
-  <defs>
-    <marker id="ar0" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
-    <style>.p{fill:#1e222b;stroke:#2a2f3a}.pt{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}.pf{stroke:#5db0ff;stroke-width:1.6;fill:none;marker-end:url(#ar0)}.gold{fill:#1e2620;stroke:#3a4a32}.gt{fill:#cfe6b0;font:12px sans-serif;text-anchor:middle}.gf{stroke:#46d39a;stroke-width:1.6;fill:none;stroke-dasharray:5 4;marker-end:url(#ar0)}</style>
-  </defs>
-  <rect class="p" x="10"  y="30" width="120" height="44" rx="8"/><text class="pt" x="70"  y="57">Vertex Shader</text>
-  <rect class="p" x="160" y="30" width="120" height="44" rx="8"/><text class="pt" x="220" y="57">Rasterizer</text>
-  <rect class="p" x="310" y="30" width="130" height="44" rx="8"/><text class="pt" x="375" y="50">Depth /</text><text class="pt" x="375" y="65">Stencil</text>
-  <rect class="p" x="470" y="30" width="120" height="44" rx="8"/><text class="pt" x="530" y="57">Pixel Shader</text>
-  <rect class="p" x="620" y="30" width="130" height="44" rx="8"/><text class="pt" x="685" y="50">Output</text><text class="pt" x="685" y="65">Merger</text>
-  <path class="pf" d="M130,52 L158,52"/><path class="pf" d="M280,52 L308,52"/>
-  <path class="pf" d="M440,52 L468,52"/><path class="pf" d="M590,52 L618,52"/>
-  <rect class="gold" x="10" y="110" width="200" height="34" rx="8"/><text class="gt" x="110" y="132">golden MeshOut_*_mesh.csv</text>
-  <path class="gf" d="M70,74 L70,108"/>
-  <text class="gt" x="300" y="132" style="text-anchor:start">↑ VS 输出逐分量对比，不符则记 Error:</text>
-</svg>
-<div class="legend">蓝实线 = 管线数据流；绿虚线 = VS 输出与 golden 的验证对比</div>
-</div>
-
-<h3>演示视频</h3>
+<h1>AI 辅助开发手册 — 以 HLSL 解释器项目为例</h1>
+<blockquote>本手册用 <b>本项目（纯 Python 的 D3D11 管线 / HLSL 解释器）</b> 的真实开发记录，<br>系统说明"如何与 AI 协作完成一个真实工程"。所有例子都取自本仓库的提交、<br><code>Sessions/</code> 步骤日志与 <code>Prompts/</code> 提示词历史，可逐条核对。<br>本手册按<b>项目的两个开发周期</b>组织成三大部分：<br>- <b>第一部分 · 项目总体介绍</b> —— 这是什么、怎么跑、怎么验证。<br>- <b>第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）</b> —— 从零搭骨架的协作方式。<br>- <b>第三部分 · 基于 ClaudeCode 的开发（攻坚期）</b> —— 真机数据攻坚长尾的协作方式。</blockquote>
+<hr>
+<h2>目录</h2>
+<p><b>第一部分 · 项目总体介绍</b></p>
+<p><b>第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）</b></p>
+<ol>
+<li>如何给 AI 提供提示词</li>
+<li>分析需求、生成开发计划</li>
+<li>如何按计划执行</li>
+<li>如何纠正 AI 的错误</li>
+<li>如何进行调试</li>
+</ol>
+<p><b>第三部分 · 基于 ClaudeCode 的开发（攻坚期）</b></p>
+<ol>
+<li>如何给 AI 提供提示词</li>
+<li>分析需求、生成开发计划</li>
+<li>如何按计划执行</li>
+<li>输入 / 输出数据流</li>
+<li>什么输出能帮助调试</li>
+<li>回归测试的建立与应用</li>
+<li>TDD 在本项目的应用</li>
+<li>如何纠正 AI 的错误</li>
+<li>记忆系统避免重复开发</li>
+<li>b/c 两个开发部分的对比和优缺点总结</li>
+</ol>
+<blockquote>每节都附本仓库 <code>Prompts/</code> 提示词历史与 <code>Sessions/</code> 步骤日志的超链接，可逐条核对。</blockquote>
+<hr>
+<h1>第一部分 · 项目总体介绍</h1>
+<h2>项目概述</h2>
+<h3>0.0 项目的目的</h3>
+<p><b>缘起（最初的目的）</b>：起因是一个非常具体的工程问题——作者当时在用 <b>AI Agent 实现 Irrlicht 游戏引擎的 DX11 video driver layer</b>，遇到 <b>VS（顶点着色器）计算不正确、导致渲染错误</b>。定位这类 bug 的常规做法是用 <b>RenderDoc 对 DXBC 反汇编指令</b>逐条调试，但反汇编<b>不直观、不方便看</b>；作者更想<b>直接运行 HLSL 高级语言指令</b>来查错。于是用 AI Agent 写了一个<b>简单的 HLSL 解释执行器</b>——这就是本项目的起点。</p>
+<p>从这个具体的调试需求出发，"用 AI 写解释器"这件事本身也变成了<b>一次关于 AI coding 的研究</b>——它的目标随开发推进逐步演化：</p>
+<ol>
+<li><b>最初：一个 HLSL 调试器</b>：为看清 Irrlicht DX11 driver 的 VS 计算问题而写——用"直接解释 HLSL"取代"读 DXBC 反汇编"，把调试拉回高级语言层面。</li>
+<li><b>验证纯 AI coding 的能力边界</b>：核心问题是——<b>在几乎不动手写代码、全程由 AI 编程的前提下，到底能做到什么程度？</b> 整个仓库正是这个实验的产物。</li>
+<li><b>逐渐长成完整的 D3D 可编程图形管线</b>：在一步步推进中，它从最初的"解释一段样例 HLSL"逐渐演化成一个<b>完整的 Direct3D 可编程图形管线实现</b>（VS → 光栅化 → 深度/模板 → PS → 输出合并，外加纹理采样、cbuffer、回归体系）。</li>
+<li><b>最终成为 draw dump 的验证与分析工具</b>：项目最后落到一个实用目标上——<b>验证 draw dump 的正确性</b>，并能<b>逐语句、逐像素地分析某一个具体 Draw 的渲染过程</b>（哪一步的变换/光照/采样与真机 golden 对不上）。</li>
+</ol>
+<blockquote>换句话说，这份手册既是"如何实现一个 HLSL 解释器"的记录，也是"<b>纯 AI coding 能做到什么样</b>"的一份真实答卷——后续各章的方法论，都是在这个前提下总结出来的。</blockquote>
+<h3>0.1 这是什么</h3>
+<p>本项目是一个<b>纯 Python 实现的 Direct3D 11 图形管线软件仿真器</b>，核心特点是<b>直接解释执行 HLSL 着色器源码</b>——不编译、不调用 <code>eval</code>，而是自己做词法/语法分析并逐语句解释。它把一帧真机捕获的 GPU 数据喂进这条仿真管线，跑完整的固定功能 + 可编程阶段：</p>
+<pre><code>Vertex Shader → Rasterizer → Depth/Stencil → Pixel Shader → Output Merger</code></pre>
+<p>然后把顶点着色器（VS）的输出与真机捕获的 <b>golden 参考数据</b>逐分量对比，以此验证解释器的正确性。</p>
+<h4>演示视频</h4>
 <p>下面这段录屏展示了解释器跑完管线后、光栅化器把三角形逐像素填充并与 golden 对比的过程：</p>
-<figure class="video">
-  <video controls preload="metadata" playsinline>
-    <source src="videos/hlsl_interpreter_rasterizer_show_20260524.mp4" type="video/mp4">
-    您的浏览器不支持内嵌视频播放。
-  </video>
-  <figcaption>若浏览器无法播放，可直接打开 <code>Docs/videos/hlsl_interpreter_rasterizer_show_20260524.mp4</code>。</figcaption>
-</figure>
-
-<h3>输入从哪来</h3>
+<p>&lt;video src="videos/hlsl_interpreter_rasterizer_show_20260524.mp4" controls width="100%" style="max-width:860px;border-radius:10px"&gt;&lt;/video&gt;</p>
+<blockquote>若上方视频无法播放，可直接打开 <a href="videos/hlsl_interpreter_rasterizer_show_20260524.mp4"><code>Docs/videos/hlsl_interpreter_rasterizer_show_20260524.mp4</code></a>。</blockquote>
+<h3>0.2 输入从哪来</h3>
 <p>输入是 <b>RenderDoc / 3Dmigoto 抓帧 dump</b>，打包成 <code>Cases/*.zip</code>。每个 zip 解压后是一组松散文件：</p>
 <table>
-  <tr><th>文件</th><th>作用</th></tr>
-  <tr><td class="mono">VS_shader.hlsl / PS_shader.hlsl</td><td>着色器源码（<code>main()</code> 用带语义的参数声明输入输出）</td></tr>
-  <tr><td class="mono">*_input_output_signature.csv</td><td>参数 ↔ 寄存器槽位映射</td></tr>
-  <tr><td class="mono">ia_vertex_data.csv + 二进制 VB/IB</td><td>输入装配阶段的顶点 / 索引数据</td></tr>
-  <tr><td class="mono">*_constant_buffers.csv + constant_*.bin</td><td>常量缓冲区（文本布局 + 二进制精确值）</td></tr>
-  <tr><td class="mono">pipeline_state.csv</td><td>光栅化 / 混合 / 深度模板状态 + 图元拓扑</td></tr>
-  <tr><td class="mono">output_merger.csv + pre_draw_ds_res_*.raw</td><td>输出合并阶段 RTV/DSV 布局与 draw 前深度模板内容</td></tr>
-  <tr><td class="mono">MeshOut_*_mesh.csv</td><td>golden VS 输出（验证基准）</td></tr>
-  <tr><td class="mono">.img / BMP 纹理</td><td><code>Texture2D.Sample(...)</code> 的后备数据</td></tr>
+<tr><th>文件</th><th>作用</th></tr>
+<tr><td><code>VS_shader.hlsl</code> / <code>PS_shader.hlsl</code></td><td>着色器源码（<code>main()</code> 用带语义的参数声明输入输出）</td></tr>
+<tr><td><code>*_input_output_signature.csv</code></td><td>参数 ↔ 寄存器槽位映射</td></tr>
+<tr><td><code>ia_vertex_data.csv</code> + <code>ia_input_layouts.csv</code> + 二进制 VB/IB</td><td>输入装配阶段的顶点/索引数据</td></tr>
+<tr><td><code>*_constant_buffers.csv</code> + <code>constant_*.bin</code></td><td>常量缓冲区（文本布局 + 二进制精确值）</td></tr>
+<tr><td><code>pipeline_state.csv</code></td><td>光栅化/混合/深度模板状态 + 图元拓扑</td></tr>
+<tr><td><code>output_merger.csv</code> + <code>pre_draw_ds_res_*.raw</code></td><td>输出合并阶段的 RTV/DSV 布局与 draw 前的深度模板内容</td></tr>
+<tr><td><code>MeshOut_*_mesh.csv</code></td><td>golden VS 输出（验证基准）</td></tr>
+<tr><td><code>.img</code> / BMP 纹理</td><td><code>Texture2D.Sample(...)</code> 的后备数据</td></tr>
 </table>
-<h3>怎么运行 · 模块构成</h3>
-<p>唯一入口是一个 JSON 配置：<code>python render.py ./Cases/Default.json</code>。<code>render.py</code> 是编排器，在 zip 工作流（当前主路径）与 legacy struct 工作流（旧配置兼容）间分支。<b>零第三方依赖</b>——只用标准库，外加可选的 <code>tkinter</code>（网格查看器）。</p>
+<h3>0.3 怎么运行</h3>
+<p>唯一入口是一个 JSON 配置文件：</p>
+<pre><code>python render.py ./Cases/Default.json</code></pre>
+<p><code>render.py</code> 是编排器，根据配置在 <b>zip 工作流</b>（当前主路径）与 <b>legacy struct 工作流</b>（旧配置后向兼容）之间分支。</p>
+<h3>0.4 模块构成</h3>
+<p><b>零第三方依赖</b>——只用 Python 标准库，外加可选的 <code>tkinter</code>（网格查看器 GUI）。无 <code>requirements.txt</code>、无构建步骤、无独立单元测试框架。</p>
 <table>
-  <tr><th>模块</th><th>职责</th></tr>
-  <tr><td class="mono">hlsl_interpreter.py（~3300 行，核心）</td><td>解析 HLSL（cbuffer/struct/函数/纹理采样器绑定），遍历语句、求值表达式</td></tr>
-  <tr><td class="mono">hlsl_syntax_tree.py</td><td>手写递归下降表达式解析器，产出 <code>SyntaxTreeNode</code> 树；运算符优先级表在此</td></tr>
-  <tr><td class="mono">rasterizer.py</td><td>按图元拓扑光栅化；边函数 + 透视正确重心插值；视口变换与剔除</td></tr>
-  <tr><td class="mono">output_merger.py</td><td>深度 / 模板测试，支持 early-Z / late-Z</td></tr>
-  <tr><td class="mono">texture.py</td><td>纹理解析、mipmap、采样与寻址模式</td></tr>
-  <tr><td class="mono">pixel.py / d3d.py / mesh_view.py</td><td>像素交换记录 / D3D 枚举常量 / 可选网格查看器</td></tr>
+<tr><th>模块</th><th>职责</th></tr>
+<tr><td><code>hlsl_interpreter.py</code>（~3300 行，核心）</td><td>解析 HLSL（cbuffer/struct/函数/纹理采样器绑定），遍历语句、求值表达式</td></tr>
+<tr><td><code>hlsl_syntax_tree.py</code></td><td>手写递归下降表达式解析器，产出 <code>SyntaxTreeNode</code> 树；运算符优先级表在此</td></tr>
+<tr><td><code>rasterizer.py</code></td><td>按图元拓扑光栅化；边函数 + 透视正确重心插值；视口变换与剔除</td></tr>
+<tr><td><code>output_merger.py</code></td><td>深度/模板测试，支持 early-Z / late-Z</td></tr>
+<tr><td><code>texture.py</code></td><td>纹理解析、mipmap、采样与寻址模式</td></tr>
+<tr><td><code>pixel.py</code> / <code>d3d.py</code> / <code>mesh_view.py</code></td><td>像素交换记录 / D3D 枚举常量 / 可选网格查看器</td></tr>
 </table>
-<div class="callout green">
-<b>正确性如何保证</b>：项目没有传统单元测试，靠两条防线。① <b>verify-by-log</b>：跑管线 → grep <code>output.log</code> 里的 <code>Error:</code> 行（VS-vs-golden 分量级不符）→ 迭代到无错；<code>[STMT]</code> / <code>[BINARY OP]</code> 轨迹是调试主面。② <b>数据驱动回归套件</b>：<code>run_regression.py</code> 逐个 headless 跑 <code>regression_test_zip_files.csv</code> 列出的 capture，三条判据（干净退出、无 <code>Error:</code>、<code>Total PASSED rows: X/X</code>）全满足才算过，目前覆盖 <b>123 个真机 case</b>，是每次改动的提交闸门。本手册后续各章即围绕"如何与 AI 协作、在这样一个无单测、靠真机 golden 验证的解释器项目上持续修 bug"展开。
-</div>
-
-<!-- ============================ PART B ============================ -->
-<div class="part"><h1>第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）</h1>
-<p>约 step1–step86（<code>Sessions/hlsl-step*.md</code>）：用一个能力相对有限的模型从零搭出解释器骨架。先勾勒<b>人与 Agent 的开发流程闭环</b>，再从 5 个方面展开。例子取自 <code>Prompts/hlsl-interpreter-prompt-OpenCode.html</code>。</p></div>
-
-<h2 id="qb0">0 · 本期的开发载体：<code>Collision-…-RdotV-zero</code> case</h2>
-<p>这一期的解释器骨架，是围绕 <code>Cases/Collision-fix-constant-buffer-and-RdotV-zero_event*.zip</code> 这组真机 capture 来打磨的。下面以 <code>event399</code> 为例——它在屏幕上画出一件<b>带贴图、受光照的 3D 物体</b>（一柄战锤）：要让纯 Python 解释器<b>逐语句重算出这件物体的每个像素</b>，需要把一整套 D3D11 顶点光照 + 像素贴图采样语义都实现对。下面用它的渲染结果和 HLSL 源码，说明项目目标与复杂度。</p>
-
+<h3>0.5 正确性如何保证</h3>
+<p>项目没有传统单元测试，正确性靠 <b>verify-by-log 工作流</b>与<b>数据驱动回归套件</b>：</p>
+<ul>
+<li><b>verify-by-log</b>：跑管线 → 在 <code>output.log</code> 里 grep <code>Error:</code> 行（VS-vs-golden 的分量级不符）→ 迭代到无错。日志里的 <code>[STMT]</code> / <code>[BINARY OP]</code> 轨迹是调试主要面。</li>
+<li><b>回归套件</b>：<code>run_regression.py</code> 读 <code>Cases/regression_test_zip_files.csv</code> 列出的 capture，逐个 headless 跑通，三条判据（干净退出、无 <code>Error:</code>、<code>Total PASSED rows: X/X</code>）全满足才算过。目前覆盖 <b>123 个真机 case</b>，是每次改动的提交闸门。</li>
+</ul>
+<blockquote>本手册后续各章，都是围绕"<b>如何与 AI 协作、在这样一个无单测、靠真机 golden 数据验证的解释器项目上持续修 bug</b>"展开的方法论总结。</blockquote>
+<hr>
+<h1>第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）</h1>
+<blockquote>这一期（约 step1–step86，<code>Sessions/hlsl-step*.md</code>）用一个能力相对有限的模型，<b>从零搭出解释器骨架</b>：HLSL 词法/递归下降解析、语句解释、cbuffer/struct/函数解析、定点管线（rasterizer/depth/OM/texture）、golden 对比雏形。它的协作方式与第三部分截然不同——先用一节勾勒<b>人与 Agent 的开发流程闭环</b>，再从 5 个方面展开，每个都给 <code>Prompts/hlsl-interpreter-prompt-OpenCode.html</code> 里的真实步骤与超链接。</blockquote>
+<h2>0 · 本期的开发载体：<code>Collision-…-RdotV-zero</code> case</h2>
+<p>这一期的解释器骨架，是围绕 <code>Cases/Collision-fix-constant-buffer-and-RdotV-zero_event*.zip</code> 这组真机 capture 来打磨的。下面以 <code>event399</code> 为例——它在屏幕上画出一件<b>带贴图、受光照的 3D 物体</b>（一柄战锤），要让纯 Python 解释器<b>逐语句重算出这件物体的每个像素</b>，需要把一整套 D3D11 顶点光照 + 像素贴图采样语义都实现对。下面用它的渲染结果和 HLSL 源码，说明项目目标与复杂度。</p>
 <h3>0.1 渲染结果：解释器输出 vs golden</h3>
 <p>项目目标是<b>不编译、不 <code>eval</code>，直接解释 HLSL 源码跑完整管线</b>，再把结果与真机 golden 逐像素/逐分量对比。下面是 <code>event399</code> 的三张图（取自 zip 内 capture，已转 PNG）：</p>
-<div class="imgrow">
-  <figure><img src="images/collision_event399_golden.png" alt="golden"><figcaption>Golden（真机参考）</figcaption></figure>
-  <figure><img src="images/collision_event399_output.png" alt="output"><figcaption>解释器输出</figcaption></figure>
-  <figure><img src="images/collision_event399_depth.png" alt="depth"><figcaption>深度缓冲</figcaption></figure>
-</div>
+<table>
+<tr><th>Golden（真机参考）</th><th>解释器输出</th><th>深度缓冲</th></tr>
+<tr><td>!<a href="images/collision_event399_golden.png">golden</a></td><td>!<a href="images/collision_event399_output.png">output</a></td><td>!<a href="images/collision_event399_depth.png">depth</a></td></tr>
+</table>
 <p>左两张几乎完全一致——同一柄战锤、同样的金属贴图与高光走向，这正是"correct"的判据：解释器算出的颜色/位置/采样要和 GPU 真机一致（本帧 2548 个 golden 像素里约 2333 个落在容差内，余下是高光/光照边缘的细微差）。右图是同一帧写入的深度缓冲。<b>画面越丰富，要对齐的环节越多</b>：变换矩阵差一列、法线没归一化、贴图 UV 取错、光照衰减算偏，物体就会变形、错色或丢失高光。</p>
-
 <h3>0.2 输入顶点数据：数量、格式与样例</h3>
 <p>喂进管线的是一次 <b><code>DrawIndexed</code></b>（图元拓扑 <code>TriangleList</code>）：共 <b>696 个索引 → 232 个三角形</b>，背后是 <b>228 个不重复顶点</b>（索引缓冲为 16-bit）。每个顶点 <b>36 字节</b>、含 4 个属性（来自 <code>ia_input_layouts.csv</code>）：</p>
 <table>
-<thead><tr><th>语义</th><th>格式</th><th>分量</th><th>字节偏移</th><th>说明</th></tr></thead>
-<tbody>
+<tr><th>语义</th><th>格式</th><th>分量</th><th>字节偏移</th><th>说明</th></tr>
 <tr><td><code>POSITION</code></td><td><code>R32G32B32_FLOAT</code></td><td>3×float</td><td>0</td><td>模型空间位置</td></tr>
 <tr><td><code>NORMAL</code></td><td><code>R32G32B32_FLOAT</code></td><td>3×float</td><td>12</td><td>法线</td></tr>
 <tr><td><code>COLOR</code></td><td><code>R8G8B8A8_UNORM</code></td><td>4×u8→[0,1]</td><td>24</td><td>顶点色（4 字节归一化）</td></tr>
 <tr><td><code>TEXCOORD</code></td><td><code>R32G32_FLOAT</code></td><td>2×float</td><td>28</td><td>UV</td></tr>
-</tbody>
 </table>
-<p>stride = 12 + 12 + 4 + 8 = <b>36 字节</b>；<code>COLOR</code> 以 <code>R8G8B8A8_UNORM</code> 存（4 字节），dump 时已归一化成浮点。</p>
+<blockquote>stride = 12 + 12 + 4 + 8 = <b>36 字节</b>；<code>COLOR</code> 以 <code>R8G8B8A8_UNORM</code> 存（4 字节），dump 时已归一化成浮点。</blockquote>
 <p>样例（<code>ia_vertex_data.csv</code> 前几行，已对齐排版）：</p>
 <pre><code>VTX IDX  POSITION(x, y, z)            NORMAL(x, y, z)            COLOR(r,g,b,a)     TEXCOORD(u, v)
  0   0   20.0289  21.6879 -23.3845    0.0224  0.0452  0.9987     0.8 0.8 0.8 1.0   0.2256 0.9067
@@ -223,7 +153,6 @@
  3   3   19.9886  19.6074 -29.7759    0.0888 -0.9842  0.1530     0.8 0.8 0.8 1.0   0.1002 0.7539
  …  (共 696 行 = 按索引展开的绘制顺序；IDX 为原始顶点号，有重复，去重后 228 个)</code></pre>
 <p>注意这柄战锤所有顶点的 <code>COLOR</code> 都是统一的灰色 <code>0.8,0.8,0.8,1.0</code>——它是金属底色，最终颜色靠 PS 把它和漫反射贴图相乘得到（见 0.4）。这份逐顶点数据，正是 0.3 的 VS 要逐条变换、打光的输入。</p>
-
 <h3>0.3 Vertex Shader：把整套光照模型搬进解释器</h3>
 <p>这是该 case 的 <code>VS_shader.hlsl</code>（3Dmigoto 反汇编风格）。与一个只做坐标变换的简单 VS 不同，它在顶点级算完了<b>环境光 + 漫反射 + 镜面高光 + 距离衰减 + 聚光锥</b>，还带 <code>ColorMaterialMode</code> 分支选色：</p>
 <pre><code>cbuffer MatrixBuffer  : register(b0) { float4x4 WorldViewProj; float4x4 World; }
@@ -267,7 +196,6 @@ void main(float3 v0:POSITION0, float3 v1:NORMAL0, float4 v2:COLOR0, float2 v3:TE
   o2 = v3.xyxy;  return;
 }</code></pre>
 <p>仅这一段，解释器就必须正确支持：<b>4 个带 <code>packoffset</code> 的 cbuffer</b>（<code>b0</code>–<code>b3</code>，含 <code>uint</code>/标量混排）、<b>矩阵按列 swizzle</b>（<code>_m01_m11_m21_m31</code>）与<b>任意 swizzle/写掩码</b>、<b>MAD 累加链顺序</b>、<code>dot</code>/<code>rsqrt</code>/<code>log2</code>/<code>exp2</code>/<code>max</code> 等 intrinsic、<b><code>cmp(...)</code> 向量比较 + <code>?:</code> 三元选择</b>、<b><code>int4</code> 比较与位运算</b>、<b>一元负号（<code>-r1.xyz</code>、<code>-r2.xxx</code>）不能误判成减法</b>（CLAUDE.md 陷阱#2），以及<b>多个带语义的 <code>out</code> 参数到寄存器槽位的映射</b>。这套语义，正是本期 §1–§5 里被用户一步步切碎、逐个驱动 AI 实现的（如 §3 的 <code>transpose</code>/<code>float3x3</code> cast）。</p>
-
 <h3>0.4 Pixel Shader：贴图采样 × 顶点色</h3>
 <p>配套的 <code>PS_shader.hlsl</code> 短，但引入了<b>纹理采样</b>这一新维度——它把 VS 算好的逐顶点光照色，与漫反射贴图的采样结果相乘：</p>
 <pre><code>SamplerState     LinearSampler_s : register(s0);
@@ -280,114 +208,74 @@ void main(float4 v0:SV_POSITION0, float4 v1:COLOR0, float2 v2:TEXCOORD0, /* … 
   o0 = v1 * r0;                                               // 顶点光照色 × 贴图
 }</code></pre>
 <p>这意味着最终颜色由 <b>VS 的光照</b> 和 <b>PS 的贴图采样</b> 共同决定——解释器不仅要把上面那串矩阵/swizzle/光照算对，还要正确实现 <code>Texture2D.Sample</code>（绑定解析、线性过滤、UV 寻址）。任何一环算偏，战锤的高光、底色或纹理走向就会和真机对不上——这也是这一期把它当作"标尺 case"的原因：它把验证压力同时压在 VS 光照与 PS 采样上。</p>
-
-<h2 id="qbflow">⟳ 开发流程：人与 Agent 的交互闭环</h2>
-<p>这一期没有自动回归、没有成熟的 golden 自动对比，开发推进靠的是<b>人与 Agent 之间一圈圈的小步对话循环</b>。每一圈都很短、只动一个点，由<b>人主导节奏</b>、<b>Agent 负责执行</b>。整条闭环如下：</p>
-
-<div class="svgbox">
-<svg viewBox="0 0 900 230" role="img" aria-label="人与 Agent 开发流程闭环">
-  <defs>
-    <marker id="arf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
-    <style>
-      .h{fill:#dbe8fb;stroke:#3a8f5c;stroke-width:1.5}.a{fill:#152a40;stroke:#2f5e8f}
-      .t{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}
-      .ts{fill:#9aa4b2;font:11px sans-serif;text-anchor:middle}
-      .th{fill:#14324a;font:12.5px sans-serif;text-anchor:middle}
-      .tsh{fill:#3f6b53;font:11px sans-serif;text-anchor:middle}
-      .f{stroke:#5db0ff;stroke-width:1.7;fill:none;marker-end:url(#arf)}
-      .lg{fill:#9aa4b2;font:11.5px sans-serif}
-    </style>
-  </defs>
-  <!-- top row: ①→②→③→④ -->
-  <rect class="h" x="10"  y="24" width="190" height="48" rx="9"/><text class="th" x="105" y="44">① 需求发起</text><text class="tsh" x="105" y="61">人 · 切小步/给样例</text>
-  <rect class="a" x="240" y="24" width="190" height="48" rx="9"/><text class="t" x="335" y="44">② coding</text><text class="ts" x="335" y="61">Agent · 只改一个点</text>
-  <rect class="h" x="470" y="24" width="190" height="48" rx="9"/><text class="th" x="565" y="44">③ 调试</text><text class="tsh" x="565" y="61">人 · 跑 + 读打印</text>
-  <rect class="h" x="700" y="24" width="190" height="48" rx="9"/><text class="th" x="795" y="44">④ 反馈</text><text class="tsh" x="795" y="61">人 · 指出现象/根因</text>
-  <path class="f" d="M200,48 L238,48"/><path class="f" d="M430,48 L468,48"/><path class="f" d="M660,48 L698,48"/>
-  <!-- ④ down to bottom row -->
-  <path class="f" d="M795,72 L795,128"/>
-  <!-- bottom row: ⑤←④ , ⑥←⑤ -->
-  <rect class="a" x="470" y="130" width="190" height="48" rx="9"/><text class="t" x="565" y="150">⑤ bug 修复</text><text class="ts" x="565" y="167">Agent / 人手改兜底</text>
-  <rect class="h" x="240" y="130" width="190" height="48" rx="9"/><text class="th" x="335" y="150">⑥ 再调试验证</text><text class="tsh" x="335" y="167">人 · 再跑 + 再读</text>
-  <path class="f" d="M698,154 L662,154"/><path class="f" d="M470,154 L432,154"/>
-  <!-- ⑥ loop back up to ① -->
-  <path class="f" d="M240,154 L60,154 L60,74"/>
-  <!-- loop label -->
-  <text class="lg" x="240" y="205">↻ 现象未消失则带着新观察回到 ④ 继续这一圈，直到这一小步通过</text>
-</svg>
-<div class="legend"><span style="color:#7fd0a0">绿框 + 浅蓝背景 = 人主导的环节</span> ｜ <span style="color:#7fb6ee">蓝框 = Agent 执行的环节</span></div>
-</div>
-
+<h2>⟳ 开发流程：人与 Agent 的交互闭环</h2>
+<p>这一期没有自动回归、没有成熟的 golden 自动对比，开发推进靠的是<b>人与 Agent 之间一圈圈的小步对话循环</b>。每一圈都很短、只动一个点，由人主导节奏、Agent 负责执行。整个流程可以概括成下面这条闭环：</p>
+<pre><code>①需求发起(人) → ②coding(Agent) → ③调试·跑+看打印(人) → ④反馈·指出现象/根因(人)
+       ↑                                                                  │
+       └──────────────  ⑥再调试验证(人)  ←  ⑤bug 修复(Agent/人手改)  ←──┘</code></pre>
 <p><b>每一环具体是谁、做什么：</b></p>
 <ol>
-<li><b>① 需求发起（人）</b>：用户把目标切成一个<b>极小、可独立验证的步骤</b>，并尽量说全——贴样例 HLSL、给具体语句、写清期望值（见 <a href="#qb1">§1</a>）。模型对信息密度敏感，留白就会被脑补，所以"发起"本身就是质量关口。</li>
-<li><b>② coding（Agent）</b>：Agent 针对这一个点写/改代码——通常是加一个 intrinsic、补一种 cast、修一处解析（如 <a href="#qb3">§3</a> 里 <code>transpose</code>、<code>float3x3</code> cast）。一次只动一个点，便于下一步定位。</li>
-<li><b>③ 调试（人）</b>：跑 <code>render.py</code>，<b>人工读打印</b>——<code>[STMT]</code> / 求值分支打印里每一步的操作数、操作符、结果（这套"会自述"的打印正是本期最有长远价值的产出，见 <a href="#qb5">§5</a>）。没有自动断言，对错靠人眼。</li>
-<li><b>④ 反馈（人）</b>：用户根据打印<b>描述现象、甚至直接点出根因</b>。这一期 Agent 常找不到深层根因（如 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a> 的"去括弧"问题由用户点破），反馈往往不是"这里错了"而是"<b>错在哪、为什么错</b>"。</li>
-<li><b>⑤ bug 修复（Agent / 人手改）</b>：Agent 据反馈定点修正；当 Agent 修不彻底或误删代码时（如 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a> "I have to fix it by my hand"、<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a> 误删 <code>return</code>），用户会<b>亲自动手兜底</b>。</li>
-<li><b>⑥ 再调试（人）</b>：改完重新跑、再读打印——现象消失就推进到下一个需求，否则带着新观察<b>回到 ④</b> 继续这一圈，直到这一小步绿掉。</li>
+<li><b>①需求发起（人）</b>：用户把目标切成一个<b>极小、可独立验证的步骤</b>，并尽量说全——贴样例 HLSL、给具体语句、写清期望值（见 §1）。这一期模型对信息密度敏感，留白就会被脑补，所以"发起"本身就是质量关口。</li>
+<li><b>②coding（Agent）</b>：Agent 针对这一个点写/改代码——通常是加一个 intrinsic、补一种 cast、修一处解析（如 §3 里 <code>transpose</code>、<code>float3x3</code> cast）。一次只动一个点，便于下一步定位。</li>
+<li><b>③调试（人）</b>：跑 <code>render.py</code>，<b>人工读打印</b>——<code>[STMT]</code> / 求值分支打印里每一步的操作数、操作符、结果（这套"会自述"的打印正是本期最有长远价值的产出，见 §5）。没有自动断言，对错靠人眼。</li>
+<li><b>④反馈（人）</b>：用户根据打印<b>描述现象、甚至直接点出根因</b>。这一期 Agent 常找不到深层根因（如 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a> 的"去括弧"问题由用户点破），所以反馈往往不是"这里错了"而是"<b>错在哪、为什么错</b>"。</li>
+<li><b>⑤bug 修复（Agent / 人手改）</b>：Agent 据反馈定点修正；当 Agent 修不彻底或误删代码时（如 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a> "I have to fix it by my hand"、<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a> 误删 <code>return</code>），用户会<b>亲自动手兜底</b>。</li>
+<li><b>⑥再调试（人）</b>：改完重新跑、再读打印——若现象消失就推进到下一个需求，否则带着新的观察<b>回到 ④</b> 继续这一圈，直到这一小步绿掉。</li>
 </ol>
-<div class="callout amber"><b>这一期闭环的特征</b>：环短、频繁、<b>质量把关几乎全在人</b>——Agent 更像"快速打字员 + 局部修补匠"，需求拆分、根因判断、最终正确性都靠人兜底。这正是第三部分要解决的痛点：把"③调试 + ④反馈 + ⑥再调试"从人眼读打印，升级为 <b>回归套件当裁判、AI 自我纠错</b> 的自动闭环（见 <a href="#q6">第三部分 §6</a>）。</div>
+<blockquote><b>这一期闭环的特征</b>：环短、频繁、<b>质量把关几乎全在人</b>——Agent 更像"快速打字员 + 局部修补匠"，需求拆分、根因判断、最终正确性都靠人兜底。这也正是第三部分要解决的痛点：把"③调试 + ④反馈 + ⑥再调试"从人眼读打印，升级为<b>回归套件当裁判、AI 自我纠错</b>的自动闭环（见第三部分 §6）。</blockquote>
 <p>下面 §1–§5，就是把这条闭环的关键环节——提示词、需求拆分、执行、纠错、调试——逐个展开。</p>
-
-<h2 id="qb1">1 · 如何给 AI 提供提示词</h2>
-<p>这一期能力有限的模型对<b>信息密度</b>格外敏感：给得越具体（样例、字段名、期望值），越不容易跑偏；一旦留白，它就<b>自己脑补</b>。</p>
-<div class="callout green">
-<b>✅ 好例 —— 把"要做什么"说到可运行</b>：项目第一条提示词 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-1">OpenCode #1</a> 没说"写个 HLSL 解释器"这种空话，而是<b>贴出完整样例 HLSL（<code>vs_main</code> 全文）</b>并要求"先实现对下列样例代码的解释执行"——给的是一个具体、可运行的靶子。
-</div>
-<div class="callout amber">
-<b>❌ 反例 —— 留白被脑补</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-97">OpenCode #97</a> 用户事后批注："<i>没有给具体的信息，导致解析 config 文件的字段名错误，AI 自己脑补的字段名</i>"。提示词没给 depth/stencil config 的真实字段名，AI 就臆造字段名 → 解析错误。
-</div>
-<p><b>小结</b>：与第三部分的"可机判成功标准 + 不要做什么"相比，这一期更基础的功课是<b>把输入说全</b>——尤其样例、字段、数据格式这类 AI 无从猜起的事实。</p>
-
-<h2 id="qb2">2 · 分析需求、生成开发计划</h2>
-<p>这一期的"计划"不是 AI 自己 triage，而是<b>用户把大目标切成极小、可独立验证的步骤</b>，喂给 AI 一步步做——"找杠杆点"由人来做。</p>
-<p><b>典型证据</b>：表达式求值器不是一次写成，而是沿一串小步<b>逐步长出来</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12">#12 给求值每分支加可开关打印</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15">#15 修 transpose 只执行一半</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16">#16 打印操作数/操作符/结果</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19">#19 加 float3x3 cast</a>。每步只动一个点。</p>
-<div class="callout"><b>对比</b>：这与第三部分"一步覆盖 triage→修复→回归→提交→文档整条闭环"形成鲜明反差。模型一次只能可靠推进一小步时，把需求切碎、每步可肉眼验证，是对其能力的适配。</div>
-
-<h2 id="qb3">3 · 如何按计划执行</h2>
+<h2>1 · 如何给 AI 提供提示词</h2>
+<p>这一期能力有限的模型对<b>信息密度</b>格外敏感：你给得越具体（样例、字段名、期望值），它越不容易跑偏；一旦留白，它就<b>自己脑补</b>。</p>
+<ul>
+<li><b>✅ 好例 —— 把"要做什么"说到可运行</b>：项目第一条提示词 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-1">OpenCode #1</a> 没有说"写个 HLSL 解释器"这种空话，而是<b>贴出完整样例 HLSL（<code>vs_main</code> 全文）</b>，并明确"先帮我实现对下列样例代码的解释执行"。给的是一个<b>具体、可运行的目标</b>，AI 第一步就有明确靶子。</li>
+<li><b>❌ 反例 —— 留白被脑补</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-97">OpenCode #97</a> 用户事后批注："<b>没有给具体的信息，导致解析 config 文件的字段名错误，AI 自己脑补的字段名</b>"。提示词没给出 depth/stencil config 的真实字段名，AI 就臆造了字段名 → 解析错误。</li>
+<li><b>小结</b>：与第三部分的"可机判成功标准 + 不要做什么"相比，这一期更基础的功课是<b>把输入说全</b>——尤其是样例、字段、数据格式这类 AI 无从猜起的事实。</li>
+</ul>
+<h2>2 · 分析需求、生成开发计划</h2>
+<p>这一期的"计划"不是 AI 自己 triage，而是<b>用户把大目标切成极小的、可独立验证的步骤</b>，喂给 AI 一步步做。"找杠杆点"由人来做，AI 负责执行单步。</p>
+<ul>
+<li><b>典型证据</b>：表达式求值器不是一次写成，而是沿一串小步<b>逐步长出来</b>——<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12">#12 给求值每个分支加可开关打印</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15">#15 修 <code>transpose</code> 只执行一半</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16">#16 打印操作数/操作符/结果</a> → <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19">#19 加 <code>float3x3</code> cast</a>。每步只动一个点。</li>
+<li><b>为什么这样</b>：模型一次只能可靠地推进一小步；把需求切碎、每步产出可立刻肉眼验证，是对其能力的<b>适配</b>。这与第三部分"一步覆盖 triage→修复→回归→提交→文档整条闭环"形成鲜明对比。</li>
+</ul>
+<h2>3 · 如何按计划执行</h2>
 <p>执行单元 = "<b>描述一个具体现象 → 让 AI 改一个点 → 看打印验证 → 下一步</b>"。</p>
 <ul>
-<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15">#15</a>：用户指出"<code>execute_statement</code> 执行 <code>transpose(WorldViewProj)</code> 时只执行了一部分"，AI 据此定点修正。</li>
-<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19">#19</a>：用户给出具体语句 <code>normalize(mul(nor, (float3x3)World))</code> 驱动加 float3x3 cast。</li>
+<li><b>例</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-15">#15</a> 用户指出"<code>execute_statement</code> 执行 <code>transpose(WorldViewProj)</code> 时只执行了一部分"，AI 据此定点修正；<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-19">#19</a> 用户给出具体语句 <code>normalize(mul(nor, (float3x3)World))</code> 驱动加 <code>float3x3</code> cast。</li>
+<li><b>验证方式</b>：这一期还没有回归套件、没有成熟的 golden 自动对比，<b>验证靠人看打印</b>——所以每步都很小、便于肉眼判断对错。慢，但可控。</li>
 </ul>
-<p><b>验证方式</b>：这一期还没有回归套件、没有成熟的 golden 自动对比，<b>验证靠人看打印</b>——所以每步都很小、便于肉眼判断对错。慢，但可控。</p>
-
-<h2 id="qb4">4 · 如何纠正 AI 的错误</h2>
-<p>这一期纠错以<b>重度人工介入</b>为特征：用户常要直接给出真因，甚至亲自动手。下面三个真实案例，每个都拆成 <b>AI 的错误判断 → 用户点出的真因 → 对应代码改动</b> 三段——正好说明"为什么这一期离不开人"。</p>
-
-<h3>案例一 · 找不到根因 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a></h3>
-<div class="callout amber"><i>用户原话："MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。"</i></div>
+<h2>4 · 如何纠正 AI 的错误</h2>
+<p>这一期纠错以<b>重度人工介入</b>为特征：用户常常要直接给出真因，甚至亲自动手。下面三个真实案例，每个都拆成 <b>AI 的错误判断 → 用户点出的真因 → 对应代码改动</b> 三段——正好说明"为什么这一期离不开人"。</p>
+<h4>案例一 · 找不到根因 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a></h4>
+<blockquote>用户原话："MiniMax-M2.7 cannot find the root cause. 实际问题是 body 没有正常去除大括弧，导致无法识别语句。"</blockquote>
 <ul>
 <li><b>现象</b>：整段 HLSL 函数体被当成<b>一条语句</b>执行 → 执行失败。</li>
 <li><b>AI 的错误判断</b>：MiniMax 认定是 <code>execute_main_function</code> 里那段<b>按 <code>;</code> 切分语句的字符循环写错了</b>（<code>brace_count</code> / <code>;</code> 判断有 bug），围着这个循环反复改，始终找不到根因。</li>
 <li><b>用户点出的真因</b>：喂给循环的 <code>body</code> 字符串<b>没有去掉最外层的一对 <code>{ }</code></b>。<code>body</code> 以 <code>{</code> 开头——循环第一个字符就让 <code>brace_count = 1</code>，直到末尾的 <code>}</code> 才归 0，中间所有顶层 <code>;</code> 都处在 <code>brace_count ≥ 1</code>，永远不触发切分，于是整段被并成一条语句。循环逻辑本身没错，<b>错在喂进去的数据</b>。</li>
+<li><b>代码改动</b>：在进入切分循环<b>之前，先剥掉 <code>body</code> 首尾的花括号</b>：</li>
 </ul>
 <pre><code>body = body.strip()
 if body.startswith('{') and body.endswith('}'):
     body = body[1:-1]        # 去掉最外层 { }，再按 ; 切分
 # 之后才是原来的 for char in body: ... 切分循环</code></pre>
-
-<h3>案例二 · 修复不彻底 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a></h3>
-<div class="callout amber"><i>用户原话："MiniMax-M2.7 并不能完全修复……没有考虑到检测到 <code>&lt;</code> 后，取 <code>[i-1:i+1]</code> 实际取出的是 <code> &lt;</code>，导致错误依旧。"</i> 提交信息直接记成 <i>"I have to fix it by my hand"</i>（用户手改）。</div>
+<h4>案例二 · 修复不彻底 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a></h4>
+<blockquote>用户原话："MiniMax-M2.7 并不能完全修复……没有考虑到检测到 <code>&lt;</code> 后，取 <code>[i-1:i+1]</code> 实际取出的是 <code> &lt;</code>，导致错误依旧。" 提交信息直接记成 <i>"I have to fix it by my hand"</i>（用户手改）。</blockquote>
 <ul>
-<li><b>现象</b>：<code>float cond = dist &lt;= LightRadius ? 1.0 : 0.0</code> 里的 <code>&lt;=</code> 被识别成 <code>&lt;</code>，右操作数被切成 <code>= LightRadius</code>（语法树里成了 <code>Value(= LightRadius)</code>）→ 取不到常量、条件恒错。</li>
+<li><b>现象</b>：<code>float cond = dist &lt;= LightRadius ? 1.0 : 0.0</code> 里的 <code>&lt;=</code> 被识别成 <code>&lt;</code>，右操作数被切成 <code>= LightRadius</code>（见语法树 <code>Value(= LightRadius)</code>）→ 取不到常量、条件恒错。</li>
 <li><b>AI 的错误判断（修了但没修对）</b>：MiniMax 加了"两字符运算符"判断，但<b>取的切片窗口错了</b>——用 <code>expr[i-1:i+1]</code>。当 <code>i</code> 指向 <code>&lt;</code> 时，<code>[i-1:i+1]</code> 取出的是 <code>" &lt;"</code>（空格 + <code>&lt;</code>），不在运算符表里，于是仍退回把单字符 <code>&lt;</code> 当运算符 → <code>&lt;=</code> 没被识别，错误照旧。</li>
 <li><b>用户点出的真因 + 手改</b>：两字符匹配必须<b>向前看</b> <code>expr[i:i+2]</code>（=<code>"&lt;="</code>），而不是向后取 <code>[i-1:i+1]</code>；同时给单字符判断加护栏——<b>当 <code>expr[i:i+2]</code> 已是二字符运算符时，就不把单字符 <code>&lt;</code> 计入候选</b>。修正后的 <code>_find_top_level_operator</code> 逻辑（见 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-39">#39</a> 的加注版）：</li>
 </ul>
 <pre><code>if depth == 0:
-    if i >= 1:
+    if i &gt;= 1:
         two_char = expr[i-1:i+1]          # 以 i 结尾的两字符，如 "&lt;="
         if two_char in self.operators:
             candidates.append((i-1, two_char, self.operators[two_char]))
             i += 1
             continue
     two_char = expr[i:i+2]                 # 向前看：i 处若是 "&lt;=" 的开头
-    if char in self.operators and not (i >= 1 and two_char in self.operators):
+    if char in self.operators and not (i &gt;= 1 and two_char in self.operators):
         candidates.append((i, char, self.operators[char]))   # 单字符，但 &lt;= 时不计 &lt;</code></pre>
-
-<h3>案例三 · 误删代码 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a></h3>
-<div class="callout amber"><i>用户原话："MiniMax-M2.7 错误地删除以下语句导致 <code>execute_main_function</code> 没有返回执行结果。"</i></div>
+<h4>案例三 · 误删代码 · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a></h4>
+<blockquote>用户原话："MiniMax-M2.7 <b>错误地删除</b>以下语句导致 <code>execute_main_function</code> 没有返回执行结果。"</blockquote>
 <ul>
 <li><b>任务</b>：把 if/else 的执行改成"执行 <code>if</code> 前先检查有无 <code>else</code>，有就先合并成完整 if-else 再执行一次"。</li>
 <li><b>AI 的错误判断</b>：MiniMax 在重构 if-else 合并逻辑时，<b>顺手误删了 <code>execute_main_function</code> 里处理 <code>return</code> 的那段</b>——它以为那段与本次重构无关，实则是取返回值的关键：</li>
@@ -400,416 +288,351 @@ if 'return' in stmt and 'output' in stmt:
 <ul>
 <li><b>后果 + 修复</b>：删掉后 <code>execute_main_function</code> 再不把 <code>output</code> 取作返回值 → <b>函数没有返回执行结果</b>。修复就是把这段 <code>return</code> 处理<b>原样恢复</b>回去。这类"改 A 却顺手删了不相关的 B"，是这一期必须由人逐行 review 兜底的典型。</li>
 </ul>
-
-<div class="callout green"><b>也有亮点</b> · <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45">#45</a>：AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。</div>
-<p><b>小结</b>：纠错回路短而频繁，<b>质量把关几乎全在人</b>——AI 更像"快速打字员 + 局部修补匠"，深层根因与最终正确性靠人兜底。</p>
-
-<h2 id="qb5">5 · 如何进行调试</h2>
-<p>这一期最有<b>长远价值</b>的产出，是把解释器改造成"<b>会自述</b>"的——给求值过程加可开关的打印。正是这套打印，后来演化成第三部分赖以"沿数据流回溯根因"的 <code>[STMT]</code>/<code>[BINARY OP]</code> 轨迹（见 <a href="#q5">第三部分 §5</a>）。</p>
+<h4>也有亮点</h4>
 <ul>
-<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12">#12</a> 每个求值分支加可开关打印；
-    <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16">#16</a> 打印操作数/操作符/结果；
-    <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-17">#17</a> 用一个 bool 统一控制开关；
-    <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-31">#31</a> 优化 <code>log_output</code> 写文件。</li>
+<li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-45">#45</a> —— AI "找出 GIL 是多线程无法提速的根本，主动增加 function cache，把 executeVS 从 9 秒降到 7 秒"（用户批注"这次做得比较好"）。</li>
+<li><b>小结</b>：纠错回路短而频繁，<b>质量把关几乎全在人</b>——AI 更像"快速打字员 + 局部修补匠"，深层根因与最终正确性靠人兜底。</li>
 </ul>
-<p><b>调试方式</b>：开打印 → 跑 → <b>人工读打印</b>定位哪一步的操作数/结果不对 → 改。没有自动断言，全靠"可读的中间状态 + 人眼"。这一期为整个项目的<b>可观测性打了地基</b>。</p>
-
-<!-- ============================ PART C ============================ -->
-<div class="part"><h1>第三部分 · 基于 ClaudeCode 的开发（攻坚期）</h1>
-<p>约 step87 起（<code>Sessions/hlsl-interpreter-step*.md</code>）：引入真机 capture 工作流、数据驱动回归套件，系统化啃长尾。例子取自 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.html</code> 与 <code>Sessions/</code>。</p></div>
-
-<!-- Q1 -->
-<h2 id="q1">1 · 如何给 AI 提供提示词</h2>
+<h2>5 · 如何进行调试</h2>
+<p>这一期最有<b>长远价值</b>的产出，是把解释器改造成"<b>会自述</b>"的——给求值过程加可开关的打印。正是这套打印，后来演化成第三部分赖以"沿数据流回溯根因"的 <code>[STMT]</code>/<code>[BINARY OP]</code> 轨迹（见<b>第三部分 · 5 · 什么输出能帮助调试</b>）。</p>
+<ul>
+<li><b>证据</b>：<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-12">#12 每个求值分支加可开关打印</a>、<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-16">#16 打印操作数/操作符/结果</a>、<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-17">#17 用一个 bool 统一控制打印开关</a>、<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-31">#31 优化 <code>log_output</code> 写文件（避免每条都开关文件）</a>。</li>
+<li><b>调试方式</b>：开打印 → 跑 → <b>人工读打印</b>定位哪一步的操作数/结果不对 → 改。没有自动断言，全靠"可读的中间状态 + 人眼"。这一期为整个项目的<b>可观测性打了地基</b>。</li>
+</ul>
+<hr>
+<h1>第三部分 · 基于 ClaudeCode 的开发（攻坚期）</h1>
+<blockquote>这一期（约 step87 起，<code>Sessions/hlsl-interpreter-step*.md</code>）引入 zip/RunDrawFromDump 真机 capture 工作流，建立数据驱动回归套件，并系统化啃长尾。下面 10 个方面，例子取自 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.html</code> 与 <code>Sessions/</code>。</blockquote>
+<h2>1 · 如何给 AI 提供提示词</h2>
 <p>提示词不是"一句话指令"，而是一个<b>分层的上下文系统</b>。本项目里有效的提示词由四层组成：</p>
-<div class="svgbox">
-<svg viewBox="0 0 900 260" role="img" aria-label="提示词四层结构">
-  <defs><style>.b{fill:#1e222b;stroke:#2a2f3a;rx:10}.t{fill:#e6e9ef;font:14px sans-serif}.s{fill:#9aa4b2;font:12px sans-serif}.h{fill:#5db0ff;font:bold 14px sans-serif}</style></defs>
-  <rect class="b" x="20" y="20" width="860" height="50" rx="10"/>
-  <text class="h" x="36" y="42">① 常驻项目说明 CLAUDE.md</text>
-  <text class="s" x="36" y="60">项目是什么 · 怎么运行 · verify-by-log 工作流 · 两个陷阱 · 必跑回归</text>
-  <rect class="b" x="20" y="80" width="860" height="50" rx="10"/>
-  <text class="h" x="36" y="102">② 任务指令（可执行循环）</text>
-  <text class="s" x="36" y="120">挨个修 → 跑 → 找 Error → 定位 → 修 → 验证 → 回归 → 提交 → 加回归 → 写文档</text>
-  <rect class="b" x="20" y="140" width="860" height="50" rx="10"/>
-  <text class="h" x="36" y="162">③ 现状 / 约束清单</text>
-  <text class="s" x="36" y="180">已知未修长尾 + 标注"capture 限制、无解" → AI 不在死路上空转</text>
-  <rect class="b" x="20" y="200" width="860" height="44" rx="10"/>
-  <text class="h" x="36" y="222">④ 留痕要求</text>
-  <text class="s" x="36" y="238">写 Sessions/ 文档 + 填提示词历史 → 既是交付物，也是下一轮记忆</text>
-</svg>
-<div class="legend">提示词四层：越靠上越"常驻"，越靠下越"本轮"</div>
-</div>
-
-<h3>① 常驻说明里，关于回归测试的约束</h3>
-<p>四层里最关键的一条纪律，是 <code>CLAUDE.md</code> 对回归测试写得<b>非常死、一字不让</b>（原文节译）：</p>
-<div class="callout">
-<b>每次代码改动后，都必须在"认为完成"之前跑回归套件。</b> 本项目没有单元测试，回归套件就是防止解释器/管线被改坏的安全网。套件数据驱动：<code>Cases/regression_test_zip_files.csv</code> 逐行列出必须持续通过的 capture；增删覆盖面就改这个 CSV，<b>不要在 runner 里硬编码 case 名</b>。<br>
-一个 case <b>通过</b>当且仅当三条同时成立：① <code>render.py</code> 干净退出；② 日志里<b>没有以 <code>Error:</code> 开头的行</b>；③ 日志的 <code>Total PASSED rows: X/Y</code> 满足 <b>X == Y</b>。失败就打开 <code>Cases/regression_logs/&lt;stem&gt;.log</code> grep <code>Error:</code>，<b>先修解释器再往下走</b>。
-</div>
-
-<h4><code>Total PASSED rows: X/Y</code> 到底是什么？用实际日志说清 X == Y</h4>
-<p>它由 <code>compare_vs_output_with_golden</code> 在跑完 VS 后打印（<code>hlsl_interpreter.py</code>）：</p>
+<h3>1.1 常驻项目说明（<code>CLAUDE.md</code>）</h3>
+<p>最重要的一层。它在每次会话开始时自动注入，相当于"团队 onboarding 文档 + 不可逾越的规则"。本项目的 <code>CLAUDE.md</code> 写清了：</p>
+<ul>
+<li><b>这是什么</b>：纯 Python 解释 HLSL 源码、模拟 D3D11 管线、对比 golden 数据。</li>
+<li><b>怎么运行</b>：<code>python render.py ./Cases/Default.json</code>。</li>
+<li><b>核心工作流</b>：verify-by-log —— 跑管线、grep 日志里的 <code>Error:</code> 行、迭代到无错。</li>
+<li><b>两个"反直觉陷阱"</b>：3Dmigoto 尾部 <code>float3</code> 错位、表达式里一元 vs 二元 <code>+/-</code>。</li>
+<li><b>硬性规则</b>：每次改动后必须跑回归测试 <code>python run_regression.py</code>。</li>
+</ul>
+<p><b>关于回归测试的约束，<code>CLAUDE.md</code> 写得非常死，一字不让</b>——这是全篇最关键的一条纪律，原文（节译）：</p>
+<blockquote><b>每次代码改动后，都必须在"认为完成"之前跑回归套件。</b> 本项目没有单元测试，回归套件就是防止解释器/管线被改坏的安全网。<br>套件是数据驱动的：<code>Cases/regression_test_zip_files.csv</code> 逐行列出必须持续通过的 capture zip；增删覆盖面就改这个 CSV，<b>不要在 runner 里硬编码 case 名</b>。<br>一个 case <b>通过</b>当且仅当三条同时成立：① <code>render.py</code> 干净退出；② 日志里<b>没有以 <code>Error:</code> 开头的行</b>（VS-vs-golden 的分量级不符）；③ 日志的 <code>Total PASSED rows: X/Y</code> 汇总满足 <b>X == Y</b>（每一行 golden 都匹配）。<br>若某个 case 失败，打开 <code>Cases/regression_logs/&lt;zip-stem&gt;.log</code>、grep <code>Error:</code> 找到不符分量，<b>先修解释器再往下走</b>。</blockquote>
+<p><b><code>Total PASSED rows: X/Y</code> 到底是什么？用实际日志说清 X == Y</b>。它由 <code>compare_vs_output_with_golden</code> 在跑完 VS 后打印（<code>hlsl_interpreter.py</code>）：</p>
 <ul>
 <li><b>Y = golden 的总行数</b>，即这次 Draw 的<b>顶点数</b>（golden VS 输出每个顶点一行）。</li>
 <li><b>X = "整行都对"的行数</b>：某一行里，<b>每个语义字段（<code>SV_POSITION</code>/<code>COLOR</code>/<code>WORLDPOS</code>…）的每个分量</b>都与 golden 在 <code>float_tolerance</code> 内相等，这一行才计入 X。<b>任何一个分量超差，整行判失败</b>（并打一条 <code>Error:</code> 行），X 不加一。</li>
 </ul>
-<p>一个<b>全通过</b>的真实 case（<code>event371</code>，6 个顶点）日志尾部：</p>
+<p>一个<b>全通过</b>的真实 case（<code>event371</code>，6 个顶点）日志尾部长这样：</p>
 <pre><code>VS executed 6 vertices in 0.0028s
 Comparing VS output with golden data...
 Total PASSED rows: 6/6
 Comparison PASSED: All output data matches golden data within tolerance</code></pre>
-<p><code>6/6</code> → <b>X == Y</b>，6 行 golden 全部逐分量匹配 = 这个 case 绿。反过来，一个<b>没修好</b>的真实 case（<code>event399</code> 某次修复前，696 个顶点）：</p>
+<p><code>6/6</code> → <b>X == Y</b>，6 行 golden 全部逐分量匹配 = 这个 case 绿。</p>
+<p>反过来，一个<b>没修好</b>的真实 case（<code>event399</code> 某次修复前，696 个顶点）日志是：</p>
 <pre><code>Error: Row 0 Color[0]: output=0.000000 golden=0.364710 diff=0.364710
 Error: Row 0 Color[1]: output=0.000000 golden=0.364710 diff=0.364710
 Error: Row 1 Color[0]: output=0.000000 golden=1.121450 diff=1.121450
    … (每个出错分量一条 Error 行) …
 Total PASSED rows: 0/696
 Comparison FAILED: Some output data does not match golden data</code></pre>
-<p><code>0/696</code> → <b>X ≠ Y</b>（X=0，一行都没对上，Color 全算成 0）= 这个 case 红。回归判据要的就是 <b>X == Y</b>：<b>Y 是应对上的行数、X 是真正对上的行数，两者相等才说明"每一个顶点、每一个分量都和真机一致"</b>——差一行、甚至一行里差一个分量，<code>X &lt; Y</code>，回归立即判红。这也和判据②互为印证：只要 <code>X &lt; Y</code>，日志里必有对应 <code>Error:</code> 行指出是哪行、哪字段、哪分量、差多少。</p>
-
-<p>这段约束把"完成"变成<b>机器可判、不可赖账</b>的三条硬指标，还顺带堵死两条捷径：<b>不许改 runner 硬编码绕过</b>、<b>失败必须回解释器侧修</b>（而非动 golden 或放宽判据）——AI 不能自称"修好了"，必须让 <code>run_regression.py</code> 亮绿。</p>
-<div class="callout amber">
-<b>为什么要"机器判绿"——看第二部分一个反面教训</b>
-<p style="margin:6px 0">那一期还没有回归套件，AI 完全靠"自称"。步骤 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">OpenCode #37</a> 里，MiniMax-M2.7 <b>把两字符运算符的修复当成"已修好"提交了</b>（提交信息说修复 <code>&lt;=</code> 识别问题）。但它其实<b>没修对</b>：检测到 <code>&lt;</code> 时取 <code>expr[i-1:i+1]</code> 得到的是 <code>" &lt;"</code>（空格+<code>&lt;</code>），<code>&lt;=</code> 依旧被切成 <code>&lt;</code>，<code>dist &lt;= LightRadius</code> 照错不误。因为<b>没有任何机器判据拦住这次"假修复"</b>，错误一路溜过，直到用户亲自复跑、读打印才发现，最后提交信息只能如实记成 <i>"MiniMax-M2.7 fixes two char operator issue failed. I have to fix it by my hand."</i>（详见 <a href="#qb4">第二部分 §4 案例二</a>）。</p>
-<b>这正是第三部分立下回归铁律的原因</b>：把"修好了"从 <b>AI 的一句话</b>，变成 <code>run_regression.py</code> 的<b>退出码 + <code>X==Y</code></b>。同样一次"我觉得修好了"，在第二部分能蒙混过关、在第三部分会被回归<b>当场判红</b>——"假绿"再也过不了闸门。
-</div>
-
-<h3>② 任务指令：一条落到真实 case 的可执行循环</h3>
-<p>把 ② 的循环规范落到 C1（多数组 cbuffer）上，一轮是这样跑完的——<b>每一步都有机器可判的出口</b>：</p>
+<p><code>0/696</code> → <b>X ≠ Y</b>（这里 X=0，一行都没对上，Color 全算成 0）= 这个 case 红。回归判据要的就是 <b>X == Y</b>：<b>Y 是应对上的行数、X 是真正对上的行数，两者相等才说明"每一个顶点、每一个分量都和真机一致"</b>——差一行、甚至一行里差一个分量，<code>X &lt; Y</code>，回归立即判红。这也和判据②（无 <code>Error:</code> 行）互为印证：只要 <code>X &lt; Y</code>，日志里必然有对应的 <code>Error:</code> 行指出是哪一行、哪个字段、哪个分量、差多少。</p>
+<p>这段约束把"完成"变成了<b>机器可判、不可赖账</b>的三条硬指标——AI 不能自称"修好了"，必须让 <code>run_regression.py</code> 亮绿。它还顺带堵死了两条捷径：<b>不许改 runner 硬编码绕过</b>、<b>失败必须回到解释器侧修</b>（而不是去动 golden 或放宽判据）。</p>
+<blockquote><b>为什么要"机器判绿"，看第二部分一个反面教训</b>：那一期还没有回归套件，AI 完全靠"自称"。步骤 <a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">OpenCode #37</a> 里，MiniMax-M2.7 <b>把两字符运算符的修复当成"已修好"提交了</b>——提交信息记的是修复 <code>&lt;=</code> 识别问题。但它其实<b>没修对</b>：检测到 <code>&lt;</code> 时取 <code>expr[i-1:i+1]</code> 得到的是 <code>" &lt;"</code>（空格+<code>&lt;</code>），<code>&lt;=</code> 依旧被切成 <code>&lt;</code>，<code>dist &lt;= LightRadius</code> 照错不误。因为<b>没有任何机器判据拦住这次"假修复"</b>，错误一路溜过，直到用户亲自复跑、读打印才发现，最后提交信息只能如实记成 <i>"MiniMax-M2.7 fixes two char operator issue failed. I have to fix it by my hand."</i>（详见第二部分 §4 案例二）。<br><b>这正是第三部分立下回归铁律的原因</b>：把"修好了"从<b>AI 的一句话</b>，变成 <code>run_regression.py</code> 的<b>退出码 + <code>X==Y</code></b>。同样一次"我觉得修好了"，在第二部分能蒙混过关、在第三部分会被回归当场判红——"假绿"再也过不了闸门。</blockquote>
+<blockquote><b>要点</b>：把"踩过的坑"（两个陷阱）和"必须遵守的纪律"（回归三判据）写进常驻说明，AI 才不会反复犯同样的错、也不会自欺欺人地"假绿"。例如 C1 修复时，AI 无需被提醒就知道：去看 golden 对比日志定位分量、改完跑 <code>run_regression.py</code>、<code>X==Y</code> 才算过——这些全部来自 <code>CLAUDE.md</code>。</blockquote>
+<h3>1.2 任务指令（本轮的编号清单）</h3>
+<p>用户本轮给出的提示词是一个<b>可执行的循环规范</b>，而不是模糊愿望：</p>
+<pre><code>1. 挨个修复上面列出的 issue
+2. zip file 在 .../RunDrawFromDump/Dump 里
+3. 如果运行的 zip 没有问题，直接运行下一个
+4. 如果在 output.log 里发现 error，分析整个渲染管线，找出问题
+5. 修复该问题，保证该 error 消失且无新增 error
+6. 修复后执行回归测试保证通过
+7. 通过后直接提交 fix，并把同类出错的 zip 选一个加入回归
+8. 把思考/执行/结果写入 Sessions/hlsl-interpreter-stepN-*.md</code></pre>
+<p>这段提示词的优点：<b>可验证的完成标准</b>（无 error、回归通过）、<b>明确的循环边界</b>（一个 case 一轮）、<b>产出要求</b>（提交 + 文档 + 回归用例）。〔提示词原文：<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42 继续修复</a>〕</p>
+<p><b>这条"可执行循环"落到一个真实 case（C1 多数组 cbuffer）上，一轮是这样跑完的：</b></p>
 <pre><code>[挑 case] 取 Dump 里下一个 zip → 跑 render.py
    ↓
 [找 Error] output.log 出现:
    Error: Row0 texgen[2].x output=0.0000 golden=0.3125 diff=0.3125   ← texgen[2] 读成 0
    ↓
-[定位] 沿数据流回溯:texgen[] 只有 [0] 有值,[1]/[2] 全 0
+[定位] 沿数据流回溯:整个 texgen[] 只有 [0] 有值,[1]/[2] 全 0
         → cbuffer 数组字段的二进制重载只填了首个元素
    ↓
-[修]     load_all_cbuffers_from_combined_csv:按数组步长逐元素填充
+[修] load_all_cbuffers_from_combined_csv:按数组步长逐元素填充,而非只填 texgen[0]
    ↓
-[验证]   重跑该 case → 无 Error、Total PASSED rows: N/N
+[验证] 重跑该 case → 无 Error、Total PASSED rows: N/N
    ↓
-[回归]   python run_regression.py → 全绿(一次修复顺带绿了 5 个同类 case)
+[回归] python run_regression.py → 全绿(一次修复顺带绿了 5 个同类 case)
    ↓
-[提交]   git commit 该 fix
+[提交] git commit 该 fix
    ↓
-[加回归] 从 5 个同类 zip 挑一个,加进 regression_test_zip_files.csv
+[加回归] 从这 5 个同类 zip 里挑一个,加进 regression_test_zip_files.csv
    ↓
-[写文档] Sessions/hlsl-interpreter-stepN-*.md 记现象/根因/改动/回归
+[写文档] Sessions/hlsl-interpreter-stepN-*.md 记下现象/根因/改动/回归结果
    ↓
 [下一轮] 回到 [挑 case]</code></pre>
-<p>找 Error 靠 grep、验证靠 <code>X==Y</code>、回归靠退出码——AI 能自己判断这一轮是否<b>真的</b>完成，而不是"感觉修好了"。原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42</a>。</p>
-
-<h3>③ 现状 / 约束清单：给 AI 一个合法的"放弃"理由</h3>
-<p>用户把"已知未修长尾"列在提示词前面，并<b>逐条标注哪些是 capture 限制、无解</b>，让 AI <b>不在死路上空转</b>（摘录，原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">#42</a>）：</p>
+<p>关键在于<b>每一步都有机器可判的出口</b>：找 Error 靠 grep、验证靠 <code>X==Y</code>、回归靠退出码——AI 能自己判断这一轮是否真的完成，而不是"感觉修好了"。</p>
+<h3>1.3 现状/约束清单</h3>
+<p>用户把"已知未修复的长尾"列在提示词前面，并<b>逐条标注哪些是"capture 限制、无解"</b>，这样 AI <b>不会在死路上空转</b>——把精力放在可解项（C1/C2/C3），对已判定不可解的项直接跳过。这份清单摘录（原文见 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">ClaudeCode #42</a>）：</p>
 <table>
-<thead><tr><th>长尾项</th><th>状态</th><th>是否可解</th></tr></thead>
-<tbody>
-<tr><td>打包 uint 八面体法线（event16215/16834）</td><td>sv_position 已修，残余是更深的八面体解码</td><td>⏳ 未解，暂缓</td></tr>
-<tr><td>四元数 typed-buffer（event2135/3542…）</td><td>位运算已修；t3 是 <code>SNORM</code>、t2 是 <code>UNORM</code></td><td>❌ <b>capture 未记录 view 格式，无法区分 → 无解</b></td></tr>
+<tr><th>长尾项</th><th>状态</th><th>是否可解</th></tr>
+<tr><td>打包 uint 八面体法线（event16215/16834）</td><td>sv_position 已修，残余 TexCoord 是更深的八面体解码</td><td>⏳ 未解，暂缓</td></tr>
+<tr><td>四元数 typed-buffer（event2135/3542…）</td><td>位运算已修；残余因 t3 是 <code>R8G8B8A8_SNORM</code>、t2 是 <code>UNORM</code></td><td>❌ <b>capture 未记录 view 格式，UNORM/SNORM 无法区分 → 无解</b></td></tr>
 <tr><td>raw structured buffer（event22201）</td><td>capture 根本没 dump 该 raw buffer</td><td>❌ <b>能力/capture 限制 → 无解</b></td></tr>
 <tr><td>Tank 18 个超时</td><td>纯 Python 光栅化 ~62k 像素慢</td><td>⚠️ <b>非 bug，暂缓</b></td></tr>
-</tbody>
 </table>
-<p>没有这份清单，AI 会对着 <code>SNORM/UNORM</code> 这种 capture 里根本无从区分的信息反复试探、来回改代码却永远绿不了；有了它，AI 直接记一句"capture 限制、跳过"，把预算投到真正能修的地方。</p>
-
-<h3>④ 留痕要求：既是交付物，也是下一轮的记忆</h3>
-<p>任务指令最后一条永远是"<b>把思考/执行/结果写入 <code>Sessions/hlsl-interpreter-stepN-*.md</code></b>"。留痕同时扮演三个角色：</p>
+<p>标注"无解/非 bug"的价值在于：<b>它给了 AI 一个合法的"放弃"理由</b>。没有这份清单，AI 会对着 <code>R8G8B8A8_SNORM/UNORM</code> 这种 capture 里根本无从区分的信息反复试探、来回改代码却永远绿不了；有了它，AI 会直接记一句"capture 限制、跳过"，把预算投到真正能修的地方。</p>
+<h3>1.4 留痕要求（写 <code>Sessions/</code> 文档 + 填提示词历史）</h3>
+<p>任务指令的最后一条永远是"<b>把思考/执行/结果写入 <code>Sessions/hlsl-interpreter-stepN-*.md</code></b>"。这不是走形式——留痕在本项目里同时扮演三个角色：</p>
 <ul>
-<li><b>交付物</b>：每轮修复留一份可核对记录，Session 文档有固定骨架，AI 按它填——<code>Goal / Results summary / Fix 1…k（现象→根因→改动→验证）/ Blocked classes（honest assessment）/ Regression</code>。</li>
-<li><b>下一轮的记忆（闭环关键）</b>：本轮文档的 <b><code>Blocked classes</code></b> 一节，下一轮会<b>原样变成 ③ 的现状/约束清单</b>——上一轮判定"四元数 SNORM/UNORM 无解"，下一轮 AI 读到就直接跳过。留痕把"这条路走不通"沉淀成<b>跨会话的长期记忆</b>，否则每开一个新会话又从零撞一遍南墙。</li>
-<li><b>提示词历史</b>：每轮提示词原文按编号填进 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code>（本手册通篇 <code>#N</code> 超链接指向它），让"当初为什么这么改"可回溯——§4/§8 那条 <code>#2→#3→#4</code> 证据链就靠它还原。</li>
+<li><b>① 交付物</b>：每一轮修复都留下一份可核对的记录。Session 文档有固定骨架，AI 按它填： ``<code> # Step N — &lt;这一轮主题&gt; ## Goal            这一轮要修的 case / issue ## Results summary  修了几个、绿了几个、剩几个 ## Fix 1 … Fix k    每个 fix:现象 → 根因 → 代码改动 → 验证 ## Blocked classes (honest assessment)   本轮判定无解/暂缓的项 + 为什么 ## Regression       回归结果(X/Y) </code>``</li>
+<li><b>② 下一轮的记忆（闭环的关键）</b>：本轮文档里的 <b><code>## Blocked classes（honest assessment）</code></b> 一节，下一轮会<b>原样变成 §1.3 的"现状/约束清单"</b>——上一轮判定"四元数 SNORM/UNORM 是 capture 限制、无解"，下一轮 AI 读到就直接跳过，不再重蹈覆辙。留痕把"这条路走不通"的结论<b>沉淀成跨会话的长期记忆</b>，否则每开一个新会话，AI 又会从零撞一遍南墙。</li>
+<li><b>③ 提示词历史</b>：除了 Sessions，用户还把每轮的提示词原文按编号填进 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code>（就是本手册通篇 <code>#N</code> 超链接指向的东西）。它让"当初为什么这么改"可回溯——本手册 §4/§8 的一整条 <code>#2→#3→#4</code> 证据链，就是靠它才能逐条还原。</li>
 </ul>
-<div class="callout green"><b>一句话</b>：留痕文档既是这一轮的<b>收尾</b>，也是下一轮的<b>开局输入</b>——<code>Blocked classes</code> → 下轮 <code>现状/约束</code>，<code>Fix 根因</code> → 下轮遇同类现象的先验。写文档不是负担，而是让 AI <b>越修越聪明</b>的记忆机制。</div>
-
-<div class="callout">
-<b>要点</b>：把"踩过的坑"和"必须遵守的纪律"写进常驻说明（<code>CLAUDE.md</code>），AI 才不会反复犯错。给提示词的黄金法则：<b>给可机判的成功标准</b>（日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>），<b>指明数据/代码在哪</b>，<b>写明不要做什么</b>，<b>要求留痕</b>。
-</div>
-
-<div class="callout amber">
-<b>反例：缺"不要做什么" → AI 改错了地方</b>
-<p style="margin:6px 0">步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2 修复前序提交引入的 bug</a> 的提示词只说"请修复 Color/WorldPos 的 Error"，<b>没有声明"golden 数据是基准、不要动它"</b>。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的<b>尾部 <code>float3</code> 错位</b>陷阱——golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐。</p>
-<p style="margin:6px 0">由于提示词没禁止改基准，AI 把矛头指向了 <b>golden 比较侧</b>：<code>load_vs_golden_from_mesh_csv</code> 里的 WorldPos 重映射一度被<b>注释掉（禁用）</b>，直到步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 才不得不"<i>恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过</i>"。正因吃过这个亏，紧接着的步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4">#4</a> 才在提示词里补上明确禁令——"<b>不要更改 golden data 的加载函数，golden data 加载数据是正确的</b>"（即下方好例 G1）。</p>
-<b>教训</b>：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"<b>基准是对的，只许改解释器</b>"就堵死了后一条错路；漏掉它，就要付出 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2</a>→<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 这样的来回与返工。
-</div>
-
-<h3>好提示词 vs 差提示词：本项目的真实对照</h3>
-<p>以下例子全部摘自本仓库 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code> 的真实提示词，可逐条核对。</p>
-
-<div class="callout green">
-<b>✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径</b>
- <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4" style="font-size:12.5px">〔提示词原文：ClaudeCode #4〕</a>
-<pre><code>output.log 打印：
-Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100
-[STMT] o4.xyz = r1.xyz =&gt; o4.xyz = ['-61.6382','11.2829','-88.1203']
-o4.xyz 错了，正确值应该是 ['11.2829','-88.1203','-58.05407']。请修复，注意：
-  1. 问题在解释执行 HLSL 中，请修复；
-  2. 不要更改 golden data 的加载函数，golden 加载是正确的；
-  3. 修复后跑 python render.py ./Cases/Default.json，读 output.log
-     确认还有没有 Error，有就继续修直到 VS 输出正确。</code></pre>
-<b>为什么好</b>：① 贴出实际值<b>和</b>期望值、精确到分量；② 圈定问题域在"解释执行"；③ 预先排除一条诱人但错误的修法（"别改 golden 加载"——否则 AI 可能为凑数字去改基准、制造假绿）；④ 给可机判的验证回路。这条提示词正命中 <code>CLAUDE.md</code> 记载的"3Dmigoto 尾部 float3 错位"陷阱。
-</div>
-
-<div class="callout amber">
-<b>❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工</b>
-<p style="margin:6px 0">第一条提示词（信息不足，<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-12">原文 ClaudeCode #12</a>）：<i>"rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe"</i>。AI 没被告知 <code>pipeline_state.csv</code> 里 FillMode 到底有哪些取值，只能猜，于是写出：</p>
+<blockquote><b>一句话</b>：留痕文档既是这一轮的<b>收尾</b>，也是下一轮的<b>开局输入</b>——<code>Blocked classes</code> → 下轮 <code>现状/约束</code>，<code>Fix 根因</code> → 下轮遇到同类现象时的先验。写文档不是额外负担，而是让 AI <b>越修越聪明</b>的记忆机制。</blockquote>
+<h3>1.5 给提示词的实操建议</h3>
+<ul>
+<li><b>给可验证的成功标准</b>，而不是"修好它"。本项目的标准是机器可判的：日志无 <code>Error:</code> 且 <code>Total PASSED rows: X/X</code>。</li>
+<li><b>指明数据/代码在哪</b>（zip 目录、配置文件），省去 AI 猜测。</li>
+<li><b>把"不要做什么"写出来</b>（已知无解的类别、不可改动的基准），避免无效探索与改错地方。</li>
+<li><b>要求留痕</b>（写 session 文档 + 填提示词历史），既是交付物，也是下一轮的记忆（详见 §1.4）。</li>
+</ul>
+<blockquote><b>反例（缺"不要做什么"→ AI 改错了地方）</b>：步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2 修复前序提交引入的 bug</a> 的提示词只说"请修复 Color/WorldPos 的 Error"，<b>没有声明"golden 数据是基准、不要动它"</b>。而 WorldPos 的 Error 其实源于 3Dmigoto golden CSV 的<b>尾部 <code>float3</code> 错位</b>陷阱（golden 列看着"不对"，但它就是权威基准，该修的是解释器侧的对齐）。由于提示词没有禁止改基准，AI 把矛头指向了 <b>golden 比较侧</b>——<code>load_vs_golden_from_mesh_csv</code> 里的 WorldPos 重映射一度被<b>注释掉（禁用）</b>，直到步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3</a> 才不得不"<b>恢复被注释掉的 WorldPos golden 重映射……否则对比无法通过</b>"。正因为吃过这个亏，紧接着的步骤 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4">#4</a> 才在提示词里补上明确禁令——"<b>不要更改 golden data 的加载函数，golden data 加载数据是正确的</b>"（即下文 §1.6 的好例 G1）。<br><b>教训</b>：当目标是"让 output 等于 golden"时，AI 天然有两条路——改解释器，或改 golden 比较侧让它"凑上"。一句"<b>基准是对的，只许改解释器</b>"就能堵死后一条错路；漏掉它，就要付出 #2→#3 这样的来回与返工。〔证据链：<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2 缺禁令</a> → <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-3">#3 恢复被注释的重映射</a> → <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4">#4 补上禁令</a>〕</blockquote>
+<h3>1.6 好提示词 vs 差提示词：本项目的真实对照</h3>
+<p>下面三组例子全部摘自本仓库 <code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code> 的真实提示词，可逐条核对（每例均附"提示词原文"超链接，指向对应步骤）。</p>
+<h4>✅ 好例 G1 —— 贴精确证据 + 给期望值 + 限定问题域 + 排除错误路径</h4>
+<p>〔提示词原文：<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-4">ClaudeCode #4 修复执行 HLSL 得到的 WorldPos.xyz 数据不正确问题</a>〕</p>
+<blockquote>output.log 的打印如下：<br><code>Error: Row 0 WorldPos[0]: output=-61.638200 golden=11.282900 diff=72.921100</code><br><code>[STMT] o4.xyz = r1.xyz =&gt; o4.xyz = ['-61.6382', '11.2829', '-88.1203']</code><br>从语法树执行结果看 o4.xyz 错了。正确值应该是 <code>o4.xyz = ['11.2829', '-88.1203', '-58.05407']</code>。请修复，注意：<br>1. 问题看起来是解释执行 HLSL 中出现的，请修复；<br>2. <b>不要更改 golden data 的加载函数，golden 加载是正确的</b>；<br>3. 修复后跑 <code>python render.py ./Cases/Default.json</code>，读 output.log 确认还有没有 Error，有就继续修直到 VS 输出正确。</blockquote>
+<p><b>为什么好</b>：① 贴出实际值<b>和</b>期望值，精确到分量（AI 一眼知道差在哪）；② 把问题域圈定在"解释执行"；③ 预先排除一条诱人但错误的修法（"别去改 golden 加载"——否则 AI 很可能为了让数字对上而去改基准，制造假绿）；④ 给出可机判的验证回路。这条提示词直接命中了 <code>CLAUDE.md</code> 里记载的"3Dmigoto 尾部 float3 错位"陷阱。</p>
+<h4>❌ 差例 B1 —— 漏掉关键约束，导致 AI 猜错、用户被迫返工</h4>
+<p>第一条提示词（信息不足）〔原文：<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-12">ClaudeCode #12 实现 wireframe 绘制</a>〕：</p>
+<blockquote>rasterizer 只支持 solid 绘制，请根据 FillMode 实现 wireframe</blockquote>
+<p>AI 没有被告知"本项目 <code>pipeline_state.csv</code> 里的 FillMode 到底有哪些取值"，只能猜，于是写出：</p>
 <pre><code>fill_mode_map = {
     'point': FillMode.POINT, 'line': FillMode.LINE, 'solid': FillMode.SOLID,
     '0': FillMode.POINT, '1': FillMode.LINE, '2': FillMode.SOLID,
 }</code></pre>
-<p style="margin:6px 0">用户不得不再发<b>一条纠正提示词</b>返工（<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-14">原文 ClaudeCode #14</a>）：<i>"fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid。"</i> <span class="red">代价 = 多一轮往返 + 一次返工。</span></p>
-<p style="margin:6px 0"><b>改进版（一次说清）</b>：<i>"请实现 wireframe 光栅化。注意 D3D11 的 FillMode 只有 <code>Wireframe</code> 和 <code>Solid</code> 两种取值（<code>pipeline_state.csv</code> 里就是这两个字符串），按这两种分派即可。"</i></p>
-<b>要点</b>：差不在"语气"而在"信息密度"。B1 缺的是<b>领域约束</b>（取值集合）——凡是 AI 需要靠猜才能填的空，就该在提示词里直接给死。
-</div>
-
-<p>同一个 bug，两种问法的对照：</p>
+<p>用户不得不再发<b>一条纠正提示词</b>返工〔原文：<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-14">ClaudeCode #14 fill mode map 错误</a>〕：</p>
+<blockquote>fill_mode_map 不应该是这些选项，而应该是 Wireframe 和 Solid，相应的 rasterizer 也要按这两种 fill mode 光栅化。</blockquote>
+<p><b>代价</b>：多一轮往返 + 一次返工。<b>改进版（一次说清）</b>：</p>
+<blockquote>请实现 wireframe 光栅化。注意 D3D11 的 FillMode 只有 <code>Wireframe</code> 和 <code>Solid</code> 两种取值（<code>pipeline_state.csv</code> 里就是这两个字符串），按这两种分派即可。</blockquote>
+<blockquote><b>要点</b>：差不在"语气"而在"信息密度"。B1 缺的是<b>领域约束</b>（取值集合）——凡是 AI 需要靠猜才能填的空，就该在提示词里直接给死。</blockquote>
+<h4>✅ 好例 G2 vs ❌ 差例 B2 —— 同一个 bug，两种问法</h4>
 <table>
-  <tr><th>　</th><th>提示词</th><th>结果</th></tr>
-  <tr><td class="red">❌ B2<br>（差版）</td><td>"颜色不对，请修一下 VS。"</td><td>AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。</td></tr>
-  <tr><td class="grn">✅ G2<br>（真实采用，<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">原文 #2</a>）</td><td>贴出 6 行精确报错（<span class="mono">Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054</span> …），并写明"跑 <code>render.py</code> 后读 <code>Cases/output.log</code>，确认还有没有 Error，有就继续修直到 VS 输出正确"。</td><td>AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。</td></tr>
+<tr><th></th><th>提示词</th><th>结果</th></tr>
+<tr><td>❌ B2（设想的差版）</td><td>"颜色不对，请修一下 VS。"</td><td>AI 不知道哪个 case、错多少、对照什么；只能反复试探，极可能改错地方。</td></tr>
+<tr><td>✅ G2（真实采用版，<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">原文 ClaudeCode #2</a>）</td><td>贴出 6 行精确报错（<code>Error: Row 0 Color[0]: output=1.640544 golden=0.431490 diff=1.209054</code> …），并写明"跑 <code>python render.py ./Cases/Default.json</code> 后读 <code>Cases/output.log</code>，确认还有没有 Error，有就继续修直到 VS 输出正确"。</td><td>AI 立刻定位到 Color/WorldPos 分量，沿数据流回溯根因，一轮收敛。</td></tr>
 </table>
-
-<div class="callout">
-<b>一句话总结</b>：好提示词 = <b>精确证据</b>（实际值+期望值/报错原文）+ <b>可机判成功标准</b> + <b>数据/代码位置</b> + 明确的<b>"不要做什么"</b>。差提示词的通病不是"太短"，而是<b>把需要确定性的地方留给 AI 去猜</b>（缺取值集合、缺基准、缺验证方式）——猜错的代价就是额外的返工轮次。
-</div>
-
-<!-- Q2 -->
-<h2 id="q2">2 · 分析需求、生成开发计划</h2>
-<p>面对"挨个修复 issue"这种开放任务，AI 先 <b>侦察(triage) → 聚类 → 排序 → 立计划</b>，而不是盲目动手。</p>
-<h3>侦察：把"未知"变"已知"</h3>
-<p>Dump 目录 355 个 zip，其中 witcher3 有 160 个、仅 31 个在回归、<b>129 个从未验证</b>。AI 写并行 triage 脚本，把每个 zip 跑成 headless 管线并分类 <code>PASS/FAIL/CRASH/NOCMP/TIMEOUT</code>。</p>
-<h3>聚类：129 个失败 → 少数根因类</h3>
+<blockquote>G2 的精髓是把"对不对"变成<b>机器可判的布尔</b>（无 <code>Error:</code> 行）——既是给 AI 的目标，也是 AI 自查的依据，无需人来回判读。</blockquote>
+<h4>一句话总结</h4>
+<p><b>好提示词 = 精确证据（实际值+期望值/报错原文）+ 可机判成功标准 + 数据/代码位置 + 明确的"不要做什么"。</b> 差提示词的通病不是"太短"，而是<b>把需要确定性的地方留给 AI 去猜</b>（缺取值集合、缺基准、缺验证方式）——猜错的代价就是额外的返工轮次。</p>
+<hr>
+<h2>2 · 分析需求、生成开发计划</h2>
+<p>面对"挨个修复 issue"这种开放任务，AI 不会盲目动手，而是先<b>侦察（triage）→ 聚类 → 排序 → 立计划</b>。（对比第二部分：那里"切碎需求、找杠杆点"由人做；这里 AI 自己就能 triage 数百个 case 并按根因聚类。）</p>
+<h3>2.1 侦察：把"未知"变"已知"</h3>
+<p>本轮 Dump 目录有 355 个 zip，其中 witcher3_countryside 有 160 个、仅 31 个在回归里、<b>129 个从未单独验证</b>。AI 写了一个并行 triage 脚本（<code>scratchpad/triage.py</code>）：把每个 zip 跑成 headless 管线、按日志分类为 <code>PASS / FAIL / CRASH / NOCMP / TIMEOUT</code>。</p>
+<h3>2.2 聚类：把 129 个失败归成"问题类"</h3>
+<p>triage 结果不是 129 个独立 bug，而是几个<b>根因类</b>：</p>
 <table>
-  <tr><th>问题类</th><th>代表 case</th><th>处置</th></tr>
-  <tr><td>sv_position/TexCoord 读成 0</td><td class="mono">23341/23141/23251/23183/23195</td><td class="grn">一个 bug(C1) 一次修 5 个</td></tr>
-  <tr><td>大气输出错</td><td class="mono">20899</td><td class="grn">C2 已修</td></tr>
-  <tr><td>(int) 强转 / 顶点纹理取样</td><td class="mono">16834/16215</td><td class="amb">C3 修 + 受阻</td></tr>
-  <tr><td>raw buffer 未 dump</td><td class="mono">22201</td><td>受阻：capture 限制</td></tr>
-  <tr><td>慢绘制</td><td class="mono">~26 + Tank</td><td>perf，非 bug</td></tr>
+<tr><th>类别</th><th>代表 case</th><th>处置</th></tr>
+<tr><td>sv_position/TexCoord 读成 0</td><td>23341/23141/23251/23183/23195</td><td><b>一个 bug（C1）一次修 5 个</b></td></tr>
+<tr><td>大气输出错</td><td>20899</td><td>C2</td></tr>
+<tr><td>(int) 强转 / 顶点纹理取样</td><td>16834/16215</td><td>C3 + 受阻</td></tr>
+<tr><td>打包八面体法线</td><td>16215/16834</td><td>受阻（纹理基础设施）</td></tr>
+<tr><td>raw buffer 未 dump</td><td>22201</td><td>受阻（capture 限制）</td></tr>
+<tr><td>慢绘制</td><td>~26 + Tank</td><td>perf，非 bug</td></tr>
 </table>
-<div class="callout green">
-<b>关键洞察 — 先找杠杆点</b>：聚类让"129 个失败"坍缩成"少数根因"。修一个根因(C1)就让 5 个 case 同时变绿。AI 用 <code>TodoWrite</code> 把计划落成可勾选清单，并按 <b>ROI（确定性高、风险低、影响面大）</b> 排序：先 C1，再 C2，再谨慎做 C3，受阻类诚实暂缓。
-</div>
-
-<!-- Q3 -->
-<h2 id="q3">3 · 如何按计划执行</h2>
-<p>每个 case 走同一个<b>闭环</b>：</p>
-<div class="svgbox">
-<svg viewBox="0 0 900 190" role="img" aria-label="开发闭环">
-  <defs>
-    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#5db0ff"/></marker>
-    <style>.n{fill:#1e222b;stroke:#2a2f3a}.nt{fill:#e6e9ef;font:12.5px sans-serif;text-anchor:middle}.fl{stroke:#5db0ff;stroke-width:1.6;fill:none;marker-end:url(#ar)}</style>
-  </defs>
-  <g>
-    <!-- 上排：左 → 右 -->
-    <rect class="n" x="14"  y="30" width="98" height="40" rx="8"/><text class="nt" x="63"  y="55">运行</text>
-    <rect class="n" x="140" y="30" width="118" height="40" rx="8"/><text class="nt" x="199" y="55">读日志找 Error</text>
-    <rect class="n" x="286" y="30" width="128" height="40" rx="8"/><text class="nt" x="350" y="48">顺管线</text><text class="nt" x="350" y="63">定位根因</text>
-    <rect class="n" x="442" y="30" width="92" height="40" rx="8"/><text class="nt" x="488" y="55">改代码</text>
-    <rect class="n" x="562" y="30" width="118" height="40" rx="8"/><text class="nt" x="621" y="55">单 case 验证</text>
-    <rect class="n" x="708" y="30" width="92" height="40" rx="8"/><text class="nt" x="754" y="55">跑回归</text>
-    <!-- 下排：右 → 左（蛇形，避免走线穿框） -->
-    <rect class="n" x="694" y="118" width="120" height="40" rx="8"/><text class="nt" x="754" y="143">提交 + 加回归</text>
-    <rect class="n" x="474" y="118" width="92"  height="40" rx="8"/><text class="nt" x="520" y="143">写文档</text>
-    <rect class="n" x="272" y="118" width="96"  height="40" rx="8"/><text class="nt" x="320" y="143">下一个</text>
-    <!-- 上排横向箭头 -->
-    <path class="fl" d="M112,50 L138,50"/><path class="fl" d="M258,50 L284,50"/>
-    <path class="fl" d="M414,50 L440,50"/><path class="fl" d="M534,50 L560,50"/><path class="fl" d="M680,50 L706,50"/>
-    <!-- 跑回归 ↓ 提交（正下方，纵向直连） -->
-    <path class="fl" d="M754,70 L754,116"/>
-    <!-- 下排横向箭头：右 → 左 -->
-    <path class="fl" d="M694,138 L568,138"/><path class="fl" d="M474,138 L370,138"/>
-    <!-- 下一个 → 运行（绕到底部再回到左上，全程无交叉） -->
-    <path class="fl" d="M320,158 L320,174 L63,174 L63,72"/>
-  </g>
-</svg>
-<div class="legend">回归不绿不提交；提交后把代表 case 加进回归集，循环下一个</div>
-</div>
-<h3>以 C1 为例：沿数据流回溯</h3>
-<p>从错误输出值逆推到那行 <code>break</code>：</p>
-<pre><code>Error: Row 0 TexCoord[0]: output=0.000000 golden=0.129650   ← 输出恒为 0
-   ↑ o1.x = dot(v1, texgen[0])              （读 VS_shader.hlsl）
-   ↑ texgen 是 float4 texgen[2] : packoffset(c2)
-   ↑ 组合 CSV 每个数组名只有一个代表值 → texgen 加载成 [None,None]
-   ↑ override_cbuffers_from_binary:
-        for field in cb_def.fields:
-            if field.array_size > 0:
-                field.data = decoded[:m]
-                break          # ← 只填第一个数组就退出！texgen 仍是 [None,None]</code></pre>
-<p><b>修复</b>：解析 <code>packoffset(cN)</code>、新增 <code>_field_register_offsets()</code>、重载循环改为给每个数组按各自寄存器窗口 <code>decoded[reg_off:reg_off+size]</code> 填充。<b>验证</b>：23341 由 0→30/30，另 4 个同类全过；回归 44/44；提交 <code>1716ee5</code>。</p>
-
-<!-- Q4 -->
-<h2 id="q4">4 · 输入 / 输出数据流</h2>
-<div class="svgbox">
-<svg viewBox="0 0 900 320" role="img" aria-label="AI 输入输出数据流">
-  <defs>
-    <marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#46d39a"/></marker>
-    <style>.bx{fill:#1e222b;stroke:#2a2f3a}.bt{fill:#e6e9ef;font:13px sans-serif}.bs{fill:#9aa4b2;font:11.5px sans-serif}.fa{stroke:#46d39a;stroke-width:1.6;fill:none;marker-end:url(#ar2)}.hd{fill:#5db0ff;font:bold 13px sans-serif}</style>
-  </defs>
-  <rect class="bx" x="20" y="20" width="380" height="120" rx="10"/>
-  <text class="hd" x="36" y="42">输入：累积对话上下文</text>
-  <text class="bs" x="36" y="64">· CLAUDE.md（规则/陷阱/纪律）</text>
-  <text class="bs" x="36" y="84">· MEMORY.md 索引 + 召回的记忆</text>
-  <text class="bs" x="36" y="104">· 用户提示词（任务/约束/现状）</text>
-  <text class="bs" x="36" y="124">· 每轮工具结果不断追加（过长则摘要）</text>
-  <rect class="bx" x="20" y="160" width="380" height="118" rx="10"/>
-  <text class="hd" x="36" y="182">工具结果（每轮追加到输入）</text>
-  <text class="bs" x="36" y="204">· Read 文件内容 / Grep 命中</text>
-  <text class="bs" x="36" y="224">· Bash 输出：render.py 日志、回归摘要</text>
-  <text class="bs" x="36" y="244">· system-reminder：后台任务完成等</text>
-  <text class="bs" x="36" y="264">· git 状态</text>
-  <rect class="bx" x="500" y="60" width="380" height="180" rx="10"/>
-  <text class="hd" x="516" y="84">输出：文字 或 工具调用</text>
-  <text class="bs" x="516" y="108">· Read/Grep/Glob — 取信息（无副作用）</text>
-  <text class="bs" x="516" y="132">· Edit/Write — 改源码 / 写文档</text>
-  <text class="bs" x="516" y="156">· Bash — render.py / 回归 / git</text>
-  <text class="bs" x="516" y="180">· TodoWrite — 维护计划</text>
-  <text class="bs" x="516" y="212">输出产生新的工具结果，</text>
-  <text class="bs" x="516" y="230">回流成下一轮输入（闭环）</text>
-  <path class="fa" d="M400,150 L498,150"/>
-  <path class="fa" d="M690,240 L690,300 L210,300 L210,280" />
-</svg>
-<div class="legend">AI 的输入是累积上下文；输出是文字或工具调用；工具结果回流形成闭环</div>
-</div>
-<h3>项目自身的数据流（被解释的对象）</h3>
-<pre><code>zip(capture) → 解压 → CSV / HLSL / BMP / bin
+<blockquote><b>关键洞察</b>：聚类让"129 个失败"坍缩成"少数几个根因"。修一个根因（C1）就让 5 个 case 同时变绿。这是 AI 制定计划时最有价值的一步——<b>先找杠杆点</b>。</blockquote>
+<h3>2.3 排序：先做"高确定性、低风险"的</h3>
+<p>AI 用 <code>TodoWrite</code> 把计划落成可勾选清单，并按 ROI 排序：</p>
+<ol>
+<li>多数组 cbuffer（C1）——根因清晰、影响 5 个 case、低风险 → <b>先做</b>。</li>
+<li>FTZ（C2）——根因清晰、影响 1 个 case → 做。</li>
+<li>ftoi（C3）——正确性修复、需谨慎验证不破坏既有 → 做。</li>
+<li>八面体/raw buffer/SNORM/超时——高成本或不可解 → <b>诚实评估后暂缓</b>。</li>
+</ol>
+<p>这套"triage → 聚类 → 按杠杆排序 → 留痕"就是 AI 的开发计划生成法。</p>
+<hr>
+<h2>3 · 如何按计划执行</h2>
+<p>每个 case 走同一个<b>闭环</b>（与用户提示词第 3–8 步对应）：</p>
+<pre><code>运行 → 读日志找 Error → 顺着管线定位根因 → 改代码 →
+单 case 验证 → 跑回归 → 提交 → 把代表 case 加进回归 → 写文档 → 下一个</code></pre>
+<h3>以 C1（多数组 cbuffer）为例逐步拆解</h3>
+<ol>
+<li><b>运行 + 发现</b>：event23341 报 <code>Error: Row 0 TexCoord[0]: output=0.000000 golden=0.129650</code>。输出恒为 0 → 某个量没读进来。</li>
+<li><b>顺管线定位</b>：读 <code>VS_shader.hlsl</code> 发现 <code>o1.x = dot(v1, texgen[0])</code>；<code>texgen</code> 是 <code>float4 texgen[2] : packoffset(c2)</code>。再看 <code>VS_constant_buffers.csv</code> —— 组合 CSV 每个数组名只存一个代表值，没有 <code>texgen_v0/_v1</code> 键 → CSV 把数组加载成 <code>[None,None]</code>。再看二进制重载 <code>override_cbuffers_from_binary</code>： ``<code>python for field in cb_def.fields: if field.array_size &gt; 0: field.data = decoded[:m] break   # ← 只填第一个数组就退出！ </code>`<code> </code>mvp[2]@c0<code> 拿到 </code>decoded[0:2]<code>（对），循环 break，</code>texgen[2]@c2<code> 仍是 </code>[None,None]` → 读成 0。<b>根因锁定</b>。</li>
+<li><b>改代码</b>：给 <code>FieldDefinition</code> 加 <code>reg_offset</code>、解析 <code>packoffset(cN)</code>、新增 <code>_field_register_offsets()</code>，重载循环改为给<b>每个</b>数组按各自寄存器窗口 <code>decoded[reg_off:reg_off+size]</code> 填充。</li>
+<li><b>单 case 验证</b>：event23341 <code>0 → 30/30</code>，再验 23141/23251/23183/23195 全过。</li>
+<li><b>跑回归</b>：44/44，确认未破坏既有。</li>
+<li><b>提交 + 扩充回归</b>：把 event23341 拷进 <code>Cases/</code> 并加入回归 CSV，提交 <code>1716ee5</code>。</li>
+<li><b>写文档</b>：<code>Sessions/hlsl-interpreter-step119-*.md</code>。</li>
+</ol>
+<blockquote>执行的精髓是<b>"沿数据流回溯"</b>：从错误的输出值（0），逆着 <code>o1 ← texgen ← cbuffer 加载 ← 二进制重载</code> 一路找到那行 <code>break</code>。这要求 AI 能读懂整条管线，而不是只盯着报错那一行。</blockquote>
+<hr>
+<h2>4 · 输入 / 输出数据流</h2>
+<h3>4.1 输入数据流（AI 看到什么）</h3>
+<pre><code>┌─────────────────────────────────────────────┐
+│  常驻上下文：CLAUDE.md（项目规则、陷阱、纪律）   │
+│  记忆：MEMORY.md 索引 + 召回的 memory 文件      │
+│  用户提示词：任务清单 + 约束 + 现状             │
+└───────────────┬─────────────────────────────┘
+                │ 每一轮工具调用后追加：
+                ▼
+┌─────────────────────────────────────────────┐
+│  工具结果：文件内容(Read)、搜索命中(Grep)、     │
+│  命令输出(Bash：render.py 日志、回归摘要)、     │
+│  system-reminder（后台任务完成、文件被改）      │
+└─────────────────────────────────────────────┘</code></pre>
+<p>AI 的"输入"是<b>累积的对话上下文</b>：项目说明、记忆、用户指令打底，之后每次工具调用的返回值（源码、日志、命令输出）不断追加。上下文过长时会被<b>摘要</b>后进入下一窗口。</p>
+<h3>4.2 输出数据流（AI 产出什么）</h3>
+<p>AI 的每条输出要么是<b>给用户的文字</b>，要么是<b>工具调用</b>：</p>
+<ul>
+<li><code>Read/Grep/Glob</code> —— 获取信息（无副作用）。</li>
+<li><code>Edit/Write</code> —— 修改源码 / 写文档（有副作用）。</li>
+<li><code>Bash</code> —— 跑 <code>render.py</code>、<code>run_regression.py</code>、git。</li>
+<li><code>TodoWrite</code> —— 维护计划清单。</li>
+</ul>
+<h3>4.3 项目自身的数据流（被解释的对象）</h3>
+<p>AI 操作的"被测系统"也有自己的数据流，理解它才能定位 bug：</p>
+<pre><code>zip(capture) → 解压 → CSV/HLSL/BMP/bin
    ├─ ia_vertex_data + 二进制 VB ─┐
-   ├─ cbuffers(CSV) + constant_*.bin ─┤   ← C1 在这段；C2 在 .bin 解码
-   └─ VS_shader.hlsl ───────────────┤
-                                     ▼
-        VertexShader 解释执行 → VS 输出 → 与 golden(*_vs_mesh.csv) 对比
-                                     ▼
+   ├─ cbuffers(CSV) + constant_*.bin ─┤
+   └─ VS_shader.hlsl ──────────────┤
+                                    ▼
+        VertexShader 解释执行 ──→ VS 输出 ──→ 与 golden(*_vs_mesh.csv) 对比
+                                    │
+                                    ▼
         Rasterizer → Depth/Stencil → PixelShader → OutputMerger</code></pre>
-
+<p>C1 的 bug 就在"cbuffers + constant_*.bin → VS 执行"这一段；C2 在"constant_*.bin 解码"；C3 在"二进制 VB → VS 执行的强转"。</p>
 <h3>4.4 逐步加厚 capture：用更多 draw dump 攻克长尾 bug</h3>
-<p><a href="#q5">§5</a> 讲"让<b>被测系统</b>多吐中间状态"；这一节是它的<b>输入侧对偶</b>——<b>让 capture 多 dump 一层真机数据</b>。最早的 capture 只有"四舍五入的 CSV + 转码后的 BMP"，很多长尾 bug 在这层有损表示下<b>根本看不见</b>，只能标成"capture 限制、无解"。攻坚期的关键一招，就是<b>逐步把整个 draw 的原始数据全都 dump 下来</b>——每加一类数据，就把一类"无解"变成"可修"。</p>
-<p class="callout"><b>核心洞见</b>：CSV / BMP 是 GPU 真正吃进去的数据的<b>有损重编码</b>。凡是只在<b>位级</b>才暴露的 bug（反规格化数、精确整数格式、精确纹素），你不把 GPU 当初读到的<b>同一份原始字节</b>喂给解释器，就永远看不到它。所以 <code>render.py</code> 的策略是——<b>同名数据里 raw 优先、CSV/BMP 仅作旧 capture 回退</b>（源码注释：<span class="mono">"prefer raw binary captures for maximum precision … ia_vertex_data.csv uses rounded floats and may store some formats as zeros"</span>）。</p>
+<p>§5 讲的是"让<b>被测系统</b>多吐中间状态"；这一节讲的是它的<b>输入侧对偶</b>——<b>让 capture 多 dump 一层真机数据</b>。最早的 capture 只有"四舍五入的 CSV + 转码后的 BMP"，很多长尾 bug 在这层有损表示下<b>根本看不见</b>，只能标成"capture 限制、无解"。攻坚期的关键一招，就是<b>逐步把整个 draw 的原始数据全都 dump 下来</b>——每加一类数据，就把一类"无解"变成"可修"。</p>
+<blockquote><b>核心洞见</b>：CSV / BMP 是 GPU 真正吃进去的数据的<b>有损重编码</b>。凡是只在<b>位级</b>才暴露的 bug（反规格化数、精确整数格式、精确纹素），你不把 GPU 当初读到的<b>同一份原始字节</b>喂给解释器，就永远看不到它。所以 <code>render.py</code> 的策略是——<b>同名数据里 raw 优先、CSV/BMP 仅作旧 capture 的回退</b>（源码注释：<i>"prefer raw binary captures for maximum precision … ia_vertex_data.csv uses rounded floats and may store some formats as zeros"</i>）。</blockquote>
 <table>
-  <tr><th>dump 的数据</th><th>文件</th><th>解锁的修复 / 用途</th><th>步骤</th></tr>
-  <tr><td><b>Pipeline statistics</b></td><td><code>pipeline_statistics.csv</code></td><td>① 可机判地对比 <code>VSInvocations</code>/<code>SamplesPassed</code>；② 用真机 <code>IAPrimitives</code> 判定三角形 <b>LIST vs STRIP</b>——<code>pipeline_state.csv</code> 的 topology 枚举不可靠（把 list 谎报成 STRIP），真机图元数才是 ground truth</td><td><a href="Sessions/hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output.html">step90</a> · <a href="Sessions/hlsl-interpreter-step95-samples-passed-tolerance.html">95</a> · <a href="Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.html">100</a></td></tr>
-  <tr><td><b>VS/GS/DS mesh-out</b></td><td><code>*_vs_mesh.bin</code> + <code>_layout.csv</code>（含 gs/ds）</td><td>bin+layout <b>显式 stride/type/order</b>，绕开 CSV golden 的尾部 <code>float3</code> 错位陷阱（陷阱#1），是 verify-by-log 的<b>权威基准</b></td><td>CLAUDE.md 陷阱#1</td></tr>
-  <tr><td><b>原始格式 texture</b></td><td><code>*.img</code>（raw DXGI）</td><td>按真机 <b>DXGI 格式精确解码纹素</b>，取代有损 BMP，修复 <code>Sample</code> 采样不匹配（含 event1399 vector-load hazard）</td><td><a href="Sessions/hlsl-interpreter-step113-raw-img-texture-loading.html">step113</a> · <a href="Sessions/hlsl-interpreter-step114-texture-load-and-dxbc-vector-load-hazard-event1399.html">114</a></td></tr>
-  <tr><td><b>Raw 顶点缓冲 VB</b></td><td><code>vb_slot*.bin</code></td><td>取代 <code>ia_vertex_data.csv</code>（浮点已舍入、某些格式存成 0），拿到<b>精确位型</b>的逐顶点/逐实例输入</td><td><a href="Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.html">step117</a> · <a href="Sessions/hlsl-interpreter-step121-binary-input-data-precision.html">121</a></td></tr>
-  <tr><td><b>Raw 索引缓冲 IB</b></td><td><code>ib_res_*.bin</code></td><td>得到<b>真实 draw 索引序列</b>并还原 <code>SV_VertexID</code>（否则每顶点都读元素 0，如 Octopath 的 texcoord 表）</td><td><a href="Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.html">step118</a></td></tr>
-  <tr><td><b>Raw 常量缓冲 CB</b></td><td><code>constant_*.bin</code></td><td>揭示被 CSV 抹平的 <b>subnormal</b>（event20899：<code>cb12[271].z</code>=<code>0x00000001</code>），根因是 FTZ 分支选错（C2）；另支持 Witcher 多数组 cbuffer 二进制覆盖</td><td><a href="Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html">step119</a> · <a href="Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">120</a></td></tr>
-  <tr><td><b>pre/post-draw RT & 深度模板</b></td><td><code>*_res_*_&lt;W&gt;x&lt;H&gt;_&lt;FMT&gt;.raw</code></td><td>加载真机 pre-draw 深度缓冲做 early/late-Z 对照，并对<b>输出合并像素逐像素比对</b> golden RT0</td><td><a href="Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.html">step94</a> · <a href="Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.html">122</a></td></tr>
+<tr><th>dump 的数据</th><th>文件（capture 内）</th><th>取代了什么有损来源</th><th>解锁的修复 / 用途</th><th>步骤</th></tr>
+<tr><td><b>Pipeline statistics</b></td><td><code>pipeline_statistics.csv</code>（<code>RawCounter,Value</code>）</td><td>—（新增的真机每阶段计数基准）</td><td>① 可机判地对比 <code>VSInvocations</code> / <code>SamplesPassed</code>（后者带容差）；② <b>用真机 <code>IAPrimitives</code> 判定三角形 LIST vs STRIP</b>——<code>pipeline_state.csv</code> 里的 topology 枚举不可靠（把 list 谎报成 STRIP），真机图元数才是 ground truth</td><td><a href="Sessions/hlsl-interpreter-step90-compare-pipeline-statistics-and-ps-output.html">step90</a> · <a href="Sessions/hlsl-interpreter-step95-samples-passed-tolerance.html">step95</a> · <a href="Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.html">step100</a></td></tr>
+<tr><td><b>VS / GS / DS mesh-out</b></td><td><code>*_vs_mesh.csv</code>，及更精确的 <code>*_vs_mesh.bin</code> + <code>*_vs_mesh_layout.csv</code>（<code>find_stage_mesh_dump</code> 同样支持 <code>gs</code>/<code>ds</code>）</td><td>取代 CSV golden 的<b>尾部 <code>float3</code> 错位</b>陷阱（CLAUDE.md 陷阱#1）</td><td>bin+layout 形式<b>显式 stride/type/order</b>，无 SV-Position 重排、无 uint 列位重解释、无尾部 <code>float3</code> 错位——是整个"verify-by-log"工作流的<b>权威基准（oracle）</b></td><td>见 CLAUDE.md 陷阱#1</td></tr>
+<tr><td><b>原始格式 texture/image</b></td><td><code>*.img</code>（raw DXGI）伴随 <code>*.bmp</code></td><td>取代有损转码的 BMP（丢精度/通道/格式信息）</td><td>按真机 <b>DXGI 格式精确解码纹素</b>，修复 <code>Texture2D.Sample</code> 采样不匹配（含 event1399 的 vector-load hazard）</td><td><a href="Sessions/hlsl-interpreter-step113-raw-img-texture-loading.html">step113</a> · <a href="Sessions/hlsl-interpreter-step114-texture-load-and-dxbc-vector-load-hazard-event1399.html">step114</a></td></tr>
+<tr><td><b>Raw 顶点缓冲（VB）</b></td><td><code>vb_slot*.bin</code></td><td>取代 <code>ia_vertex_data.csv</code>（浮点已四舍五入，某些格式甚至存成 0）</td><td>拿到<b>精确位型</b>的逐顶点属性 + 逐实例输入，修复精度长尾（Witcher countryside）</td><td><a href="Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.html">step117</a> · <a href="Sessions/hlsl-interpreter-step121-binary-input-data-precision.html">step121</a></td></tr>
+<tr><td><b>Raw 索引缓冲（IB）</b></td><td><code>ib_res_*.bin</code></td><td>取代 CSV 的 <code>IDX</code> 列</td><td>得到<b>真实 draw 索引序列</b>，并据此还原 <code>SV_VertexID</code>（否则每个顶点都读元素 0，如 Octopath 的 <code>Buffer&lt;float4&gt;</code> texcoord 表）</td><td><a href="Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.html">step118</a></td></tr>
+<tr><td><b>Raw 常量缓冲（CB）</b></td><td><code>constant_*.bin</code></td><td>取代 CSV 里已四舍五入的常量</td><td>揭示被 CSV 抹平的 <b>subnormal</b>（event20899：<code>cb12[271].z</code> 的字节是 <code>0x00000001</code> = <code>1.4e-45</code>），根因是 GPU 的 FTZ 让三元分支走 false、解释器却因保留 denormal 走错分支（<b>C2</b>）；另支持 Witcher 多数组 cbuffer 的二进制覆盖</td><td><a href="Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html">step119</a> · <a href="Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">step120</a></td></tr>
+<tr><td><b>pre/post-draw 渲染目标 &amp; 深度模板</b></td><td><code>*_res_*_&lt;W&gt;x&lt;H&gt;_&lt;FORMAT&gt;.raw</code>（+ <code>.png</code> 预览）、<code>diff_ps_output_rt0.csv</code></td><td>取代无字节级基准的状态</td><td>加载真机 <b>pre-draw 深度缓冲</b>做 early-Z / late-Z 对照，并对<b>输出合并像素（颜色+深度）逐像素比对</b> golden RT0</td><td><a href="Sessions/hlsl-interpreter-step94-load-pre-draw-depth-buffer.html">step94</a> · <a href="Sessions/hlsl-interpreter-step122-load-pre-draw-depth-stencil-from-raw.html">step122</a></td></tr>
 </table>
-<div class="callout green"><b>一条把它讲透的证据链——C2 / event20899。</b> 这个 bug 在 step119 一度被判"精度长尾、不可解"。真相：常量 <code>cb12[271].z</code> 是反规格化数，GPU 按 <b>FTZ</b> 当 <code>0</code> 走 false 分支，解释器保留非零 denormal 走了 true 分支、污染大气散射 <code>o0/o1</code>。<b>但这在 CSV 里看不见</b>——CSV 舍入后 <code>1.4e-45</code> 和 <code>0</code> 长得一样。只有 dump 出 <code>constant_*.bin</code>、把原始字节解码成 <code>0x00000001</code>，才第一次看见"它其实是非零 subnormal"。<b>加厚 dump（raw CB）＋加厚被测系统自述（逐分支轨迹，§5.4）</b>叠加，才让 step120 的"一行修复"成为可能。</div>
-<p class="callout amber"><b>方法论</b>：当一个 bug 反复被判"精度/capture 限制、无解"时先别信——问一句"<b>我喂给解释器的，是不是 GPU 当初读到的同一份原始字节？</b>"很多时候答案是"不是，是被 CSV/BMP 有损重编码过的"。把那一层 dump 成 raw，"无解"往往就变成"可修"。这也是 <a href="#q1">§1.3</a> 那份"无解清单"需要<b>定期复核</b>的原因——其中一部分只是<b>当时的 dump 还不够厚</b>。</p>
-
-<!-- Q5 -->
-<h2 id="q5">5 · 什么输出能帮助调试</h2>
-<p class="callout"><b>结论</b>：能把"中间状态"暴露成<b>可 grep 的文本</b>，最有价值。本项目刻意把解释器做成"会自述"的。</p>
-<h3>C3 的 smoking gun — 逐语句轨迹</h3>
-<pre><code>[STMT] r0.xy = (int2)v1.zw => r0.xy = <span class="red">[1073741824, 1073741824]</span>   ← 把 2.0 当位型！应为 [2,2]
-[METHOD] t1.Load((1073741824,0,0)) = ['0','0','0','0']             ← 越界读 0
-[BINARY OP] left=['312.5','500.0'] right=['0','0'] op=/ => <span class="red">['inf','inf']</span>   ← 0/0
-... → sv_position = <span class="red">nan</span></code></pre>
-<p>正是这条轨迹让 C3 一眼可见：<code>(int2)v1.zw</code> 把 <code>2.0</code> 变成它的位型 <code>1073741824</code> 而不是 <code>2</code>。只看最终 <code>nan</code> 是无从下手的。</p>
-<h3>分量级报错 + 可机判汇总</h3>
-<pre><code>Error: Row 0 TexCoord2[0]: output=2.466900 golden=0.679580 diff=1.787320
-Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
-<div class="callout green">
-<b>C2 全靠轨迹</b>：event20899 一度被误判"精度不可解"。重新打开逐语句 + 逐分支轨迹，把 o0/o1 回溯到 <code>cb12[271].z ? r2.x : 1</code> 分支选错，再发现 <code>cb12[271].z</code> 字节是 <code>0x00000001</code>（反规格化数 <span class="mono">1.4e-45</span>）。<b>没有逐步轨迹，这个根因不可能被发现。</b>
-</div>
-<p><b>设计准则</b>：让被测系统打印"每一步的输入、运算、输出"，且保证可被 <code>grep Error:</code> / <code>grep '[STMT]'</code> 提取。<b>可观测性 = 可调试性。</b></p>
-
-<!-- Q6 -->
-<h2 id="q6">6 · 回归测试的建立与应用</h2>
-<div class="grid3">
-  <div class="c"><b>数据驱动</b><br><a href="../Cases/regression_test_zip_files.csv"><code>regression_test_zip_files.csv</code></a> 一行一个必过的 capture zip。</div>
-  <div class="c"><b>headless 跑</b><br><code>run_regression.py</code> 逐个跑 <code>render.py</code>，写 per-case 日志，打印 PASS/FAIL，失败则退出码非零。</div>
-  <div class="c"><b>三条通过判据</b><br>① 干净退出 ② 无 <code>Error:</code> 行 ③ <code>Total PASSED rows: X/X</code></div>
-</div>
+<p><b>一条把它讲透的证据链——C2 / event20899。</b> 这个 bug 在 <a href="Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.html">step119</a> 一度被判成"大气数学的精度长尾、不可解"。真相是：常量 <code>cb12[271].z</code> 是个反规格化数（denormal），GPU 按 <b>FTZ</b> 当 <code>0</code>、三元 <code>cb12[271].z ? r2.x : 1</code> 走 false 分支；解释器保留了非零 denormal，走了 true 分支，污染大气散射的 <code>o0/o1</code>。<b>但这个根因在 CSV 里是看不见的</b>——CSV 把常量四舍五入后，<code>1.4e-45</code> 和 <code>0</code> 长得一模一样。只有 dump 出 <code>constant_*.bin</code>、把 <code>cb12[271].z</code> 的<b>原始字节</b>解码成 <code>0x00000001</code>，才第一次看见"它其实是个非零 subnormal"。加厚 dump（拿到 raw CB）<b>+</b> 加厚被测系统的自述（逐分支轨迹，§5.4）两件事叠加，才把 <a href="Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.html">step120</a> 的"一行修复"变成可能。</p>
+<blockquote><b>方法论</b>：当一个 bug 反复被判"精度/capture 限制、无解"时，先别信——<b>问一句"我喂给解释器的，是不是 GPU 当初读到的同一份原始字节？"</b> 很多时候答案是"不是，是被 CSV/BMP 有损重编码过的"。把那一层 dump 成 raw，"无解"往往就变成"可修"。这也正是 §1.3"现状/约束清单"里那些"无解项"需要<b>定期复核</b>的原因——它们中的一部分，只是<b>当时的 dump 还不够厚</b>。</blockquote>
+<hr>
+<h2>5 · 什么输出能帮助调试</h2>
+<p><b>结论：能把"中间状态"暴露成可 grep 文本的输出，最有价值。</b> 本项目刻意把解释器做成"会自述"的：</p>
+<h3>5.1 逐语句 / 逐运算的执行轨迹</h3>
+<p>开启 <code>print_interpreter_result</code> 后，日志逐条打印：</p>
+<pre><code>[STMT] Executing: r0.xy = (int2)v1.zw
+[STMT] r0.xy = (int2)v1.zw =&gt; r0.xy = [1073741824, 1073741824]   ← C3 的 smoking gun
+[METHOD] t1.Load((1073741824, 0, 0)) = ['0.0000','0.0000','0.0000','0.0000']  ← 越界读 0
+[BINARY OP] left=['312.5','500.0'], right=['0','0'], op=/, result=['inf','inf'] ← 0/0</code></pre>
+<p><b>正是这条轨迹</b>让 C3 一眼可见：<code>(int2)v1.zw</code> 把 <code>2.0</code> 变成 <code>1073741824</code>（=2.0 的位型），而不是 <code>2</code>。没有这条输出，只看到最终 <code>sv_position = nan</code> 是无从下手的。</p>
+<h3>5.2 分量级的对比报错</h3>
+<pre><code>Error: Row 0 TexCoord2[0]: output=2.466900 golden=0.679580 diff=1.787320</code></pre>
+<p>精确到"第几行、哪个语义、哪个分量、输出值 vs golden 值 vs 差值"。C1/C2 的定位都从这里起步。</p>
+<h3>5.3 可机判的汇总</h3>
+<pre><code>Total PASSED rows: 0/2160   →（修复后）2160/2160</code></pre>
+<p>让"是否修好"成为一个布尔判断，供回归脚本直接 gate。</p>
+<h3>5.4 C2 的调试全靠轨迹</h3>
+<p>event20899 一开始被（step119）误判为"精度/不可解"。step120 重新打开逐语句轨迹，把 o0/o1 一路回溯到 <code>cb12[271].z ? r2.x : 1</code> 这个分支选错，再发现 <code>cb12[271].z</code> 的字节是 <code>0x00000001</code>（反规格化数）。<b>没有逐语句 + 逐分支的轨迹输出，这个根因不可能被发现。</b></p>
+<blockquote><b>设计准则</b>：让被测系统打印"每一步的输入、运算、输出"，并保证这些行可被 <code>grep Error:</code> / <code>grep '\[STMT\]'</code> 提取。可观测性 = 可调试性。</blockquote>
+<hr>
+<h2>6 · 回归测试的建立与应用</h2>
+<h3>6.1 建立</h3>
+<p>本项目<b>没有单元测试</b>，回归套件就是安全网。它是<b>数据驱动</b>的：</p>
+<ul>
+<li><a href="../Cases/regression_test_zip_files.csv"><code>Cases/regression_test_zip_files.csv</code></a> 列出必须保持通过的 capture zip（一行一个）。</li>
+<li><code>run_regression.py</code> 读这个 CSV，逐个 headless 跑 <code>render.py</code>，每个写一份 <code>Cases/regression_logs/&lt;name&gt;.log</code>，最后打印 PASS/FAIL 汇总，任一失败则退出码非零（可 gate CI）。</li>
+<li><b>通过判据</b>（三条全满足）：① <code>render.py</code> 干净退出；② 日志无 <code>Error:</code> 行；③ <code>Total PASSED rows: X/X</code>（X==Y）。</li>
+</ul>
+<h3>6.2 在开发流程中的应用</h3>
+<ul>
+<li><b>每次改动后必跑</b>（<code>CLAUDE.md</code> 硬性规则）。C1 改完跑出 44/44、C2 跑出 45/45（含新加的 20899）、C3 跑出 46/46。</li>
+<li><b>每修好一类，就把代表 case 加进回归</b>。本轮新增 <code>event23341</code>（多数组代表）和 <code>event20899</code>（FTZ 代表），让这两类<b>永不回退</b>。</li>
+<li><b>回归是"提交闸门"</b>：只有回归绿了才提交。C3 是个"改变既有强转语义"的高风险改动——正是回归 46/46 才让它敢提交。</li>
+</ul>
+<blockquote><b>FTZ = Flush-To-Zero（反规格化数刷零）</b>：GPU 做浮点运算时把极小的非零浮点（denormal，如 <code>0x00000001</code> 按 float 解释成 <code>1.4e-45</code>）直接当 <code>0</code>。<code>event20899</code> 里常量 <code>cb12[271].z</code> 正是这种值，被用作三元条件 <code>cb12[271].z ? r2.x : 1</code>——GPU 视其为 0 走 false 分支，解释器却因保留了非零 denormal 走错分支、污染大气散射 o0/o1。修复：解码 cbuffer 时把 subnormal 刷成 <code>0.0</code>（<code>asint</code>/<code>asuint</code> 不受影响，仍读精确整数位）。详见 §5 / §8。</blockquote>
+<blockquote>注意：回归 CSV 与 zip 本身是 <b>gitignore</b> 的（本地基础设施），所以提交里只含代码 + 文档；回归集在本地累积。</blockquote>
+<hr>
+<h2>7 · TDD 在本项目的应用</h2>
+<p>经典 TDD 是"先写失败测试，再写实现使其通过"。本项目是 <b>TDD 的一种变体——"golden 即测试"</b>：</p>
+<ul>
+<li><b>测试先于实现存在</b>：每个 capture zip 自带 GPU 真机跑出的 <code>*_vs_mesh.csv</code>（golden）。它就是"期望输出"，在 AI 动手前就已存在且必然正确。</li>
+<li><b>红 → 绿循环</b>：<ul>
+<li><b>红</b>：跑 event20899 → <code>Total PASSED rows: 0/2160</code> + 一堆 <code>Error:</code>。</li>
+<li><b>绿</b>：实现 FTZ 修复 → <code>2160/2160</code>，无 <code>Error:</code>。</li>
+<li><b>重构/防回归</b>：把该 case 加进回归集，确保未来任何改动都得让它保持绿。</li>
+</ul></li>
+<li><b>失败先驱动定位</b>：和 TDD 一样，<b>先让失败可复现、可量化</b>（哪一行哪一分量差多少），再写最小修复。C1 就是先确认 <code>texgen</code> 读成 0（红），再精确改二进制重载循环（绿）。</li>
+</ul>
+<blockquote>与单元 TDD 的差别：这里的"测试用例"不是手写断言，而是<b>真机 golden 数据</b>；"测试框架"是 verify-by-log + 回归脚本。但红绿节奏、"测试驱动最小实现"、"测试防回归"三大要义完全一致。</blockquote>
+<hr>
+<h2>8 · 如何纠正 AI 的错误</h2>
+<p>AI 会犯错，纠错来自<b>四个机制</b>，本轮都出现了（与第二部分"靠人手改兜底"相比，这一期 AI 更多能<b>自我纠错</b>，人退到"裁判 + 推动者"）：</p>
+<h3>8.1 让 AI 自我纠错（更深的证据）</h3>
+<p>step119 时 AI 把 event20899 判为"大气数学的精度长尾、暂缓"。这其实是<b>误判</b>。step120 用户要求继续后，AI 重新用逐语句轨迹深挖，发现真因是反规格化数分支选错（C2），把它从"不可解"变成"一行修复"。<b>纠错的关键是回到数据流、要更细的证据，而不是停在第一个看似合理的结论。</b></p>
+<h3>8.2 用回归/验证当"客观裁判"</h3>
+<p>C3 改动会改变 <code>(int)floatattr</code> 的语义，AI 担心破坏既有的打包-uint case。于是<b>先查证</b>：把 event1031、event1399 的 <code>v1</code> 声明翻出来，确认它们是 <code>uint</code> 声明（不在 float-only 顶点集，根本不受影响），再动手；改完再用回归 46/46 复核。<b>"先证伪自己的担忧再提交"</b>。</p>
+<h3>8.3 把陷阱写进常驻规则（防止重犯）</h3>
+<p><code>CLAUDE.md</code> 的"两个非显然陷阱"（golden 尾部 float3 错位、一元/二元 <code>+/-</code>）就是历史错误固化成的护栏。AI 读到后不会再在这些点上犯错。</p>
+<h3>8.4 用户直接纠偏</h3>
+<p>用户在提示词里预先标注"哪些是 capture 限制、无解"，等于提前纠正 AI"什么都想修"的倾向，避免在不可解问题上空转。</p>
+<hr>
+<h2>9 · 记忆系统避免重复开发</h2>
+<p>记忆系统是 <code>~/.claude/projects/.../memory/</code> 下的<b>一事一文件 + 一个索引</b>：</p>
+<ul>
+<li><code>MEMORY.md</code> —— 索引，每条一行，会话开始时全量载入。</li>
+<li>每个 <code>*.md</code> —— 一条经验事实，带 <code>type</code>（user/feedback/project/reference）。</li>
+</ul>
+<p>本项目已有的记忆（节选）：</p>
 <table>
-  <tr><th>改动</th><th>回归结果</th><th>动作</th></tr>
-  <tr><td>C1 多数组 cbuffer</td><td>44/44</td><td>提交 + 加入 event23341</td></tr>
-  <tr><td>C2 FTZ<span style="color:var(--muted)"> ⓘ</span></td><td>45/45 → <b>46/46</b>（含新加 20899）</td><td>提交 + 加入 event20899</td></tr>
-  <tr><td>C3 ftoi（改变既有语义，高风险）</td><td><b>46/46</b></td><td>回归绿才敢提交</td></tr>
+<tr><th>记忆文件</th><th>内容</th><th>避免的重复劳动</th></tr>
+<tr><td><code>golden-vs-mesh-sv-position-first</code></td><td>golden CSV 把 SV_Position 列排在最前，要按位置而非表头映射</td><td>C2 分析时无需重新推导列序，直接确认 o6 对得上</td></tr>
+<tr><td><code>per-vertex-binary-vb-decode-r10a2</code></td><td>NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2</td><td>不必重新逆向顶点格式</td></tr>
+<tr><td><code>raw-img-texture-loading</code></td><td>纹理按 DXGI 格式从 .img 读、BC7 回退 BMP</td><td>直接复用，不重造</td></tr>
+<tr><td><code>witcher3-array-cbuffers-instanced-inputs</code></td><td>数组 cbuffer 与实例化输入的加载与坑</td><td>C1 的背景知识</td></tr>
 </table>
-<p class="legend" style="text-align:left">ⓘ <b>FTZ = Flush-To-Zero（反规格化数刷零）</b>：GPU 做浮点运算时把极小的非零浮点（denormal，如 <code>0x00000001</code> 按 float 解释成 <code>1.4e-45</code>）直接当 <code>0</code>。event20899 里常量 <code>cb12[271].z</code> 正是这种值，被用作三元条件 <code>cb12[271].z ? r2.x : 1</code>——GPU 视其为 0 走 false 分支，解释器却因保留了非零 denormal 走错分支、污染大气散射 o0/o1。修复：解码 cbuffer 时把 subnormal 刷成 <code>0.0</code>（<code>asint/asuint</code> 不受影响，仍读精确整数位）。详见 <a href="#q5">§5</a>/<a href="#q8">§8</a>。</p>
-<div class="callout">每修好一类就把代表 case 加进回归 → 这两类<b>永不回退</b>。回归是"提交闸门"，尤其保护 C3 这种改变既有语义的高风险改动。（回归 CSV 与 zip 是 gitignore 的本地基础设施。）</div>
-
-<!-- Q7 -->
-<h2 id="q7">7 · TDD 在本项目的应用</h2>
-<p>本项目是 TDD 的变体 —— <b>"golden 即测试"</b>：测试（GPU 真机 <code>*_vs_mesh.csv</code>）先于实现存在且必然正确。</p>
-<div class="svgbox">
-<svg viewBox="0 0 760 150" role="img" aria-label="红绿循环">
-  <defs><marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#9aa4b2"/></marker></defs>
-  <rect x="30" y="45" width="190" height="60" rx="10" fill="#241316" stroke="#ff6b6b"/>
-  <text x="125" y="72" fill="#ff6b6b" font="bold 14px sans-serif" text-anchor="middle" style="font:bold 14px sans-serif">红</text>
-  <text x="125" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">0/2160 + 一堆 Error</text>
-  <rect x="285" y="45" width="190" height="60" rx="10" fill="#0c1f17" stroke="#46d39a"/>
-  <text x="380" y="72" fill="#46d39a" text-anchor="middle" style="font:bold 14px sans-serif">绿</text>
-  <text x="380" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">最小修复 → 2160/2160</text>
-  <rect x="540" y="45" width="190" height="60" rx="10" fill="#171a21" stroke="#2a2f3a"/>
-  <text x="635" y="72" fill="#5db0ff" text-anchor="middle" style="font:bold 14px sans-serif">防回退</text>
-  <text x="635" y="92" fill="#d4dae4" text-anchor="middle" style="font:12px sans-serif">加进回归集</text>
-  <path d="M222,75 L283,75" stroke="#9aa4b2" stroke-width="1.6" fill="none" marker-end="url(#ar3)"/>
-  <path d="M477,75 L538,75" stroke="#9aa4b2" stroke-width="1.6" fill="none" marker-end="url(#ar3)"/>
-</svg>
-<div class="legend">先让失败可复现可量化（红），写最小修复（绿），加回归防回退</div>
-</div>
-<p>与单元 TDD 的差别：测试用例不是手写断言，而是<b>真机 golden 数据</b>；框架是 verify-by-log + 回归脚本。但红绿节奏、"测试驱动最小实现"、"测试防回归"三大要义完全一致。C1/C2 都是先确认"红"（读成 0 / 0 通过），再写最小修复转"绿"。</p>
-
-<!-- Q8 -->
-<h2 id="q8">8 · 如何纠正 AI 的错误</h2>
-<div class="grid3">
-  <div class="c c3"><b>① 自我纠错</b><br>step119 把 C2 判为"精度不可解"。step120 回到逐语句轨迹深挖，发现真因是反规格化数分支——从"不可解"变"一行修复"。</div>
-  <div class="c"><b>② 客观裁判</b><br>C3 改语义前先证伪担忧：翻出 event1031/1399 的 <code>v1</code> 是 <code>uint</code> 声明（不受影响），再改；回归 46/46 复核。</div>
-  <div class="c c2"><b>③ 护栏固化</b><br>把历史坑写进 <code>CLAUDE.md</code>（golden 尾部 float3 错位、一元/二元 +/-），AI 不再重犯。</div>
-</div>
-<div class="callout amber"><b>④ 用户直接纠偏</b>：用户在提示词里预标"哪些是 capture 限制、无解"，提前纠正 AI"什么都想修"的倾向，避免在死路上空转。<br><b>纠错的核心</b>：回到数据流、要更细的证据，不要停在第一个看似合理的结论。</div>
-
-<!-- Q9 -->
-<h2 id="q9">9 · 记忆系统避免重复开发</h2>
-<p>记忆系统 = <code>memory/</code> 下"<b>一事一文件</b>" + 一个会话开始即载入的索引 <code>MEMORY.md</code>。</p>
+<blockquote><b>如何避免重复开发</b>：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带"为什么"和"怎么用"），并在 <code>MEMORY.md</code> 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样<b>同一个坑只踩一次</b>——例如 golden 列序错位这种反直觉点，靠记忆一次性记住，后续所有 witcher case 都不再重新困惑。<br>纪律：① 不记录代码/git 已经记录的东西；② 先查重再写，宁可更新已有文件；③ 召回的记忆是"当时为真"的背景，引用到具体文件/函数时要先核实其仍存在。</blockquote>
+<hr>
+<h2>10 · b/c 两个开发部分的对比和优缺点总结</h2>
+<p>本项目历经两个 agent 周期（约从 step1 到 step123、2026-06-05 起）。以下特征基于 <code>Sessions/</code> 日志与提交历史的可见证据归纳。</p>
+<h3>10.1 前期：opencode + minimax-m2.7（第二部分 / 奠基期）</h3>
+<ul>
+<li><b>做的事</b>：从 0 搭起解释器骨架——HLSL 词法/递归下降表达式解析（<code>hlsl_syntax_tree.py</code>）、语句解释、cbuffer/struct/函数解析、定点管线（rasterizer/depth/OM/texture）、legacy struct 工作流、golden 对比的雏形。</li>
+<li><b>节奏特征</b>：<b>小步快跑</b>。step1 init、step2 打印 cbuffer、step10 给语法树加 eval 打印、step11 修向量×矩阵、step12 格式化矩阵打印……每步一个很小的功能或修复。</li>
+<li><b>适配点</b>：在能力相对有限的模型上，把任务切得很碎、每步可见即可验证，是稳妥策略；大量"加打印/加注释/修一个算子"的步骤为后期可观测性打了底（第三部分 §5 的轨迹输出就源于此期）。</li>
+<li><b>优点</b>：步幅小、易回退、每步可肉眼验证、成本低；为整个项目的<b>可观测性</b>（<code>[STMT]</code>/<code>[BINARY OP]</code> 打印）打了地基。</li>
+<li><b>缺点</b>：找不到深层根因（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a>）、修复不彻底（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>）、会误删代码（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>）；<b>重度依赖人工兜底</b>，无回归网、推进慢。</li>
+</ul>
+<h3>10.2 后期：claude code + opus（第三部分 / 攻坚期）</h3>
+<ul>
+<li><b>做的事</b>：引入 zip/RunDrawFromDump 真机 capture 工作流、建立<b>数据驱动的回归套件</b>、并系统化啃长尾——批量 triage 280→355 个 capture、按根因聚类、逐类深挖修复（C1/C2/C3、structured buffer skinning、raw .img 纹理、R10A2 解码……）。</li>
+<li><b>节奏特征</b>：<b>根因导向、闭环交付</b>。一步往往覆盖"triage→定位→修复→回归→提交→文档"整条链，单步信息密度高；能在长上下文里同时持有整条管线、并行跑 triage、对高风险改动先证伪再提交。</li>
+<li><b>适配点</b>：更强的模型 + 更长上下文 + 更全的工具（并行 Bash、后台任务、回归 gate、记忆系统），使"一次推进一个完整根因类"成为可能。</li>
+<li><b>优点</b>：长上下文可<b>持有整条管线</b>、根因导向、闭环交付（含回归 gate + 记忆 + 文档）、能批量 triage、能<b>自我纠错</b>（见第三部分 · 8 的 C2 翻案）。</li>
+<li><b>缺点</b>：单步信息密度高、需要信任；成本高；<b>对提示词约束敏感</b>——缺"不要做什么"会改错地方（见第三部分 · 1 的 <a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-2">#2→#3→#4 反例</a>）；仍可能误判、需用户推动（C2 一度被判"不可解"）。</li>
+</ul>
+<h3>10.3 对比小结</h3>
 <table>
-  <tr><th>记忆</th><th>内容</th><th>避免的重复劳动</th></tr>
-  <tr><td class="mono">golden-vs-mesh-sv-position-first</td><td>golden CSV 把 SV_Position 列排最前，按位置而非表头映射</td><td>C2 分析时无需重推列序，直接确认 o6 对得上</td></tr>
-  <tr><td class="mono">per-vertex-binary-vb-decode-r10a2</td><td>NORMAL/TANGENT 在二进制 VB 是 R10G10B10A2</td><td>不必重新逆向顶点格式</td></tr>
-  <tr><td class="mono">raw-img-texture-loading</td><td>纹理按 DXGI 从 .img 读、BC7 回退 BMP</td><td>直接复用</td></tr>
-  <tr><td class="mono">witcher3-array-cbuffers-…</td><td>数组 cbuffer 与实例化输入的坑</td><td>C1 的背景知识</td></tr>
+<tr><th>维度</th><th>第二部分：opencode + minimax-m2.7</th><th>第三部分：claude code + opus</th></tr>
+<tr><td>目标</td><td>从无到有搭骨架</td><td>真机数据攻坚长尾</td></tr>
+<tr><td>步幅</td><td>小而多（单功能/单算子）</td><td>大而少（整条闭环/整类根因）</td></tr>
+<tr><td>上下文</td><td>短、聚焦单点</td><td>长、可持有整条管线</td></tr>
+<tr><td>计划</td><td><b>人</b>切碎需求、找杠杆点</td><td><b>AI</b> 自己 triage→聚类→排序</td></tr>
+<tr><td>验证</td><td>加打印、人工看</td><td>verify-by-log + 自动回归 gate</td></tr>
+<tr><td>纠错</td><td>人手改兜底（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>/<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>）</td><td>AI 自我纠错 + 回归当裁判</td></tr>
+<tr><td>工具用法</td><td>基本编辑/运行</td><td>并行 triage、后台任务、记忆、git 闸门</td></tr>
+<tr><td>典型产物</td><td><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-11">#11 修向量×矩阵</a></td><td><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">#42 一个 bug 修 5 个 case + 扩回归</a></td></tr>
 </table>
-<div class="callout green">当一个"<b>非显而易见、未来还会用到</b>"的事实被发现，就写成一条记忆（带"为什么/怎么用"），并在索引留一行指针。<b>同一个坑只踩一次</b>。纪律：不记录代码/git 已记录的东西；先查重再写；召回的记忆引用到具体文件/函数时先核实仍存在。</div>
-
-<!-- Q10 -->
-<h2 id="q10">10 · b/c 两个开发部分的对比和优缺点总结</h2>
-<p>本项目历经两个 agent 周期（约 step1→step123，2026-06-05 起）。以下基于 <code>Sessions/</code> 日志与提交历史的可见证据。</p>
-<div class="svgbox">
-<svg viewBox="0 0 900 130" role="img" aria-label="两个开发周期">
-  <rect x="30" y="40" width="400" height="56" rx="10" fill="#1a1430" stroke="#7a6cff"/>
-  <text x="48" y="64" fill="#b3a8ff" style="font:bold 14px sans-serif">前期 · opencode + minimax-m2.7</text>
-  <text x="48" y="84" fill="#cdd6e4" style="font:12px sans-serif">奠基期：小步快跑，搭起解释器与管线骨架</text>
-  <rect x="470" y="40" width="400" height="56" rx="10" fill="#0c1f2a" stroke="#5db0ff"/>
-  <text x="488" y="64" fill="#9ecbff" style="font:bold 14px sans-serif">后期 · claude code + opus</text>
-  <text x="488" y="84" fill="#cdd6e4" style="font:12px sans-serif">攻坚期：真机数据 + 回归纪律，按根因啃长尾</text>
-  <path d="M430,68 L468,68" stroke="#9aa4b2" stroke-width="2" fill="none" marker-end="url(#ar3)"/>
-</svg>
-</div>
-<table>
-  <tr><th>维度</th><th>第二部分 · minimax-m2.7</th><th>第三部分 · opus</th></tr>
-  <tr><td>目标</td><td>从无到有搭骨架</td><td>真机数据攻坚长尾</td></tr>
-  <tr><td>步幅</td><td>小而多（单功能/单算子）</td><td>大而少（整条闭环 / 整类根因）</td></tr>
-  <tr><td>上下文</td><td>短、聚焦单点</td><td>长、可持有整条管线</td></tr>
-  <tr><td>计划</td><td><b>人</b>切碎需求、找杠杆点</td><td><b>AI</b> 自己 triage→聚类→排序</td></tr>
-  <tr><td>验证</td><td>加打印、人工看</td><td>verify-by-log + 自动回归 gate</td></tr>
-  <tr><td>纠错</td><td>人手改兜底（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>/<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>）</td><td>AI 自我纠错 + 回归当裁判</td></tr>
-  <tr><td>工具用法</td><td>基本编辑 / 运行</td><td>并行 triage、后台任务、记忆、git 闸门</td></tr>
-  <tr><td>典型产物</td><td class="mono"><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-11">#11 修向量×矩阵</a></td><td class="mono"><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-42">#42 一 bug 修 5 case + 扩回归</a></td></tr>
-</table>
-<div class="grid3">
-  <div class="c"><b>第二部分 优点</b><br>步幅小、易回退、每步可肉眼验证、成本低；为整个项目的<b>可观测性</b>（<code>[STMT]/[BINARY OP]</code> 打印）打了地基。</div>
-  <div class="c c3"><b>第二部分 缺点</b><br>找不到深层根因（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-35">#35</a>）、修复不彻底（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37">#37</a>）、会误删代码（<a href="Prompts/hlsl-interpreter-prompt-OpenCode.html#step-42">#42</a>）；重度依赖人工兜底、无回归网、推进慢。</div>
-  <div class="c c2"><b>第三部分 优缺点</b><br><b>优</b>：长上下文持有整条管线、根因导向、闭环交付（回归 gate+记忆+文档）、能自我纠错。<br><b>缺</b>：成本高；<b>对提示词约束敏感</b>——缺"不要做什么"会改错地方（见 <a href="#q1">§1</a> 反例）；仍可能误判需用户推动。</div>
-</div>
-<div class="callout"><b>两周期互补</b>：前期的小步与可观测性铺垫（那些 <code>[STMT]/[BINARY OP]</code> 打印），正是后期能"沿数据流快速回溯根因"的前提。<b>选型启示</b>：搭骨架/能力有限时，把需求切碎、靠人验证最稳；攻坚/上下文充足时，让 AI 持有全局、用回归+记忆闭环交付最高效。</div>
-
+<blockquote>两个周期是<b>互补</b>的：前期的小步与可观测性铺垫，是后期能够"沿数据流快速回溯根因"的前提。没有前期那些 <code>[STMT]</code>/<code>[BINARY OP]</code> 打印，后期的 C2/C3 根因不可能被一眼看穿。选型启示：<b>搭骨架/能力有限时，把需求切碎、靠人验证最稳；攻坚/上下文充足时，让 AI 持有全局、用回归+记忆闭环交付最高效。</b></blockquote>
 <h3>10.4 收尾期：可观测性回补（约 step 185–188）</h3>
 <p>攻坚长尾之后，最近几步把重心从"修正确性"转向"看得见执行过程"：在原有 tkinter 界面之外，新增了<b>静态 HTML 导出</b>（<code>html_mesh_view.py</code>）与<b>动态 Web 视图</b>（<code>web_mesh_view.py</code>）。动态视图起一个本地 HTTP 服务，浏览器轮询 <code>/state</code>、实时跟随 VS→光栅化→PS 的执行进度做逐顶点/逐图元/逐像素动画，并支持 normal 向量显示与每阶段动画延迟调节（step 186 加进度、187 修 normal 显示、188 让光栅化阶段也逐像素动画并可调延迟）。</p>
-<div class="callout"><b>纪律一脉相承</b>：这批都是<b>可视化改动，不触碰解释器正确性</b>；因延迟默认 0、动画 hook 在 headless 回归路径上从不挂载，回归维持 <b>118/123</b>（4 个 witcher3_countryside 失败已在 step 179/182/184 判为结构性/数据问题，非解释器 bug）。可观测性从"事后读日志"进一步前移到"边跑边看"，是第二部分埋下的"小步 + 可观测"理念在成熟阶段的自然延伸。</div>
-
-<p style="color:var(--muted);margin-top:40px;font-size:13px">本手册随项目演进更新；Markdown 版见 <code>AI-Development-Handbook.md</code>。生成于 step123，末次更新覆盖至 step188。</p>
-
-</div>
-</body>
-</html>
+<p>这批工作与第三部分的纪律一脉相承：<b>都是可视化改动，不触碰解释器正确性</b>；因延迟默认 0、动画 hook 在 headless 回归路径上从不挂载，回归维持 118/123（4 个 witcher3_countryside 失败已在 step 179/182/184 判为结构性/数据问题，非解释器 bug）。可观测性从"事后读日志"进一步前移到"边跑边看"，正是第二部分埋下的"小步 + 可观测"理念在成熟阶段的自然延伸。</p>
+<h3>10.5 观测器深化 + 长尾回补（约 step 189–194）</h3>
+<p>step 186–188 立起动态 Web 视图后，step 189–193 继续把它做深：像素视图缩放与阶段回放、<b>逐指令 VS/PS 轨迹</b>（step 189）、Web 视图内存瘦身（惰性像素、引用而非拷贝、缓存 payload，step 190）、可拖拽自定义布局（step 191）、把顶点/像素信息拆成两个独立面板（step 192），以及直接浏览预览原始 draw zip 的「Draw Data」面板（step 193）。这批仍是纯可视化改动，不碰解释器正确性。</p>
+<p>step 194 则回到正确性主线：一次<b>逐指令 VS/PS 轨迹 + verify-by-log</b> 的组合把 <code>manhattan_event1041</code> 从 0/228 修到 228/228——VS 只写 <code>o6.xy</code>，<code>TEX_COORD1</code> 打包进从未写的 <code>o6.zw</code>，而 D3D 语义要求未写的输出寄存器分量取每寄存器初值 <code>(0,0,0,1)</code>；<code>_resolve_slot_shared_params</code> 原来只在主参数溢出时回填次级参数，遗漏了「主参数恰好只写自己分量」的情形。修复让未写的次级输出继承寄存器默认（落在索引 3 的 <code>.w</code> 取 <code>1.0</code>）。同一步还把空的 <code>dump_case.csv</code> 补齐为 <code>Dump/</code> 现有 31 个 zip 并逐个 triage（11 PASS / 4 精度 FAIL / 1 无 golden / 15 因体量超时未评估）。</p>
+<p>这条轨迹印证了第三部分的方法论在成熟阶段依旧成立：<b>先把执行过程"看得见"，再沿数据流回溯根因</b>——观测器的逐指令轨迹直接指向了未写寄存器的默认值这一根因，而回归/golden 比对继续充当裁判。</p>
+<hr>
+<p><i>本手册随项目演进更新；HTML 版见 <code>AI-Development-Handbook.html</code>。</i></p>
+</div></body></html>

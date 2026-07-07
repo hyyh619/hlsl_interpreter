@@ -18,7 +18,7 @@
 - **零第三方依赖**：仅用 Python 标准库；可选的 Mesh 可视化界面用内置 `tkinter`。
 - **回归测试套件**：`run_regression.py` 批量验证所有已知正确的抓帧，修改后一键检查有无回退。
 - **Debug Trace**：可配置的逐像素管线数据导出，用于定位 PS / 纹理采样的精度问题。
-- **可视化（可选）**：三选一显示后端 —— `tkinter` 桌面界面、静态 HTML 导出、或**动态 Web 视图**（浏览器实时跟随 VS/光栅化/PS 执行进度逐顶点/逐图元/逐像素动画，支持 normal 向量显示与每阶段动画延迟调节）。
+- **可视化（可选）**：三选一显示后端 —— `tkinter` 桌面界面、静态 HTML 导出、或**动态 Web 视图**（浏览器实时跟随 VS/光栅化/PS 执行进度逐顶点/逐图元/逐像素动画，支持 normal 向量显示与每阶段动画延迟调节）。Web 视图还支持像素视图缩放、阶段回放、逐指令 VS/PS 轨迹、可拖拽自定义布局、独立的顶点/像素信息面板，以及「Draw Data」面板直接浏览预览原始 draw zip（step 189–193）。
 
 ---
 
@@ -261,7 +261,7 @@ hlsl_interpreter/
 │   ├── regression_test_zip_files.csv   # 回归测试用例列表
 │   └── regression_logs/       # 每个测试用例的独立日志
 ├── Prompts/                   # 开发需求 / 规格记录（驱动开发的提示词历史）
-└── Sessions/                  # 188+ 份逐步开发会话日志（hlsl-stepN-*.md）
+└── Sessions/                  # 194+ 份逐步开发会话日志（hlsl-stepN-*.md）
 ```
 
 ---
@@ -327,4 +327,4 @@ hlsl_interpreter/
 ## 开发历史文档
 
 - `Prompts/hlsl-interpreter-prompt-ClaudeCode.md` —— 近期 bug 修复与设计决策最详细的记录（按步骤编号索引）
-- `Sessions/hlsl-stepN-*.md` —— 91+ 份逐步开发会话日志，适合追溯「为什么这样实现」
+- `Sessions/hlsl-stepN-*.md` —— 194+ 份逐步开发会话日志，适合追溯「为什么这样实现」
