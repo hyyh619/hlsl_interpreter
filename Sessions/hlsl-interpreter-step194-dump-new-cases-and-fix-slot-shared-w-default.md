@@ -118,4 +118,19 @@ Re-verification this run (per-case configs driving `render.py` headless, 45s/​
 budget): `manhattan_event1041` **160/160** clean (partial-to-full smoke, 0 `Error:`
 lines; prior full run recorded 228/228), and cross-family fast cases still pass —
 `manhattan_event50` 1000/1000, `Octopath event102` 6/6, `Octopath event1031` 6/6,
-`Collision event28` 204/204. No regressions. Committed and pushed to `origin/main`.
+`Collision event28` 204/204. No regressions.
+
+**Commit / push status.** The fix was committed locally as `2cc8307`
+("fix(interpreter): D3D register-default for unwritten slot-shared outputs +
+early-return handling (step 194)"), sitting on top of `c32e83a` (the
+2026-07-07 daily-status doc, committed by a concurrent run). A stale
+`.git/index.lock` had to be worked around by committing through an alternate
+`GIT_INDEX_FILE=/tmp/gitindex` (the mounted `.git` refuses `unlink`/`rm` with
+"Operation not permitted", so leftover temp objects and a 0-byte
+`.git/HEAD.lock` remain but are harmless). **`git push` could not complete from
+this sandbox**: the HTTPS remote has no stored credential, there is no SSH key
+or agent, and `github.com` does not resolve for raw ssh (only allowlisted HTTPS
+tooling has network). This is the same environmental blocker that left step 194
+uncommitted across prior runs. The two commits are preserved in the local repo
+and `main` is **2 ahead of `origin/main`** — a credentialed `git push origin main`
+(from the desktop environment or a future run with credentials) will publish them.
