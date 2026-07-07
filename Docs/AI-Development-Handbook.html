@@ -492,6 +492,28 @@ Comparison FAILED: Some output data does not match golden data</code></pre>
 │  system-reminder（后台任务完成、文件被改）      │
 └─────────────────────────────────────────────┘</code></pre>
 <p>AI 的"输入"是<b>累积的对话上下文</b>：项目说明、记忆、用户指令打底，之后每次工具调用的返回值（源码、日志、命令输出）不断追加。上下文过长时会被<b>摘要</b>后进入下一窗口。</p>
+<p>上图最顶端的两层——<b><code>CLAUDE.md</code>（常驻规则）</b>与 <b><code>MEMORY.md</code>（跨会话记忆）</b>——是每轮开发都会被自动注入的"打底上下文"。它们具体装了什么、如何影响 AI 的行为，值得单独拆开看（这也是本项目让 AI"越修越对、越修越聪明"的两块基石）。</p>
+<h4>4.1.1 <code>CLAUDE.md</code> 具体写了什么：项目规则 / 陷阱 / 纪律</h4>
+<p><code>CLAUDE.md</code> 在<b>每次会话开始时整篇注入</b>，且带有最高优先级——它明确声明"这些指令覆盖任何默认行为，必须逐字遵守"。它的内容可归成三类：</p>
+<table>
+<tr><th>类别</th><th>常驻内容（本项目 <code>CLAUDE.md</code> 实录）</th><th>对 AI 行为的约束</th></tr>
+<tr><td><b>① 项目规则（是什么 / 怎么跑 / 怎么组织）</b></td><td>· <b>定位</b>：纯 Python 解释 HLSL 源码、模拟 D3D11 管线、与 golden 逐分量对比；<b>零第三方依赖</b>、无 <code>requirements.txt</code>/构建/lint/单测。&lt;br&gt;· <b>入口</b>：<code>python render.py ./Cases/Default.json</code>（单个 JSON 配置驱动，zip 工作流为主路径、legacy struct 工作流仅后向兼容）。&lt;br&gt;· <b>模块分工</b>：<code>render.py</code> 编排；<code>hlsl_interpreter.py</code>(~3300 行核心)；<code>hlsl_syntax_tree.py</code>(<b>运算符优先级表 <code>_OPERATORS</code> 是唯一真源</b>)；<code>rasterizer.py</code>/<code>output_merger.py</code>/<code>texture.py</code>。&lt;br&gt;· <b>数据文件约定</b>：zip 内每个 CSV/HLSL/BMP/bin 的作用与解析函数。&lt;br&gt;· <b>verify-by-log 工作流</b>：跑管线 → grep 日志里 <code>Error:</code> 行 → 迭代到无错；<code>[STMT]</code>/<code>[SYNTAX TREE]</code> 轨迹是主调试面。</td><td>AI 无需重新摸索项目结构，改哪个文件、看哪个日志、动优先级要去哪张表，开局即知</td></tr>
+<tr><td><b>② 陷阱（反直觉、极易改错的点）</b></td><td>· <b>陷阱#1 · 3Dmigoto 尾部 <code>float3</code> 错位</b>：<code>MeshOut_*_mesh.csv</code> golden 把尾部 <code>float3</code>（如 WORLDPOS）整体偏移一个 float，<code>WORLDPOS.x</code> 实际存的是 <code>o.y</code>……<b>golden 看着"不对"但它就是权威基准</b>，该改的是解释器侧对齐。&lt;br&gt;· <b>陷阱#2 · 一元 vs 二元 <code>+</code>/<code>-</code></b>：<code>r0.xyz * -r2.xxx + r1.xyz</code> 里 <code>*</code> 后的 <code>-</code> 是一元负号、不能当减法；bitwise `\</td><td><code>/</code>&amp;<code> 也有特判。**precedence 错在这里表现为错色/错向量而非崩溃**。&lt;br&gt;· 附带提醒：</code>.vscode/tasks.json` 是无关旧项目的残留、要忽略；CSV 里的 topology 覆盖 JSON（除非显式设置）。</td><td>AI 面对"golden 看起来错了"的诱惑时，<b>不会去改基准凑数字</b>；解析一元负号时<b>不会误判成减法</b>——这两个坑在第二/三部分都真实反复出现过</td></tr>
+<tr><td><b>③ 纪律（不可逾越的硬规则）</b></td><td>· <b>每次代码改动后、"认为完成"之前必须跑 <code>python run_regression.py</code></b>——无单测，回归套件就是唯一安全网。&lt;br&gt;· <b>通过 = 三条同时成立</b>：① <code>render.py</code> 干净退出；② 日志无 <code>Error:</code> 行；③ <code>Total PASSED rows: X/Y</code> 满足 <code>X==Y</code>。&lt;br&gt;· <b>数据驱动</b>：增删覆盖面只改 <code>Cases/regression_test_zip_files.csv</code>，<b>不许在 runner 里硬编码 case 名</b>。&lt;br&gt;· <b>失败必须回到解释器侧修</b>，不许动 golden 或放宽判据。</td><td>把"修好了"从 AI 的<b>一句话</b>，变成 <code>run_regression.py</code> 的<b>退出码 + <code>X==Y</code></b>——AI 不能自称完成、也堵死了"改基准/绕 runner"两条捷径（详见 §1.1）</td></tr>
+</table>
+<blockquote><b>一句话</b>：<code>CLAUDE.md</code> = "团队 onboarding 文档 + 不可逾越的规则"。规则让 AI <b>少猜</b>，陷阱让 AI <b>少犯同一个错</b>，纪律让 AI <b>不能自欺欺人地"假绿"</b>。</blockquote>
+<h4>4.1.2 <code>MEMORY.md</code> 记忆了什么：帮助 AI 开发的经验</h4>
+<p>如果说 <code>CLAUDE.md</code> 是"写死的规则"，<code>MEMORY.md</code> 就是<b>会生长的经验库</b>——它是 <code>~/.claude/projects/.../memory/</code> 下"<b>一事一文件 + 一个索引</b>"结构的索引层，会话开始时<b>全量载入索引</b>，相关经验在需要时被<b>召回</b>（recall）。它记的是那些<b>"非显而易见、且未来还会再用到"的事实</b>，典型有四类：</p>
+<table>
+<tr><th>记忆类型（frontmatter <code>type</code>）</th><th>记的是什么</th><th>举例（本项目已有 / 可有的记忆）</th><th>帮 AI 省掉的重复劳动</th></tr>
+<tr><td><b>project（项目知识）</b></td><td>从代码/git 看不出的领域坑与数据格式约定</td><td><code>golden-vs-mesh-sv-position-first</code>（golden CSV 把 SV_Position 排最前、按位置而非表头映射）；<code>witcher3-array-cbuffers-instanced-inputs</code>（数组 cbuffer + 实例化输入的加载坑）</td><td>下次遇到同类 case 不必重新推导列序 / 逆向格式</td></tr>
+<tr><td><b>reference（外部资源指针）</b></td><td>特定格式的解码方式、外部资料</td><td><code>per-vertex-binary-vb-decode-r10a2</code>（NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2）；<code>raw-img-texture-loading</code>（纹理按 DXGI 格式从 <code>.img</code> 读、BC7 回退 BMP）</td><td>直接复用解码路径，不重造轮子</td></tr>
+<tr><td><b>feedback（用户的工作方式纠偏）</b></td><td>用户给过的"该怎么做"的指导 + <b>为什么</b></td><td>例如"golden 是基准、只许改解释器"（§1.5 教训沉淀）；"已知 capture 限制的类别别再试探"</td><td>不再重蹈"改错地方"的返工（如 §1.5 的 #2→#3）</td></tr>
+<tr><td><b>user（用户是谁）</b></td><td>角色、偏好、专长</td><td>用户关注 VS 计算正确性、验证靠 golden、偏好 verify-by-log</td><td>交流与产出对齐用户习惯</td></tr>
+</table>
+<p>每条记忆的正文遵循固定骨架：<b>事实本身 + <code>**Why:**</code>（为什么重要）+ <code>**How to apply:**</code>（下次怎么用）</b>，并用 <code>[[其它记忆名]]</code> 相互链接成网。</p>
+<blockquote><b>记忆如何帮助开发（闭环）</b>：<code>Sessions/</code> 文档里每轮的 <code>## Blocked classes</code> 与 <code>Fix 根因</code>（见 §1.4）是"这一轮的收尾"，而把其中<b>跨会话仍成立的结论</b>提炼成一条 <code>MEMORY.md</code> 记忆，就成了"未来所有轮次的开局先验"。这样<b>同一个坑只踩一次</b>——golden 列序错位、SNORM/UNORM capture 无解这类反直觉点，一旦入记忆，后续 case 直接命中、不再从零困惑。<br><b>记忆的三条纪律</b>（与 §9 一致）：① 不记录代码/git 已经记录的东西（结构、历史、CLAUDE.md 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"<b>当时为真</b>"的背景，引用到具体文件/函数时<b>要先核实其仍存在</b>。</blockquote>
+<blockquote><b>两者的分工</b>：<code>CLAUDE.md</code> 管<b>"绝不能违反的"</b>（规则/陷阱/纪律，人工维护、整篇注入）；<code>MEMORY.md</code> 管<b>"最好别忘的"</b>（经验事实，随开发生长、按需召回）。前者防 AI 越界，后者防 AI 重复劳动——合起来构成 §4.1 输入数据流最顶端那层"打底上下文"。§9 会从"避免重复开发"的角度再展开记忆系统。</blockquote>
 <h3>4.2 输出数据流（AI 产出什么）</h3>
 <p>AI 的每条输出要么是<b>给用户的文字</b>，要么是<b>工具调用</b>：</p>
 <ul>
