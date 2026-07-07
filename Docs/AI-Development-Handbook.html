@@ -515,6 +515,20 @@ Comparison FAILED: Some output data does not match golden data</code></pre>
 <tr><td><b>user（用户是谁）</b></td><td>角色、偏好、专长</td><td>用户关注 VS 计算正确性、验证靠 golden、偏好 verify-by-log</td><td>交流与产出对齐用户习惯</td></tr>
 </table>
 <p>每条记忆的正文遵循固定骨架：<b>事实本身 + <code>**Why:**</code>（为什么重要）+ <code>**How to apply:**</code>（下次怎么用）</b>，并用 <code>[[其它记忆名]]</code> 相互链接成网。</p>
+<p>上面表格里的名字太浓缩、单看容易不知所云。下面把 <b>project</b> 和 <b>reference</b> 各挑一条，按"踩到什么坑 → 记忆里到底写了什么 → 下次怎么帮上忙"完整展开，就能看清一条记忆长什么样、怎么省事：</p>
+<p><b>例① · project 类 · <code>golden-vs-mesh-sv-position-first</code></b></p>
+<ul>
+<li><b>踩到什么坑</b>：验证 VS 输出要拿解释器的结果去和 golden CSV（<code>MeshOut_*_mesh.csv</code>）逐列对比。直觉做法是"按 CSV 表头名字对齐列"——但 3Dmigoto 导出的 golden CSV <b>会把 <code>SV_Position</code> 列强制排到最前面</b>，不管 shader 里 <code>out</code> 参数原本声明成什么顺序。若按"表头顺序 = shader 声明顺序"去映射，整张表<b>列序就整体错位</b>，每个分量都对不上、满屏 <code>Error:</code>，还很容易误以为是解释器算错了而去乱改数学。</li>
+<li><b>记忆里写了什么</b>（按骨架）： ``<code> 事实：golden mesh CSV 把 SV_Position 列排在最前，与 shader 声明顺序无关。 Why ：按表头顺序映射会整体错位 → 假 Error，误导去改本来正确的 VS 数学。 How to apply：对齐 golden 时按【语义/位置】映射，先把 SV_Position 认到第 0 列， 其余列再顺次对上；参见 [[trailing-float3-golden-misalignment]]。 </code>``</li>
+<li><b>下次怎么帮上忙</b>：再遇到任何 witcher / Octopath 等 case，AI 一召回这条记忆，就<b>直接按位置映射</b>、不再重新推导列序，也不会把"列序错位"误诊成"数学错误"去改解释器。</li>
+</ul>
+<p><b>例② · reference 类 · <code>per-vertex-binary-vb-decode-r10a2</code></b></p>
+<ul>
+<li><b>踩到什么坑</b>：某些 case 的法线/切线在 CSV 里读出来是 0 或明显不对。根因是这些属性在<b>二进制顶点缓冲</b>里不是普通的 3×float，而是被打包成 <b><code>R10G10B10A2</code> 格式</b>——一个 32 位里塞 R/G/B 各 10 位、A 占 2 位的归一化整数。不知道这个格式，就会按 float 去读那 4/12 个字节，解出一堆垃圾；而 <code>ia_vertex_data.csv</code> 对这种格式往往直接存成 0（有损），光看 CSV 根本发现不了。</li>
+<li><b>记忆里写了什么</b>（按骨架）： ``<code> 事实：这批 case 的 NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2 打包格式（非 3×float）。 Why ：按 float 解会得到垃圾；CSV 对该格式存 0，只有 raw VB 才有真值。 How to apply：从 vb_slot*.bin 按 R10G10B10A2 拆位解码（10/10/10/2 → 归一化）， 再喂给 VS；raw 优先、CSV 仅回退。参见 [[binary-vb-raw-precision]]。 </code>``</li>
+<li><b>下次帮上忙</b>：这条记忆记的是<b>一个可复用的解码配方</b>——下次再碰到同格式的顶点属性，AI 直接套这套"按位拆 10/10/10/2 再归一化"的解码，不必重新逆向一遍字节布局（reference 类的价值就在于"配方可直接复用、不重造轮子"）。</li>
+</ul>
+<blockquote><b>两个例子的区别</b>：<code>golden-...</code> 记的是<b>本项目特有的数据约定</b>（列序陷阱），属 <b>project</b>；<code>...decode-r10a2</code> 记的是<b>一种通用格式的解码方法</b>（换个项目也能用），属 <b>reference</b>。前者防"踩同一个坑"，后者省"重写同一段解码"。</blockquote>
 <blockquote><b>记忆如何帮助开发（闭环）</b>：<code>Sessions/</code> 文档里每轮的 <code>## Blocked classes</code> 与 <code>Fix 根因</code>（见 §1.4）是"这一轮的收尾"，而把其中<b>跨会话仍成立的结论</b>提炼成一条 <code>MEMORY.md</code> 记忆，就成了"未来所有轮次的开局先验"。这样<b>同一个坑只踩一次</b>——golden 列序错位、SNORM/UNORM capture 无解这类反直觉点，一旦入记忆，后续 case 直接命中、不再从零困惑。<br><b>记忆的三条纪律</b>（与 §9 一致）：① 不记录代码/git 已经记录的东西（结构、历史、CLAUDE.md 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"<b>当时为真</b>"的背景，引用到具体文件/函数时<b>要先核实其仍存在</b>。</blockquote>
 <blockquote><b>两者的分工</b>：<code>CLAUDE.md</code> 管<b>"绝不能违反的"</b>（规则/陷阱/纪律，人工维护、整篇注入）；<code>MEMORY.md</code> 管<b>"最好别忘的"</b>（经验事实，随开发生长、按需召回）。前者防 AI 越界，后者防 AI 重复劳动——合起来构成 §4.1 输入数据流最顶端那层"打底上下文"。§9 会从"避免重复开发"的角度再展开记忆系统。</blockquote>
 <h3>4.2 输出数据流（AI 产出什么）</h3>
