@@ -3971,10 +3971,27 @@ class HLSLInterpreter:
                     string_char = None
                 current_stmt.append(char)
             elif char == ';' and brace_count == 0 and paren_count == 0 and not in_string:
-                stmt = ''.join(current_stmt).strip()
-                if stmt:
-                    statements.append(stmt)
-                current_stmt = []
+                # Same else-lookahead as the '}' split above: `if (c) stmt; else ...`
+                # ends its then-branch at this ';' but the following `else` belongs
+                # to the same if. Splitting here orphans the else (an unrecognized
+                # standalone statement, silently dropped), leaving if-dependent
+                # registers at their stale value — e.g. BlackMyth's ubfe sign idiom
+                # `if (1==0) r0.x=0; else if (1+20<32){..} else r0.x=..` was skipped
+                # entirely, so the tangent sign (TEXCOORD11.w) stayed wrong.
+                j = i + 1
+                while j < n and code[j] in ' \t\r\n':
+                    j += 1
+                next_is_else = (
+                    code[j:j + 4] == 'else'
+                    and (j + 4 >= n or not (code[j + 4].isalnum() or code[j + 4] == '_'))
+                )
+                if next_is_else:
+                    current_stmt.append(char)
+                else:
+                    stmt = ''.join(current_stmt).strip()
+                    if stmt:
+                        statements.append(stmt)
+                    current_stmt = []
             else:
                 current_stmt.append(char)
             i += 1

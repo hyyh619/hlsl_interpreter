@@ -232,6 +232,34 @@ class SyntaxTreeParser:
         if expr[0] == '!' and not expr.startswith('!='):
             return SyntaxTreeNode('unary_op', '!', self._parse_expression(expr[1:].strip()))
 
+        # Ternary conditional has the LOWEST precedence (below cast and every
+        # binary/bitwise op), so detect a top-level '?' FIRST. Otherwise a
+        # leading cast such as `(int)r5.z ? a : b` is parsed as
+        # `(int)(r5.z ? a : b)` — the cast then value-truncates the selected
+        # branch to 0 (this zeroed BlackMyth's tangent-basis swap idiom
+        # `r0.x = (int)r5.z ? r0.x : r5.w`), and `a & b ? c : d` would split at
+        # `&` instead of `?`.
+        ternary_pos = -1
+        depth = 0
+        for i, char in enumerate(expr):
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+            elif char == '?' and depth == 0:
+                ternary_pos = i
+                break
+        if ternary_pos >= 0:
+            colon_pos = _find_ternary_colon(expr, ternary_pos + 1)
+            if colon_pos >= 0:
+                cond_expr = expr[:ternary_pos].strip()
+                true_expr = expr[ternary_pos+1:colon_pos].strip()
+                false_expr = expr[colon_pos+1:].strip()
+                cond_node = self._parse_expression(cond_expr)
+                true_node = self._parse_expression(true_expr)
+                false_node = self._parse_expression(false_expr)
+                return SyntaxTreeNode('ternary', '?', cond_node, true_node, false_node)
+
         # Check for bitwise/shift ops before cast: (int2)a | (int2)b and
         # (uint)r0.x << 1 must NOT be treated as a cast of the whole rhs — the
         # operator is at the top level and binds looser than the cast.
@@ -253,28 +281,6 @@ class SyntaxTreeParser:
             inner = expr[1:-1].strip()
             if _is_proper_paren(inner):
                 return self._parse_expression(inner)
-
-        ternary_pos = -1
-        depth = 0
-        for i, char in enumerate(expr):
-            if char == '(':
-                depth += 1
-            elif char == ')':
-                depth -= 1
-            elif char == '?' and depth == 0:
-                ternary_pos = i
-                break
-
-        if ternary_pos >= 0:
-            colon_pos = _find_ternary_colon(expr, ternary_pos + 1)
-            if colon_pos >= 0:
-                cond_expr = expr[:ternary_pos].strip()
-                true_expr = expr[ternary_pos+1:colon_pos].strip()
-                false_expr = expr[colon_pos+1:].strip()
-                cond_node = self._parse_expression(cond_expr)
-                true_node = self._parse_expression(true_expr)
-                false_node = self._parse_expression(false_expr)
-                return SyntaxTreeNode('ternary', '?', cond_node, true_node, false_node)
 
         op_info = self._find_top_level_operator(expr)
         if op_info:

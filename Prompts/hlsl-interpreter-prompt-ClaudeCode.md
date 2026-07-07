@@ -5342,6 +5342,8 @@ Notice:
 # 302
 ## Prompts
 
+修复 BlackMyth 顶点压缩解码 shader 的 0/N 全失败（step196/198 之后仍未解决的"四元数/切线帧重构支"）。
+
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
@@ -5350,3 +5352,11 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+用最小失败标本 `BlackMyth_frame19470_event7117`（仅 6 顶点）逐语句 [STMT] 轨迹定位到**两处通用的解析器/控制流根因**（详见 `Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.md`）：
+
+1. **cast 贪婪吞掉三元表达式**（`hlsl_syntax_tree.py`）：`(int)r5.z ? A : B` 被解析成 `(int)(r5.z ? A : B)`，把选中分支**值截断为 0**，使切线基向量 `r5.xyz` 整支归零（位置对所有顶点坍缩成同值、切线符号翻转）。三元条件运算符在 HLSL 里**优先级最低**，修复是把 top-level `?` 的检测移到 cast/位运算守卫**之前**。
+
+2. **`;` 后的 `else` 被拆成孤儿语句**（`hlsl_interpreter.py` `GenerateStmts`）：`if (c) s; else if(..){..} else ..` 在 `s` 后的 `;` 处被切断，`else if` 分支静默丢弃 → `ubfe` 位域提取（切线符号 bit）从未执行。`}` 后已有的 `else` 前瞻没覆盖 `;` 的情形；修复是给 top-level `;` 切分加同样的 `else` 前瞻。
+
+**结果**：`event7117` `0/6 → 6/6`；批量复跑此前 0/N 的小 BlackMyth 另新增通过 `event8441/8484/2939/5690`。全量回归 **151/154**，与 step198 基线逐一致（3 个未过均为已证无关的既有失败，`BlackMyth_event3393` 仍 30960/30960）→ **零回归**。已把 `event7117` 加入回归套件锁死修复。两处都是**通用正确性修复**，非 BlackMyth 专用补丁。仍有 `event8040`（COLOR1 分量互换）、`event9319` 等**不同根因**的 BlackMyth 失败，留作后续。
