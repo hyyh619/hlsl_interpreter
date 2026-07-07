@@ -3945,8 +3945,9 @@ float2 → `(0.0, 1.0)`。
 sekiro2/sekiro4）全过，改动仅影响未写的交叉复用次级输出、与 D3D 语义对齐，故只会改善匹配。改动文件：
 `hlsl_interpreter.py`（`_resolve_slot_shared_params`）、`Dump/dump_case.csv`。
 
-# 195
+# 195 运行 Dump 新 draw case，修复交叉复用输出寄存器"真零写入被误判为未写"
 ## Prompts
+扫描 /Dump，把 dump_case.csv 未记录的新 case 加入并逐个运行；不过的定位 hlsl_interpreter 根因并修复，最后提交推送。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -3956,6 +3957,26 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+`Dump/` 共 123 zip，`dump_case.csv` 已记录 31 → **92 个新 case**（多为 200–517MB）。本轮处理最小的一批：
+**PASS 直接通过 7**（frame14374 `event1343/1320/10199`、frame19470 `event1293/6294`、frame12199 `event9702`、
+frame15293 `event9127`）；**FIXED 1**（`BlackMyth_frame14374_event3393`，0→30960/30960）；**FAIL 一类复杂
+shader**（frame19470 `event5690/2939/6173/7117`、frame12199 `event8441/9319`、frame15293 `event8040/8484`、
+frame14374 `event3256/9526/8750/9829` 等，`sv_position` 全是 ~1e12 垃圾——typed `Buffer.Load`+位域抽取+
+half-float 解包+四元数蒙皮的多特性缺口，未修）；其余 ~74 大 case 因 45s 预算/失败类未评估。
+
+**修复根因（event3393）**：`TEXCOORD0`(o1)/`TEXCOORD1`(p1) 打包同一 slot 1，`o1.w`≡`p1.y`。退化分支写 `o1.xyw=0`
+从不写 `p1.y`；实几何分支写 `p1.y=(r0.x%16)/16` 从不写 `o1.w`。`_resolve_slot_shared_params` 用"次级全零"判定
+是否被写，于是 `r0.x%16==0` 行上 shader 合法写的 `p1=(0,0)` 被误判"未写"，回退取主参数 `o1` 的寄存器初值 `.w=1.0`
+→ TEXCOORD1.y 输出 1.0（golden 0.0）。（step194 刚修过同函数"次级*真未写*补 `.w=1.0`"；本轮是"次级*被写成零*
+被误判"的相反 bug。）**修复**：改为**精确写入追踪**——`_execute_void_main` 建 `self._out_written`，
+`_apply_swizzle_assign`/整量赋值记录被写分量，`_resolve_slot_shared_params` 逐寄存器分量按 ①次级直接写 ②主参数
+溢出 lane ③D3D 寄存器初值(idx3=1.0) 优先级重建；旧全零启发式保留为 fallback。
+
+**验证**：event3393 30960/30960；**全量回归 152 全过 0 FAIL**（4 个超大 case 做有界 0-error 验证）；Octopath
+`event3502`、witcher 重复 `p0` 等既有交叉复用类仍过。**改动**：`hlsl_interpreter.py`
+(`_apply_swizzle_assign`/新增`_record_full_out_write`/fast-path/`_execute_void_main`/`_resolve_slot_shared_params`)、
+`Dump/dump_case.csv`(+8)、`Cases/regression_test_zip_files.csv`(+event3393)。挂载目录禁止删除，故 Dump zip 未删除。
 
 # 196
 ## Prompts

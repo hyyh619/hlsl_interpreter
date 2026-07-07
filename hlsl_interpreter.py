@@ -3368,7 +3368,16 @@ class HLSLInterpreter:
         if m:
             self._apply_swizzle_assign(m.group(1), m.group(2), value, local_vars)
         else:
+            self._record_full_out_write(lvalue, value)
             local_vars[lvalue] = value
+
+    def _record_full_out_write(self, name: str, value):
+        """Record a whole-variable write to an output param (all components) for
+        slot-shared reconstruction (see _resolve_slot_shared_params)."""
+        _ow = getattr(self, '_out_written', None)
+        if _ow is not None and name in getattr(self, '_output_param_names', ()):
+            n = len(value) if isinstance(value, list) else 1
+            _ow.setdefault(name, set()).update(range(n))
 
     def execute_statement(self, stmt: str, local_vars: Dict[str, Any]):
         """
@@ -3399,6 +3408,7 @@ class HLSLInterpreter:
                 return None
             if kind == 2:      # var = expr
                 value = self.evaluate_expression(fast[1], local_vars)
+                self._record_full_out_write(fast[2], value)
                 local_vars[fast[2]] = value
                 if dbg:
                     self.debug_print(f"[STMT] {stmt} => {fast[2]} = {value}")
@@ -5556,6 +5566,13 @@ class HLSLInterpreter:
     def _apply_swizzle_assign(self, var_name: str, swizzle: str, value, local_vars: dict):
         """Assign components of a vector variable via swizzle notation."""
         swizzle_map = {'x': 0, 'y': 1, 'z': 2, 'w': 3, 'r': 0, 'g': 1, 'b': 2, 'a': 3}
+        # Track which output-register components the shader actually writes, so
+        # slot-shared reconstruction can tell a genuine zero write apart from an
+        # unwritten (register-init) lane (see _resolve_slot_shared_params).
+        _ow = getattr(self, '_out_written', None)
+        if _ow is not None and var_name in getattr(self, '_output_param_names', ()):
+            _ow.setdefault(var_name, set()).update(
+                swizzle_map[ch] for ch in swizzle.lower() if ch in swizzle_map)
         current = local_vars.get(var_name)
         if current is None:
             current = [0.0, 0.0, 0.0, 0.0]
@@ -6865,6 +6882,11 @@ class HLSLInterpreter:
         # only the components it actually writes — so an unwritten float4 (or an
         # unwritten .w of a partially-written float4) reads back as w=1, not 0.
         # Match that so the exact bin/layout golden agrees on unwritten lanes.
+        # Per-invocation record of which output components the shader writes.
+        # Lets _resolve_slot_shared_params distinguish a genuine zero write from
+        # an unwritten (register-init) lane on slot-shared outputs.
+        self._output_param_names = {p['name'] for p in output_params}
+        self._out_written = {}
         for param in output_params:
             pname = param['name']
             if param.get('type') == 'float4':
@@ -6956,6 +6978,7 @@ class HLSLInterpreter:
                 slot_groups[slot] = []
             slot_groups[slot].append(param)
 
+        written = getattr(self, '_out_written', None)
         for slot, params in slot_groups.items():
             if len(params) <= 1:
                 continue
@@ -6963,29 +6986,46 @@ class HLSLInterpreter:
             first = params_sorted[0]
             first_val = result_params.get(first['name'], [])
             first_comp = self._type_component_count(first['type'])
+            first_written = (written or {}).get(first['name'], set())
 
-            have_extra = isinstance(first_val, list) and len(first_val) > first_comp
+            def _as_list(v):
+                return v if isinstance(v, list) else ([] if v is None else [v])
+
+            first_list = _as_list(first_val)
             offset = first_comp
             for param in params_sorted[1:]:
-                cur = result_params.get(param['name'], [])
                 comp = self._type_component_count(param['type'])
-                is_default = not cur or all(
-                    v in (0, 0.0, False) for v in (cur if isinstance(cur, list) else [cur])
-                )
-                if is_default:
-                    if have_extra and len(first_val) >= offset + comp:
-                        # Primary shader-write spilled into the shared register's
-                        # trailing components; the secondary semantic reads them.
-                        result_params[param['name']] = first_val[offset:offset + comp]
-                    else:
-                        # Secondary semantic packed into this register but never
-                        # written by the shader. A D3D output register initializes
-                        # to (0,0,0,1), so the component at register index 3 (.w)
-                        # defaults to 1.0 and the rest to 0.0. e.g. a float2
-                        # TEX_COORD1 at .zw -> (0.0, 1.0).
-                        result_params[param['name']] = [
-                            1.0 if (offset + i) == 3 else 0.0 for i in range(comp)
-                        ]
+                cur = _as_list(result_params.get(param['name'], []))
+                sec_written = (written or {}).get(param['name'], set())
+
+                if written is not None:
+                    # Precise reconstruction: resolve each register component
+                    # (offset+i) in priority order — a direct write to the
+                    # secondary semantic wins; else a write to the primary's
+                    # matching lane (o1.w spilling into TEXCOORD1.y); else the
+                    # D3D register-init default (.w=1.0, others 0.0).
+                    rebuilt = []
+                    for i in range(comp):
+                        reg = offset + i
+                        if i in sec_written and i < len(cur):
+                            rebuilt.append(cur[i])
+                        elif reg in first_written and reg < len(first_list):
+                            rebuilt.append(first_list[reg])
+                        else:
+                            rebuilt.append(1.0 if reg == 3 else 0.0)
+                    result_params[param['name']] = rebuilt
+                else:
+                    # Fallback (write-tracking unavailable): legacy all-zeros
+                    # heuristic — treat an all-zero secondary as unwritten.
+                    have_extra = len(first_list) > first_comp
+                    is_default = not cur or all(v in (0, 0.0, False) for v in cur)
+                    if is_default:
+                        if have_extra and len(first_list) >= offset + comp:
+                            result_params[param['name']] = first_list[offset:offset + comp]
+                        else:
+                            result_params[param['name']] = [
+                                1.0 if (offset + i) == 3 else 0.0 for i in range(comp)
+                            ]
                 offset += comp
 
     def executeVS_with_params(self, main_func: str, input_params: list, output_params: list,
