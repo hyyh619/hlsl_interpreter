@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 198 — EndlessSpace2 new draw cases: bit-select &amp; → _RawBits through the fused-multiply-add path</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits</span></div>
+<div class="wrap">
+<h1>Step 198 — EndlessSpace2 new draw cases: bit-select <code>&amp;</code> → <code>_RawBits</code> through the fused-multiply-add path</h1>
+<h2>背景 / 任务</h2>
+<p>定时任务：扫描 <code>Dump/</code>，找出未登记进 <code>dump_case.csv</code> 的新 draw case，运行；不通过的<br>定位 <code>hlsl_interpreter</code> 根因并修复、提交推送、纳入回归；直接通过的写入 <code>dump_case.csv</code><br>并从 <code>Dump/</code> 删除。</p>
+<h2>1. 扫描结果</h2>
+<p><code>Dump/*.zip</code> 与 <code>dump_case.csv</code> 差集 = <b>8 个新 case</b>，全部是 EndlessSpace2：</p>
+<pre><code>EndlessSpace2_event1740 / 1953 / 1980 / 2092 / 2876 / 2991 / 3061 / 3093</code></pre>
+<p>8 个全部追加进 <code>dump_case.csv</code>（step 2）。</p>
+<h2>2. 运行结果（回归口径：早 Z、vs_only、float32、float_tol=0.005）</h2>
+<table>
+<tr><th>case</th><th>结果</th><th>说明</th></tr>
+<tr><td>1740</td><td>PASS 7680/7680</td><td>直接通过</td></tr>
+<tr><td>1953 / 1980 / 2092 / 2876</td><td>PASS 1425/1425</td><td>直接通过</td></tr>
+<tr><td><b>2991</b></td><td><b>FAIL → 修复后 PASS 1536/1536</b></td><td>见下，位选择惯用法 bug</td></tr>
+<tr><td>3061</td><td>FAIL 1188/1536（nan）</td><td>退化几何 <code>rcp(0)=inf</code>，未整例通过，保留</td></tr>
+<tr><td>3093</td><td>无 golden（SV_VertexID + StructuredBuffer draw，无 MeshOut CSV）</td><td>无法用 VS-vs-golden 校验，保留</td></tr>
+</table>
+<h2>3. 根因 —— 2991（已修复）</h2>
+<p>失败集中在<b>尾部 72 个连续顶点</b>（row 1368–1439），<code>o0</code>(SV_POSITION) 变成 ~1e10 巨值。<br>单顶点语句 trace（row 1368 失败 vs 1367 通过）定位到：</p>
+<pre><code>r0.x = r0.z ? r0.y : 0;                 // mask：-1 (0xFFFFFFFF) 或 0
+r0.xyzw = (int4)r4.xyzw &amp; (int4)r0.xxxx; // DXBC `and rDst, r4, mask` —— 位选择
+r4.xyzw = cb1[17].xyzw * r0.xxxx + r4.xyzw;   // mad，消费 r0
+...
+o0.xyzw = cb1[20].xyzw * r0.wwww + r4.xyzw;   // mad</code></pre>
+<p><code>(int4)r4 &amp; (int4)mask</code> 是 DXBC 的<b>位选择/预测</b>惯用法：mask 逐 lane 为全 1<br>(<code>0xFFFFFFFF</code>/<code>-1</code>) 或全 0，结果或保留 r4 的<b>浮点位模式</b>、或清零，随后被下游 float<br>运算按 float 读回（asfloat）。解释器算出的 AND 结果（<code>[1116106601, 0, ...]</code>）是正确的<br><b>整数位模式</b>，但：</p>
+<ol>
+<li><code>execute_binary_op</code> 的 <code>&amp;</code> 分支把结果留成<b>普通 int</b>（历史注释：<code>&amp; | ^ &gt;&gt; %</code> 通常喂 itof 值转换，故不打标 <code>_RawBits</code>）；</li>
+<li>即便打标 <code>_RawBits</code>，<b>消费它的是 <code>mad</code>（<code>a*b+c</code>）</b>，走 <code>_try_fma</code>/<code>_fma</code>， 而该融合路径<b>从不做</b> <code>_coerce_rawbits_for_float_op</code>，直接把 <code>_RawBits</code> 当巨整数 数值相乘 → <code>1116106601 * cb1[17].x ≈ 1.3e9</code> → 垃圾 → <code>o0</code> 万亿。</li>
+</ol>
+<p>通过 mask=0（通过顶点）时 <code>&amp; 0 = 0</code>，位置恰为 0（被裁剪），所以只有 mask 全 1 的可见顶点暴露 bug。</p>
+<h2>4. 修复（<code>hlsl_interpreter.py</code>，两处）</h2>
+<ol>
+<li><b><code>&amp;</code> 位选择打标</b>：<code>execute_binary_op</code> 的 <code>&amp;</code> 改为逐 lane：当某操作数 lane ∈ <code>{0, -1, 0xFFFFFFFF}</code>（movc/cmp 生成的选择 mask 特征）时，结果包成 <code>_RawBits(_wrap_i32(res))</code>，供下游 asfloat 重解释；否则保持普通 int。真整数 <code>&amp;</code> 不会用全 1 恒等 mask，<code>&amp; 0</code> 无论按 int 还是 asfloat 都是 0，故安全、不影响索引位运算。</li>
+</ol>
+<ol>
+<li><b>FMA 路径 asfloat 兜底</b>：<code>_try_fma</code> 在调 <code>_fma</code> 前对 <code>(a,b,c)</code> 三元组做 <code>_coerce_rawbits_list(...)</code> —— 与非融合 ALU 路径的 <code>_coerce_rawbits_for_float_op</code> 同语义：三者中存在真浮点时，把其中的 <code>_RawBits</code> 先 asfloat，再融合。新增变参版 <code>_coerce_rawbits_list</code>，并把原成对版复用同一逻辑。</li>
+</ol>
+<p>修复后 2991：<code>o0</code> 由 <code>-8.6e10</code> → 正确的 <code>-1.528…</code>，<b>1536/1536 PASS</b>。</p>
+<h2>5. 回归验证（关键：不得破坏既有 147+ 例）</h2>
+<p>沙箱单次 bash ≤45s、后台进程不跨调用存活，故用可续跑的自建 runner（配置写到 outputs，<br>规避该 mount「文件不可删除」限制）分批跑完 <b>全部 154 例</b>（含新加的 2991）：</p>
+<ul>
+<li><b>151 PASS</b>，其中 <code>EndlessSpace2_event2991</code> 1536/1536、<code>BlackMyth_frame14374_event3393</code> 30960/30960（该 zip 原只在 Dump、回归 CSV 已列，本次补入 Cases 修好既有清单不一致）。</li>
+<li>3 个非通过，<b>全部与本次改动无关</b>，已 A/B 证明中立：<ul>
+<li><code>witcher3_countryside_event16834</code>：<code>git checkout</code> 回退到改前基线，<code>execute_count=40</code> 子集给出<b>逐字节相同</b>的 <code>189err 3/30</code>（子集/golden 对齐产物，非本改动）。</li>
+<li><code>OldWorld_event1034</code>：同样基线 A/B <b>完全相同</b> <code>0/300</code>。</li>
+<li><code>OldWorld_event2767</code>（98MB）：仅因 45s wall-clock 超时未跑完，非失败。</li>
+</ul></li>
+</ul>
+<p>结论：本次改动在所有可测例上<b>中立或修复</b>，无回归。</p>
+<h2>6. 收尾动作</h2>
+<ul>
+<li><code>dump_case.csv</code>：追加全部 8 个新 case（step 2）。</li>
+<li>回归：<code>Cases/regression_test_zip_files.csv</code> 追加 <code>EndlessSpace2_event2991.zip</code>， 并把该 zip 拷入 <code>Cases/</code>（step 6）。</li>
+<li>删除 <code>Dump/</code>：5 个直接通过（1740/1953/1980/2092/2876）+ 已修复且入回归的 2991 （step 7；均已在 <code>Cases/</code> 有副本）。</li>
+<li>保留 <code>Dump/</code>：<code>3061</code>（退化 <code>rcp(0)</code> nan，未整例通过）、<code>3093</code>（无 golden 无法校验）。</li>
+</ul>
+<h2>7. 未解决 / 后续</h2>
+<ul>
+<li><b>3061</b>：<code>r4.xyz</code> 与 <code>r5.xyz</code> 上游坍缩成完全相同值 → <code>r4.xy - r5.xy = 0</code> → <code>1/sqrt(dot)=rcp(0)=inf</code> → 经 <code>mad</code> 传到 <code>o0</code>=nan。golden 有限，说明 GPU 上两者 本应有微小差异；疑与若干 <code>t1/t2.SampleLevel</code> 采样/精度链相关，风险高、单独一例，本次未动。</li>
+<li><b>3093</b>：SV_VertexID 驱动、全部数据来自 StructuredBuffer 的 draw，dump 中无 <code>MeshOut_*_mesh.csv</code> golden，VS-vs-golden 工作流无法校验。</li>
+</ul>
+</div></body></html>

@@ -1424,6 +1424,10 @@ class HLSLInterpreter:
         # Collapse a list-of-lists operand to its first row so we degrade to a
         # wrong-but-finite value instead of crashing.
         if op in ('+', '-', '*', '/'):
+            # A raw register bit pattern (_RawBits) consumed by a float ALU op is
+            # read AS a float (asfloat), not as its integer value. Reinterpret
+            # before the numeric branches below.
+            left, right = self._coerce_rawbits_for_float_op(left, right)
             if isinstance(left, list) and left and isinstance(left[0], list):
                 left = left[0]
             if isinstance(right, list) and right and isinstance(right[0], list):
@@ -1526,23 +1530,49 @@ class HLSLInterpreter:
             else:
                 result = int(left) | int(right)
         elif op == '&':
+            # DXBC bit-select idiom: `and rDst, rSrc, rMask` where rMask is a
+            # movc/cmp result — all-ones (0xFFFFFFFF/-1) or all-zeros per lane —
+            # either preserves rSrc's bits or clears them. 3Dmigoto renders it
+            # as `(int4)rSrc & (int4)rMask`, and the masked bit pattern is then
+            # read back as a FLOAT downstream (e.g. EndlessSpace2's
+            # `o0 = cb1[k] * ((int4)r4 & mask)` position select). Tag such a
+            # result _RawBits so a float ALU op asfloat-reinterprets it (see
+            # _coerce_rawbits_for_float_op) instead of using the huge integer
+            # bit value. A genuine integer `&` never uses an all-ones identity
+            # mask (it would be a no-op), so keying on the sentinel mask lanes
+            # keeps integer index math (e.g. `x & 7`) on the plain-int path.
+            def _and_lane(l, r):
+                li, ri = int(l), int(r)
+                res = li & ri
+                if ri in (0, -1, 0xFFFFFFFF) or li in (0, -1, 0xFFFFFFFF):
+                    return _RawBits(self._wrap_i32(res))
+                return res
             if isinstance(left, list) and isinstance(right, list):
-                result = [int(l) & int(r) for l, r in zip(left, right)]
+                result = [_and_lane(l, r) for l, r in zip(left, right)]
             elif isinstance(left, list):
-                result = [int(l) & int(right) for l in left]
+                result = [_and_lane(l, right) for l in left]
             elif isinstance(right, list):
-                result = [int(left) & int(r) for r in right]
+                result = [_and_lane(left, r) for r in right]
             else:
-                result = int(left) & int(right)
+                result = _and_lane(left, right)
         elif op in ('^', '<<', '>>', '%'):
             # Bitwise xor / shifts (mask to 32-bit, as HLSL ints are 32-bit) and
             # integer modulo. Used by particle/quaternion shaders for index math.
+            # A LEFT shift is the tell-tale of the GPU float-reconstruction idiom
+            # `asfloat((exp << 23) + bias)`: the result is a register bit pattern
+            # meant to be read back as a float, so tag `<<` results _RawBits so a
+            # downstream float ALU op asfloat-reinterprets them (see
+            # _coerce_rawbits_for_float_op). Other bitwise results (`^`, `>>`,
+            # `%`, `&`, `|`) commonly feed integer-to-float VALUE conversions
+            # (itof/utof) and must stay plain ints, or passing cases regress.
             def _bit(a, b):
                 ia, ib = int(a) & 0xFFFFFFFF, int(b) & 0xFFFFFFFF
                 if op == '^':
                     r = ia ^ ib
                 elif op == '<<':
                     r = (ia << (ib & 31)) & 0xFFFFFFFF
+                    r = r - 0x100000000 if r >= 0x80000000 else r
+                    return _RawBits(r)
                 elif op == '>>':
                     r = ia >> (ib & 31)
                 else:  # '%' — operate on the signed values
@@ -1719,6 +1749,12 @@ class HLSLInterpreter:
         a = self.evaluate_syntax_tree(mul.left, local_vars)
         b = self.evaluate_syntax_tree(mul.right, local_vars)
         c = self.evaluate_syntax_tree(other, local_vars)
+        # A _RawBits operand (a masked/shifted register bit pattern, e.g. the
+        # `(int4)r4 & mask` position-select in EndlessSpace2) consumed by this
+        # float `mad` is read AS a float by the GPU. asfloat-reinterpret it
+        # before fusing, mirroring _coerce_rawbits_for_float_op on the
+        # non-fused ALU path — otherwise the huge integer bit value leaks in.
+        a, b, c = self._coerce_rawbits_list([a, b, c])
         return self._fma(a, b, c, c_sign)
 
     @staticmethod
@@ -2633,6 +2669,15 @@ class HLSLInterpreter:
             lod = self.evaluate_syntax_tree(args[2], local_vars) if len(args) > 2 else 0.0
             if isinstance(lod, list):
                 lod = lod[0] if lod else 0.0
+            # A Texture1D's coordinate arrives as a bare scalar (u only), not a
+            # (u, v) list — e.g. particle GSs sampling a 1024x1 R32G32B32A32_FLOAT
+            # random-vector table by g_GameTime. Treat it as u with v=0 (the
+            # texture's single row) so the sample resolves instead of returning
+            # None (which silently zeroed the sampled term).
+            if isinstance(coords, (int, float)):
+                coords = [float(coords), 0.0]
+            elif coords and isinstance(coords, list) and len(coords) == 1:
+                coords = [coords[0], 0.0]
             if coords and isinstance(coords, list) and len(coords) >= 2:
                 u, v = coords[0], coords[1]
                 binding = self._find_texture_binding(obj_name)
@@ -3368,7 +3413,16 @@ class HLSLInterpreter:
         if m:
             self._apply_swizzle_assign(m.group(1), m.group(2), value, local_vars)
         else:
+            self._record_full_out_write(lvalue, value)
             local_vars[lvalue] = value
+
+    def _record_full_out_write(self, name: str, value):
+        """Record a whole-variable write to an output param (all components) for
+        slot-shared reconstruction (see _resolve_slot_shared_params)."""
+        _ow = getattr(self, '_out_written', None)
+        if _ow is not None and name in getattr(self, '_output_param_names', ()):
+            n = len(value) if isinstance(value, list) else 1
+            _ow.setdefault(name, set()).update(range(n))
 
     def execute_statement(self, stmt: str, local_vars: Dict[str, Any]):
         """
@@ -3399,6 +3453,7 @@ class HLSLInterpreter:
                 return None
             if kind == 2:      # var = expr
                 value = self.evaluate_expression(fast[1], local_vars)
+                self._record_full_out_write(fast[2], value)
                 local_vars[fast[2]] = value
                 if dbg:
                     self.debug_print(f"[STMT] {stmt} => {fast[2]} = {value}")
@@ -3925,10 +3980,27 @@ class HLSLInterpreter:
                     string_char = None
                 current_stmt.append(char)
             elif char == ';' and brace_count == 0 and paren_count == 0 and not in_string:
-                stmt = ''.join(current_stmt).strip()
-                if stmt:
-                    statements.append(stmt)
-                current_stmt = []
+                # Same else-lookahead as the '}' split above: `if (c) stmt; else ...`
+                # ends its then-branch at this ';' but the following `else` belongs
+                # to the same if. Splitting here orphans the else (an unrecognized
+                # standalone statement, silently dropped), leaving if-dependent
+                # registers at their stale value — e.g. BlackMyth's ubfe sign idiom
+                # `if (1==0) r0.x=0; else if (1+20<32){..} else r0.x=..` was skipped
+                # entirely, so the tangent sign (TEXCOORD11.w) stayed wrong.
+                j = i + 1
+                while j < n and code[j] in ' \t\r\n':
+                    j += 1
+                next_is_else = (
+                    code[j:j + 4] == 'else'
+                    and (j + 4 >= n or not (code[j + 4].isalnum() or code[j + 4] == '_'))
+                )
+                if next_is_else:
+                    current_stmt.append(char)
+                else:
+                    stmt = ''.join(current_stmt).strip()
+                    if stmt:
+                        statements.append(stmt)
+                    current_stmt = []
             else:
                 current_stmt.append(char)
             i += 1
@@ -3938,8 +4010,97 @@ class HLSLInterpreter:
             if stmt:
                 statements.append(stmt)
 
-        return statements
+        return self._rewrite_movc_swaps(statements)
 
+    @staticmethod
+    def _parse_select_assign(stmt: str):
+        """Parse `dst = cond ? t : f` into (dst, cond, t, f) of stripped strings,
+        or None if `stmt` is not a single top-level ternary-select assignment."""
+        s = stmt.strip()
+        depth = 0
+        eq = -1
+        for i, ch in enumerate(s):
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == '=' and depth == 0:
+                prev = s[i - 1] if i > 0 else ''
+                nxt = s[i + 1] if i + 1 < len(s) else ''
+                if prev in '=<>!' or nxt == '=':
+                    continue
+                eq = i
+                break
+        if eq < 0:
+            return None
+        dst = s[:eq].strip()
+        rhs = s[eq + 1:].strip()
+        depth = 0
+        q = -1
+        for i, ch in enumerate(rhs):
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == '?' and depth == 0:
+                q = i
+                break
+        if q < 0:
+            return None
+        # matching ':' for this top-level '?', skipping nested ternaries
+        depth = 0
+        tern = 0
+        colon = -1
+        for i in range(q + 1, len(rhs)):
+            ch = rhs[i]
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif depth == 0:
+                if ch == '?':
+                    tern += 1
+                elif ch == ':':
+                    if tern == 0:
+                        colon = i
+                        break
+                    tern -= 1
+        if colon < 0:
+            return None
+        return (dst, rhs[:q].strip(), rhs[q + 1:colon].strip(),
+                rhs[colon + 1:].strip())
+
+    def _rewrite_movc_swaps(self, statements):
+        """3Dmigoto renders a DXBC `movc` swap pair on ONE source line:
+        `d1 = c ? d1 : x;  d2 = c ? x : d1;`  Both movc execute in PARALLEL on
+        the GPU (each reads the OLD d1), but split into two sequential statements
+        the second reads the value the first just wrote — corrupting d2 whenever
+        the condition selects the branch that changes d1 (BlackMyth's tangent
+        basis: cond=r5.z is per-vertex, so the same shader passes when it's set
+        and fails when it's clear). Reorder the pair (run the d1-reader first) so
+        both see the old d1. Safe because the pair swaps operands and d1's writer
+        does not read d2."""
+        out = []
+        i = 0
+        n = len(statements)
+        while i < n:
+            if i + 1 < n:
+                p1 = self._parse_select_assign(statements[i])
+                p2 = self._parse_select_assign(statements[i + 1])
+                if p1 and p2:
+                    d1, c1, t1, f1 = p1
+                    d2, c2, t2, f2 = p2
+                    if (c1 == c2 and d1 != d2
+                            and t1 == f2 and f1 == t2        # operands swapped
+                            and d1 in (t2, f2)               # S2 reads d1 (hazard)
+                            and d2 not in (t1, f1)):         # S1 doesn't read d2
+                        out.append(statements[i + 1])        # run the reader first
+                        out.append(statements[i])
+                        i += 2
+                        continue
+            out.append(statements[i])
+            i += 1
+        return out
 
     def execute_main_function(self, code: str, main_func: str, input_struct_name: str, row_index: int, data: Dict[str, Any], shader_stage: int = None):
         """
@@ -5556,6 +5717,13 @@ class HLSLInterpreter:
     def _apply_swizzle_assign(self, var_name: str, swizzle: str, value, local_vars: dict):
         """Assign components of a vector variable via swizzle notation."""
         swizzle_map = {'x': 0, 'y': 1, 'z': 2, 'w': 3, 'r': 0, 'g': 1, 'b': 2, 'a': 3}
+        # Track which output-register components the shader actually writes, so
+        # slot-shared reconstruction can tell a genuine zero write apart from an
+        # unwritten (register-init) lane (see _resolve_slot_shared_params).
+        _ow = getattr(self, '_out_written', None)
+        if _ow is not None and var_name in getattr(self, '_output_param_names', ()):
+            _ow.setdefault(var_name, set()).update(
+                swizzle_map[ch] for ch in swizzle.lower() if ch in swizzle_map)
         current = local_vars.get(var_name)
         if current is None:
             current = [0.0, 0.0, 0.0, 0.0]
@@ -5905,6 +6073,13 @@ class HLSLInterpreter:
                 vals = list(struct.unpack_from(f'<{comp_count}f', raw))
         except struct.error:
             return [0.0] * comp_count if comp_count > 1 else 0.0
+        # B8G8R8A8 / B8G8R8X8 store bytes in memory order B,G,R,A, but the input
+        # assembler delivers them to the shader as .x=R, .y=G, .z=B, .w=A. Swap
+        # R and B so `v.x` is red (BlackMyth's B8G8R8A8_UNORM vertex colour fed
+        # sRGB-decoded into COLOR1 had .x/.z swapped; symmetric all-1.0 colours
+        # hid it on the sibling attribute).
+        if fmt_u.startswith('B8G8R8') and len(vals) >= 3:
+            vals[0], vals[2] = vals[2], vals[0]
         if comp_count == 1:
             return vals[0]
         return vals
@@ -6459,6 +6634,90 @@ class HLSLInterpreter:
         return out
 
     @staticmethod
+    def _bits_to_float(bits) -> float:
+        """Reinterpret a 32-bit integer pattern as a float32 (asfloat). The GPU
+        idiom `asfloat((exp << 23) + bias)` builds a float exponent in the
+        integer pipe, then reads the register as a float; the interpreter must
+        bitcast rather than use the raw integer value."""
+        b = int(bits) & 0xFFFFFFFF
+        try:
+            return struct.unpack('<f', struct.pack('<I', b))[0]
+        except (struct.error, ValueError, OverflowError):
+            return float(bits)
+
+    def _coerce_rawbits_for_float_op(self, left, right):
+        """A `_RawBits` value is a raw register bit pattern (from an integer bit
+        chain like `(uint)x << 23`). When such a register is consumed by a FLOAT
+        ALU op — i.e. the partner operand is a genuine float — DXBC reads its
+        bits AS a float, so the `_RawBits` must be asfloat-reinterpreted rather
+        than used as its (huge) integer value. This drives BlackMyth's packed
+        position-decompression shaders, where `r2.xyz * r0.xxx` multiplies a
+        decoded float vector by an `asfloat(exp<<23)` scale. If neither side
+        carries a genuine float the context is integer arithmetic and the raw
+        bits pass through untouched."""
+        def _any_float(x):
+            if isinstance(x, float):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, float) for e in x)
+            return False
+
+        def _any_raw(x):
+            if isinstance(x, _RawBits):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, _RawBits) for e in x)
+            return False
+
+        if not (_any_raw(left) or _any_raw(right)):
+            return left, right
+        if not (_any_float(left) or _any_float(right)):
+            return left, right  # pure-integer context: leave bit patterns alone
+
+        def _conv(x):
+            if isinstance(x, _RawBits):
+                return self._bits_to_float(x)
+            if isinstance(x, list):
+                return [self._bits_to_float(e) if isinstance(e, _RawBits) else e
+                        for e in x]
+            return x
+        return _conv(left), _conv(right)
+
+    def _coerce_rawbits_list(self, vals):
+        """Variadic form of _coerce_rawbits_for_float_op: asfloat-reinterpret
+        every _RawBits in `vals` iff the context is float (at least one genuine
+        float operand present); otherwise leave the bit patterns intact for
+        integer arithmetic. Used by the fused multiply-add path, which combines
+        three operands at once."""
+        def _any_float(x):
+            if isinstance(x, float):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, float) for e in x)
+            return False
+
+        def _any_raw(x):
+            if isinstance(x, _RawBits):
+                return True
+            if isinstance(x, list):
+                return any(isinstance(e, _RawBits) for e in x)
+            return False
+
+        if not any(_any_raw(v) for v in vals):
+            return vals
+        if not any(_any_float(v) for v in vals):
+            return vals
+
+        def _conv(x):
+            if isinstance(x, _RawBits):
+                return self._bits_to_float(x)
+            if isinstance(x, list):
+                return [self._bits_to_float(e) if isinstance(e, _RawBits) else e
+                        for e in x]
+            return x
+        return [_conv(v) for v in vals]
+
+    @staticmethod
     def _bitcast_to_int(v, signed: bool):
         """Reinterpret a value's 32-bit pattern as int/uint. A float is bitcast
         via its float32 encoding; an int passes through (already raw bits)."""
@@ -6865,6 +7124,11 @@ class HLSLInterpreter:
         # only the components it actually writes — so an unwritten float4 (or an
         # unwritten .w of a partially-written float4) reads back as w=1, not 0.
         # Match that so the exact bin/layout golden agrees on unwritten lanes.
+        # Per-invocation record of which output components the shader writes.
+        # Lets _resolve_slot_shared_params distinguish a genuine zero write from
+        # an unwritten (register-init) lane on slot-shared outputs.
+        self._output_param_names = {p['name'] for p in output_params}
+        self._out_written = {}
         for param in output_params:
             pname = param['name']
             if param.get('type') == 'float4':
@@ -6956,6 +7220,7 @@ class HLSLInterpreter:
                 slot_groups[slot] = []
             slot_groups[slot].append(param)
 
+        written = getattr(self, '_out_written', None)
         for slot, params in slot_groups.items():
             if len(params) <= 1:
                 continue
@@ -6963,29 +7228,46 @@ class HLSLInterpreter:
             first = params_sorted[0]
             first_val = result_params.get(first['name'], [])
             first_comp = self._type_component_count(first['type'])
+            first_written = (written or {}).get(first['name'], set())
 
-            have_extra = isinstance(first_val, list) and len(first_val) > first_comp
+            def _as_list(v):
+                return v if isinstance(v, list) else ([] if v is None else [v])
+
+            first_list = _as_list(first_val)
             offset = first_comp
             for param in params_sorted[1:]:
-                cur = result_params.get(param['name'], [])
                 comp = self._type_component_count(param['type'])
-                is_default = not cur or all(
-                    v in (0, 0.0, False) for v in (cur if isinstance(cur, list) else [cur])
-                )
-                if is_default:
-                    if have_extra and len(first_val) >= offset + comp:
-                        # Primary shader-write spilled into the shared register's
-                        # trailing components; the secondary semantic reads them.
-                        result_params[param['name']] = first_val[offset:offset + comp]
-                    else:
-                        # Secondary semantic packed into this register but never
-                        # written by the shader. A D3D output register initializes
-                        # to (0,0,0,1), so the component at register index 3 (.w)
-                        # defaults to 1.0 and the rest to 0.0. e.g. a float2
-                        # TEX_COORD1 at .zw -> (0.0, 1.0).
-                        result_params[param['name']] = [
-                            1.0 if (offset + i) == 3 else 0.0 for i in range(comp)
-                        ]
+                cur = _as_list(result_params.get(param['name'], []))
+                sec_written = (written or {}).get(param['name'], set())
+
+                if written is not None:
+                    # Precise reconstruction: resolve each register component
+                    # (offset+i) in priority order — a direct write to the
+                    # secondary semantic wins; else a write to the primary's
+                    # matching lane (o1.w spilling into TEXCOORD1.y); else the
+                    # D3D register-init default (.w=1.0, others 0.0).
+                    rebuilt = []
+                    for i in range(comp):
+                        reg = offset + i
+                        if i in sec_written and i < len(cur):
+                            rebuilt.append(cur[i])
+                        elif reg in first_written and reg < len(first_list):
+                            rebuilt.append(first_list[reg])
+                        else:
+                            rebuilt.append(1.0 if reg == 3 else 0.0)
+                    result_params[param['name']] = rebuilt
+                else:
+                    # Fallback (write-tracking unavailable): legacy all-zeros
+                    # heuristic — treat an all-zero secondary as unwritten.
+                    have_extra = len(first_list) > first_comp
+                    is_default = not cur or all(v in (0, 0.0, False) for v in cur)
+                    if is_default:
+                        if have_extra and len(first_list) >= offset + comp:
+                            result_params[param['name']] = first_list[offset:offset + comp]
+                        else:
+                            result_params[param['name']] = [
+                                1.0 if (offset + i) == 3 else 0.0 for i in range(comp)
+                            ]
                 offset += comp
 
     def executeVS_with_params(self, main_func: str, input_params: list, output_params: list,
@@ -7102,9 +7384,31 @@ class HLSLInterpreter:
             sem_full = f'{sem.upper()}{idx}' if idx > 0 else sem.upper()
             return sem_to_key.get(sem_full, sem_full)
 
-        # GS input slot -> (canonical VS-result key, semantic upper), by slot.
-        slot_meta = [(_canon(s['semantic'], s['index']), s['semantic'].upper())
-                     for s in sorted(gs_input_sig, key=lambda r: r['slot'])]
+        # GS input registers: the decompiled body reads `v[i][r]`, where r is the
+        # INPUT REGISTER index — NOT the signature-row position. Multiple
+        # signature rows can pack into a single register (e.g. SIZE.xy + AGE.z
+        # both at slot 2), so grouping by list position shifts every later
+        # register by one and misreads packed lanes (AGE read as SIZE.z, TYPE
+        # read as AGE, etc. — which flips a particle GS's emit decisions). Group
+        # the signature entries by their register (slot) and merge the packed
+        # semantics into one register vector at consecutive component offsets.
+        # Component widths come from the GS input params (by semantic).
+        comp_by_sem = {}
+        for p in gs_input_params:
+            base = p['semantic_base'].upper()
+            semf = f'{base}{p["semantic_index"]}' if p['semantic_index'] > 0 else base
+            comp_by_sem[semf] = min(self._type_component_count(p['type']), 4)
+
+        reg_groups = {}   # register index -> [(canonical key, semantic upper, comp)]
+        max_reg = -1
+        for s in sorted(gs_input_sig, key=lambda r: r['slot']):
+            sem_up = s['semantic'].upper()
+            sem_full = f'{sem_up}{s["index"]}' if s['index'] > 0 else sem_up
+            key = _canon(s['semantic'], s['index'])
+            comp = comp_by_sem.get(sem_full, 4)
+            reg_groups.setdefault(s['slot'], []).append((key, sem_up, comp))
+            if s['slot'] > max_reg:
+                max_reg = s['slot']
         # GS output param -> (canonical key, component count).
         out_keys = [(_canon(p['semantic_base'], p['semantic_index']),
                      p['name'], min(self._type_component_count(p['type']), 4))
@@ -7141,14 +7445,43 @@ class HLSLInterpreter:
                         # (falls back to the position); SV_InstanceID = inst.
                         vid = (idx_list[vpos] if idx_list and vpos < len(idx_list)
                                else vpos)
-                        attrs = []
-                        for key, sem in slot_meta:
+
+                        def _fetch(key, sem):
                             if sem.startswith('SV_VERTEXID'):
-                                attrs.append(vs.get(key, vid))
-                            elif sem.startswith('SV_INSTANCEID'):
-                                attrs.append(inst)
+                                return vs.get(key, vid)
+                            if sem.startswith('SV_INSTANCEID'):
+                                return inst
+                            return vs.get(key, [0.0, 0.0, 0.0, 0.0])
+
+                        # Build the register array indexed by register number, so
+                        # v2d[i][r] == input register r (matches the `v[i][r]`
+                        # decompiled accessor even when semantics pack per slot).
+                        attrs = []
+                        for r in range(max_reg + 1):
+                            entries = reg_groups.get(r, [])
+                            if len(entries) <= 1:
+                                # One semantic (or none) in this register: pass the
+                                # value straight through — identical to the prior
+                                # behaviour for the common unpacked case.
+                                if entries:
+                                    key, sem, _ = entries[0]
+                                    attrs.append(_fetch(key, sem))
+                                else:
+                                    attrs.append([0.0, 0.0, 0.0, 0.0])
                             else:
-                                attrs.append(vs.get(key, [0.0, 0.0, 0.0, 0.0]))
+                                # Packed register: lay each semantic's components
+                                # into consecutive lanes (SIZE.xy then AGE.z, ...).
+                                merged = [0.0, 0.0, 0.0, 0.0]
+                                off = 0
+                                for key, sem, comp in entries:
+                                    val = _fetch(key, sem)
+                                    if not isinstance(val, list):
+                                        val = [val]
+                                    for i in range(comp):
+                                        if off < 4:
+                                            merged[off] = val[i] if i < len(val) else 0.0
+                                            off += 1
+                                attrs.append(merged)
                         v2d.append(attrs)
                     self._execute_gs_main(self.hlsl_code, main_func,
                                           gs_input_params, gs_output_params, v2d, inst)

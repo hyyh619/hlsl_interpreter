@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 201 — BlackMyth 顶点压缩解码：两处解析器/控制流根因（cast-吞噬-三元、;前的else被拆散）</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split</span></div>
+<div class="wrap">
+<h1>Step 201 — BlackMyth 顶点压缩解码：两处解析器/控制流根因（cast-吞噬-三元、<code>;</code>前的<code>else</code>被拆散）</h1>
+<p>Date: 2026-07-07</p>
+<h2>任务</h2>
+<p>修复 BlackMyth 顶点压缩解码 shader 的 <code>0/N</code> 全失败。这批 case（frame12199/14374/15293/19470<br>四帧、150–500MB 不等）在 step196（<code>asfloat(exp&lt;&lt;23)</code> 位模式）、step198（<code>&amp;</code> 位选择走 FMA）<br>之后仍整例不过，被标记为"四元数/切线帧重构支未解决"。本轮定位并修复其中的主根因。</p>
+<h2>调试方法</h2>
+<p><code>Dump/</code> 里最小的失败 case 是 <code>BlackMyth_frame19470_event7117</code>（<b>只有 6 个顶点</b>，7MB），<br>是理想的调试标本。用 <code>execute_count=1, print_sequence=1</code> 拿到顶点 0 的<b>逐语句 [STMT] 轨迹</b>，<br>逐行对照寄存器值定位分歧点。</p>
+<p>初始症状（step196 修完巨值后）：</p>
+<ul>
+<li><code>sv_position</code> 六个顶点<b>完全相同</b>（golden 逐顶点不同），而法线 <code>TEXCOORD10</code> 逐顶点在变；</li>
+<li><code>TEXCOORD11.w</code>（切线符号）恒为 <code>-1</code>，golden 恒为 <code>+1</code>。</li>
+</ul>
+<p>"位置对所有顶点相同、但法线在变"这一反差指向：<b>切线基向量 <code>r4/r5/r6</code> 解码坍缩成常量/零</b>，<br>于是 <code>r2_local = v0·基 + 中心</code> 丢失了 <code>v0</code>（逐顶点位置）的贡献，只剩每-instance 常量中心。</p>
+<h2>根因一：cast 贪婪吞掉三元表达式（<code>hlsl_syntax_tree.py</code>）</h2>
+<p>轨迹里这条<b>基向量交换惯用法</b>（DXBC <code>movc</code> 对）算错：</p>
+<pre><code>r0.x = (int)r5.z ? r0.x : r5.w;   // 轨迹: =&gt; r0.x = 0   （r5.z=32768, r0.x=0.7616, r5.w=-0.648）
+r2.x = (int)r5.z ? r5.w : r0.x;   // 轨迹: =&gt; r2.x = 0</code></pre>
+<p>两个结果都是 <code>0</code>——既不是真分支也不是假分支值，但恰好 <code>(int)0.7616 = 0</code>、<code>(int)(-0.648) = 0</code>。<br>即 <code>(int)r5.z ? A : B</code> 被解析成 <code>(int)(r5.z ? A : B)</code>：cast 把整个三元表达式当成了操作数，<br>再把选中的分支<b>值截断</b>为 0，导致 <code>r5.xyz</code>（切线基）整支归零。</p>
+<p><code>_parse_expression</code> 的顺序是：一元 not → <b>位运算 top-level 守卫</b> → <b>cast</b> → 括号 → 三元。<br>位运算已有守卫（<code>(int2)a | (int2)b</code> 不被 cast 吞），但<b>三元没有</b>。而三元条件运算符在 HLSL 里<br><b>优先级最低</b>（低于 cast 和所有二元/位运算），必须最先切分。</p>
+<p><b>修复</b>：把 top-level <code>?</code> 的检测<b>移到 cast/位运算守卫之前</b>。存在 top-level <code>?</code> 时先按三元切分，<br>条件子式（如 <code>(int)r5.z</code>）递归解析时 cast 才正确地只作用于 <code>r5.z</code>。<br>（顺带修正 <code>a &amp; b ? c : d</code> 这类会误切在 <code>&amp;</code> 的情形。）</p>
+<h2>根因二：<code>;</code> 后的 <code>else</code> 被拆成孤儿语句（<code>hlsl_interpreter.py</code>）</h2>
+<p>修完根因一后，只剩 <code>TEXCOORD11.w</code> 符号错。轨迹显示 <code>ubfe</code>（位域提取）惯用法<b>整条没执行</b>：</p>
+<pre><code>if (1 == 0) r0.x = 0; else if (1+20 &lt; 32) { r0.x = (uint)r0.y &lt;&lt; 11; r0.x = (uint)r0.x &gt;&gt; 31; } else r0.x = (uint)r0.y &gt;&gt; 20;
+r0.x = r0.x ? -1 : 1;      // r0.x 停在上游残值(973078528, 真) → -1；应提取 bit20=0 → +1</code></pre>
+<p>轨迹里这条的 "Executing:" 竟以 <code>else if (...)</code> 开头 —— 说明**语句分割器在 <code>r0.x = 0</code> 后的 <code>;</code><br>处切断了**，把 <code>else if ... {...} else ...</code> 拆成一条以 <code>else</code> 开头的孤儿语句（无法识别→静默丢弃），<br>于是符号提取从未运行，<code>r0.x</code> 保留上游残值。</p>
+<p><code>GenerateStmts</code> 对 <code>}</code> 后紧跟 <code>else</code> 已有"向后窥探、暂不切分"的处理（step 早期为 <code>if(){}else{}</code><br>加的），但对 <b><code>;</code> 后紧跟 <code>else</code></b> 没有同样的窥探。</p>
+<p><b>修复</b>：在 top-level <code>;</code> 切分处加同样的 <code>else</code> 前瞻——下一个非空白记号是 <code>else</code> 时不切分、<br>把 <code>;</code> 并入当前语句，保持 <code>if (c) s; else ...</code> 完整。</p>
+<h2>验证</h2>
+<ul>
+<li><code>event7117</code>：<code>0/6 → 6/6</code>（两处修复缺一不可：只修根因一仍差切线符号）。</li>
+<li>批量复跑此前 <code>0/N</code> 的小 BlackMyth：<b>新增通过</b> <code>event8441 900/900</code>、<code>event8484 705/705</code>、 <code>event2939 1065/1065</code>、<code>event5690 528/528</code>。</li>
+<li>解析器单元抽查：<code>(int)r5.z ? a : b</code>→ternary、<code>(int)r0.y</code>→cast、<code>(uint)r0.x&lt;&lt;1</code>→binary(&lt;&lt;)、 <code>cb1[0].xyzw*r1.xxxx</code>→binary(*) 均正确，无回归。</li>
+</ul>
+<h3>仍未通过（<b>不同的根因</b>，非本轮范围）</h3>
+<ul>
+<li><code>event8040</code>（0/6）：<code>COLOR1.x</code> 与 <code>COLOR1.z</code> <b>互换</b>（output[0]↔[2]）——某处 swizzle/分量顺序问题。</li>
+<li><code>event9319 / 3256 / 9526 / 9829 / 15293_8040</code>：<code>TEXCOORD11</code>/<code>TEXCOORD7</code> 仍偏大——更深的解码变体。</li>
+</ul>
+<p>这些是<b>独立的后续问题</b>，与本轮修复的 cast/三元、<code>else</code> 拆分无关。</p>
+<h2>回归</h2>
+<p><code>python run_regression.py</code> 全量跑完 <b>154 例：151 PASS</b>，与 step198 基线<b>逐一致</b>——3 个未过<br>全部是 step198 已 A/B 证明<b>与本改动无关的既有失败</b>：<code>witcher3_countryside_event16834</code><br>（189err 3/30，子集/golden 对齐产物）、<code>OldWorld_event1034</code> / <code>OldWorld_event2767</code><br>（0/203328，改前即 0/N）。对位运算最敏感的 <code>BlackMyth_frame14374_event3393</code> 仍 <b>30960/30960</b>，<br>Octopath/witcher/sekiro/EndlessSpace 全绿。结果数与失败集与改前<b>完全相同 → 本次改动零回归</b>。</p>
+<p>新增回归：把 <code>BlackMyth_frame19470_event7117</code>（6 顶点、两处修复的规范标本）加入<br><code>Cases/regression_test_zip_files.csv</code>（并拷入 <code>Cases/</code>），锁死本次修复。</p>
+<h2>结论</h2>
+<p>两处修复都是<b>解析器/控制流层面的通用正确性修复</b>（不是给 BlackMyth 打补丁）：cast 不再吞三元、<br><code>if…; else…</code> 不再被 <code>;</code> 拆散。修好一批 BlackMyth 顶点压缩 case，其余失败为不同根因，留作后续。</p>
+</div></body></html>

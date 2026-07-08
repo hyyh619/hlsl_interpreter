@@ -3945,17 +3945,38 @@ float2 → `(0.0, 1.0)`。
 sekiro2/sekiro4）全过，改动仅影响未写的交叉复用次级输出、与 D3D 语义对齐，故只会改善匹配。改动文件：
 `hlsl_interpreter.py`（`_resolve_slot_shared_params`）、`Dump/dump_case.csv`。
 
-# 195
+# 195 运行 Dump 新 draw case，修复交叉复用输出寄存器"真零写入被误判为未写"
 ## Prompts
+扫描 /Dump，把 dump_case.csv 未记录的新 case 加入并逐个运行；不过的定位 hlsl_interpreter 根因并修复，最后提交推送。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit: fee873e（已本地提交到 main；本沙箱无 git 凭据，HTTPS 无用户名 / SSH 无 publickey，push 未成功，需在有凭据环境 `git push origin main`）
 
 ## Claude Code Session
+
+`Dump/` 共 123 zip，`dump_case.csv` 已记录 31 → **92 个新 case**（多为 200–517MB）。本轮处理最小的一批：
+**PASS 直接通过 7**（frame14374 `event1343/1320/10199`、frame19470 `event1293/6294`、frame12199 `event9702`、
+frame15293 `event9127`）；**FIXED 1**（`BlackMyth_frame14374_event3393`，0→30960/30960）；**FAIL 一类复杂
+shader**（frame19470 `event5690/2939/6173/7117`、frame12199 `event8441/9319`、frame15293 `event8040/8484`、
+frame14374 `event3256/9526/8750/9829` 等，`sv_position` 全是 ~1e12 垃圾——typed `Buffer.Load`+位域抽取+
+half-float 解包+四元数蒙皮的多特性缺口，未修）；其余 ~74 大 case 因 45s 预算/失败类未评估。
+
+**修复根因（event3393）**：`TEXCOORD0`(o1)/`TEXCOORD1`(p1) 打包同一 slot 1，`o1.w`≡`p1.y`。退化分支写 `o1.xyw=0`
+从不写 `p1.y`；实几何分支写 `p1.y=(r0.x%16)/16` 从不写 `o1.w`。`_resolve_slot_shared_params` 用"次级全零"判定
+是否被写，于是 `r0.x%16==0` 行上 shader 合法写的 `p1=(0,0)` 被误判"未写"，回退取主参数 `o1` 的寄存器初值 `.w=1.0`
+→ TEXCOORD1.y 输出 1.0（golden 0.0）。（step194 刚修过同函数"次级*真未写*补 `.w=1.0`"；本轮是"次级*被写成零*
+被误判"的相反 bug。）**修复**：改为**精确写入追踪**——`_execute_void_main` 建 `self._out_written`，
+`_apply_swizzle_assign`/整量赋值记录被写分量，`_resolve_slot_shared_params` 逐寄存器分量按 ①次级直接写 ②主参数
+溢出 lane ③D3D 寄存器初值(idx3=1.0) 优先级重建；旧全零启发式保留为 fallback。
+
+**验证**：event3393 30960/30960；**全量回归 152 全过 0 FAIL**（4 个超大 case 做有界 0-error 验证）；Octopath
+`event3502`、witcher 重复 `p0` 等既有交叉复用类仍过。**改动**：`hlsl_interpreter.py`
+(`_apply_swizzle_assign`/新增`_record_full_out_write`/fast-path/`_execute_void_main`/`_resolve_slot_shared_params`)、
+`Dump/dump_case.csv`(+8)、`Cases/regression_test_zip_files.csv`(+event3393)。挂载目录禁止删除，故 Dump zip 未删除。
 
 # 196
 ## Prompts
@@ -4016,3 +4037,1355 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+# 196 运行 Dump 新 draw case（BlackMyth 批次），修复 `asfloat(exp<<23)` 位模式被当整数值用
+
+`Dump/` 新增 84 个 case（全部 BlackMyth，frame12199/14374/15293/19470），已全部追加进
+`Dump/dump_case.csv`。抽样运行**一律 0/N**，且量级荒诞（`sv_position ≈ -2.7e13`）。
+
+**根因**：这批是 BlackMyth 顶点位置/法线**压缩解码** shader，用 `asfloat((exp<<23)+bias)` 惯用法在
+整数管线里构造 float 的位模式，随后按 float 读回缩放解码向量。DXBC 寄存器带类型（`ishl` 写位、`mul` 按
+float 读=隐式 asfloat），但解释器 `<<`/`+` 返回普通 int，`r0.x≈41亿` 直接乘进 `r2.xyz*r0.xxx` → 万亿垃圾。
+
+**修复**（`hlsl_interpreter.py`）：新增 `_bits_to_float`（asfloat）与 `_coerce_rawbits_for_float_op`
+（`+-*/` 中 `_RawBits` 遇真浮点即先 asfloat，纯整数上下文透传）；`execute_binary_op` 把**左移 `<<`**
+结果打标 `_RawBits`（`<<23` 是塞指数位的 float 重构标志），其余 `& | ^ >> %` 保持普通 int。
+
+**教训**：初版把所有位运算都打标 `_RawBits`，砸了回归例 `BlackMyth_frame14374_event3393`
+（30960→305）；收窄到**只标 `<<`** 后回归恢复满分、巨值 bug 仍修好。抽样 14 个各家族回归例全 PASS。
+新 case 的 `sv_position` 从 `-2.7e13`→`-0.078`（golden `-0.118`），但四元数/切线帧重构支仍令
+`o1.xyz(TEXCOORD11)=0`，**未整例通过** → 不删 zip、不入回归，留作后续。详见
+`Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.md`。
+
+# 197 扫描 Dump 新 draw case —— 本次无新增
+
+集合对比 `Dump/*.zip`（123 个）与 `dump_case.csv`（123 条）：差集为空，**没有任何未登记的
+新 case**。BlackMyth 四 frame 批次已在上一步 step196 全部追加进 csv（且因四元数/切线帧支未整例
+通过而保留在 Dump、未入回归）。本次无需追加、运行、修复，工作区停在 `c940533`，无代码改动。
+详见 `Sessions/hlsl-interpreter-step197-dump-scan-no-new-cases.md`。
+
+# 198 EndlessSpace2 新 draw case —— 位选择 `&` 的 `_RawBits` 需穿透 FMA 路径
+
+扫描 `Dump/` 得 8 个未登记新 case（全 EndlessSpace2：1740/1953/1980/2092/2876/2991/3061/3093），
+全部追加进 `dump_case.csv`。运行（回归口径）：1740/1953/1980/2092/2876 **直接通过**；
+2991 **失败→修复后 1536/1536**；3061、3093 未整例通过（保留）。
+
+**根因（2991）**：失败集中在尾部 72 个连续顶点，`o0`(SV_POSITION)≈1e10 巨值。单顶点 trace 定位到
+DXBC 位选择惯用法 `r0 = (int4)r4 & (int4)mask`（mask 为 movc/cmp 的全 1/全 0），结果本应保留
+r4 的**浮点位模式**供下游按 float 读回。解释器 AND 结果正确（整数位模式）但：(1) `&` 分支留成普通
+int（历史上 `&|^>>%` 多喂 itof，故不打标 `_RawBits`）；(2) 更关键——消费它的是 `mad`(`a*b+c`)，
+走 `_try_fma`/`_fma`，**该融合路径从不做** `_coerce_rawbits_for_float_op`，把巨整数当数值相乘 →
+`1116106601 * cb1[17].x` → 万亿垃圾。mask=0 的通过顶点 `&0=0` 位置恰为 0，故只有可见顶点暴露。
+
+**修复**（`hlsl_interpreter.py`，两处）：① `execute_binary_op` 的 `&` 改逐 lane：操作数 lane ∈
+`{0,-1,0xFFFFFFFF}`（选择 mask 特征）时结果包 `_RawBits(_wrap_i32(res))`，否则普通 int（真整数 `&`
+不用全 1 恒等 mask，`&0` 按 int/asfloat 皆 0，安全）。② `_try_fma` 调 `_fma` 前对 `(a,b,c)` 做
+新增变参 `_coerce_rawbits_list(...)`（与成对版 `_coerce_rawbits_for_float_op` 同语义，成对版复用其逻辑）。
+
+**回归**：沙箱 45s/调用、后台进程不跨调用存活，用可续跑自建 runner（配置写 outputs，规避 mount
+不可删文件）跑完全部 154 例 → **151 PASS**（含 2991 1536/1536；顺带补入原只在 Dump 的
+`BlackMyth_frame14374_event3393` 到 Cases，30960/30960）。3 个非通过均 `git checkout` 回退基线
+A/B 证明**逐字节相同 / 纯超时**，与本改动无关，无回归。
+
+**收尾**：2991 入回归 CSV+拷进 Cases；删 Dump 中 5 个直接通过 + 已修复入回归的 2991；保留
+3061（退化 `rcp(0)=inf`→nan）、3093（SV_VertexID+StructuredBuffer draw 无 golden 无法校验）。
+详见 `Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.md`。
+
+## Git commit: 1dce6b9（已本地提交到 main；本沙箱无 git 凭据，HTTPS 无用户名，push 未成功，需在有凭据环境 `git push origin main`）
+
+# 199 扫描 Dump 新 draw case —— 本次无新增
+
+集合对比 `Dump/*.zip` 与**规范 `dump_case.csv`（仓库根 `./dump_case.csv`）**：差集为空，**没有任何未登记的
+新 case**。`Dump/` 仅剩 `EndlessSpace2_event3061`、`EndlessSpace2_event3093` 两个 zip，二者均已在
+step 198 登记进根 csv（3061 退化 `rcp(0)=inf`→nan、3093 无 golden 无法校验，皆保留、未动）。本次无需
+追加、运行、修复，**未改动任何解释器代码 / 回归清单 / dump_case.csv**。
+
+**注意（遗留 git 状态）**：`git status` 显示 `Docs/` 下若干生成文档处于 unmerged（UU/AA）冲突，且
+`.git/index.lock` 残留、该 mount 禁止删除文件 → 沙箱侧 `git add/commit/push` 会失败。冲突**仅限
+`Docs/`**，核心解释器代码完好；HEAD 仍为 `3bb9e72`（step 198 修复），领先 origin 1 提交未推送。
+本次刻意不做 git 手术，**建议用户在本机**解决 `Docs/` 冲突、清理 `index.lock`、`git push` 现有领先提交。
+详见 `Sessions/hlsl-interpreter-step199-dump-scan-no-new-cases.md`。
+
+# 200 扫描 Dump 新 draw case —— 14 例全部直接通过，无需修复
+
+集合对比 `Dump/*.zip` 与规范 `./dump_case.csv`，得 **14 个未登记新 case**：
+`Frame-frame9222_event1734/1971` 与 `heaven_frame2596_event65/801/1944/2134/7347/7416/7448/7582/7611/8284/8537/8928`。
+其中 13 个本就已在回归清单（`Cases/` 下已有 zip），仅 `heaven_frame2596_event65` 为真正全新。
+
+用 `triage_dump.py --list ... --vs-only` 运行（VS-vs-golden 口径），**14 例全部直接通过**：0 条
+`Error:`、golden 全行匹配（如 1734=8475/8475、event65=19095/19095、event8928=7248/7248 等）。
+**未发现需要修复的解释器缺陷，未改动任何 `hlsl_interpreter` 代码。**
+
+**收尾**：14 个 case 名全部追加进 `dump_case.csv`（现 146 行）。按任务约定「直接通过只登记
+`dump_case.csv`、不入回归」，未改回归清单（13 个本就在回归里）。
+
+**环境限制（同 step 198/199，非任务失败）**：本 mount 禁止删除/重命名文件 → (1) 无法从 `Dump/`
+删除已通过 zip（保留原地，已登记故下次扫描会跳过）；(2) `.git/index.lock` 残留且不可删除，
+任何改索引的 git 操作都 `fatal: Unable to create '.git/index.lock'`，加之无 git 凭据，**无法
+commit/push**（本次亦无解释器修复需提交）。建议用户在本机清 `index.lock`、解决 `Docs/` 遗留
+unmerged 冲突并 `git push`。详见 `Sessions/hlsl-interpreter-step200-dump-scan-heaven-frame-cases-pass.md`。
+
+# 201 扫描 Dump 新 draw case —— 本次无新增；git 阻塞已清除
+
+集合对比 `Dump/*.zip`（139 个）与规范 `./dump_case.csv`（145 条）：差集为空，**没有任何未登记的
+新 case**。本次无需追加、运行、修复，**未改动任何解释器代码 / 回归清单 / dump_case.csv**。
+（注：`Dump/dump_case.csv` 为陈旧副本，用它比对会误报 16 个「新」case，实际都已在根 csv 登记，已排除。）
+
+**git 状态（相较 step 198/199/200 的重要变化）**：先前反复记录的遗留阻塞已**全部清除**——
+`.git/index.lock` 已不存在、`Docs/` unmerged 冲突已解决、`git rev-list origin/main...HEAD` = `0 0`
+（本地 main 与 origin/main 完全同步，step 198 修复 `3bb9e72` 及后续 docs 提交 `b941107` 均已在
+origin）。即无待推送的领先提交，仓库干净。详见
+`Sessions/hlsl-interpreter-step201-dump-scan-no-new-cases.md`。
+
+# 202 修复blackmyth 0/N问题
+## Prompts
+修复 BlackMyth 顶点压缩解码 shader 的 0/N 全失败（step196/198 之后仍未解决的"四元数/切线帧重构支"）。
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+用最小失败标本 `BlackMyth_frame19470_event7117`（仅 6 顶点）逐语句 [STMT] 轨迹定位到**两处通用的解析器/控制流根因**（详见 `Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.md`）：
+
+1. **cast 贪婪吞掉三元表达式**（`hlsl_syntax_tree.py`）：`(int)r5.z ? A : B` 被解析成 `(int)(r5.z ? A : B)`，把选中分支**值截断为 0**，使切线基向量 `r5.xyz` 整支归零（位置对所有顶点坍缩成同值、切线符号翻转）。三元条件运算符在 HLSL 里**优先级最低**，修复是把 top-level `?` 的检测移到 cast/位运算守卫**之前**。
+
+2. **`;` 后的 `else` 被拆成孤儿语句**（`hlsl_interpreter.py` `GenerateStmts`）：`if (c) s; else if(..){..} else ..` 在 `s` 后的 `;` 处被切断，`else if` 分支静默丢弃 → `ubfe` 位域提取（切线符号 bit）从未执行。`}` 后已有的 `else` 前瞻没覆盖 `;` 的情形；修复是给 top-level `;` 切分加同样的 `else` 前瞻。
+
+**结果**：`event7117` `0/6 → 6/6`；批量复跑此前 0/N 的小 BlackMyth 另新增通过 `event8441/8484/2939/5690`。全量回归 **151/154**，与 step198 基线逐一致（3 个未过均为已证无关的既有失败，`BlackMyth_event3393` 仍 30960/30960）→ **零回归**。已把 `event7117` 加入回归套件锁死修复。两处都是**通用正确性修复**，非 BlackMyth 专用补丁。仍有 `event8040`（COLOR1 分量互换）、`event9319` 等**不同根因**的 BlackMyth 失败，留作后续。
+
+
+# 203 修复BlackMyth剩余case的问题
+## Prompts
+修复下列BlackMyth问题
+Not every BlackMyth case is fixed — the remaining fails are distinct root causes: event8040 has a COLOR1 .x/.z component swap; event9319/3256/9526/9829 show a deeper decode variant (TEXCOORD11/TEXCOORD7 still off). Those are separate follow-ups, flagged in the session log.
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage.md`。
+
+**修复 `event8040`（B8G8R8A8 顶点色 R/B 通道交换）**：这是个简单的 sRGB 顶点色 shader（非压缩解码那支）。`COLOR1.x`/`.z` 对调——`ATTRIBUTE4 : B8G8R8A8_UNORM` 在内存里按 B,G,R,A 排布，但输入装配交给 shader 时是 `.x=R,.y=G,.z=B,.w=A`。`_decode_vertex_element` 对 `UNORM/1字节` 直接按内存序 `[B,G,R,A]` 解码，漏了 R/B 交换（同 shader 的 `ATTRIBUTE3` 也是 B8G8R8A8 但数据全 1.0，交换不可见，所以 `COLOR0` 碰巧对）。修复：解码后若格式以 `B8G8R8` 开头则交换分量 0 与 2。`event8040` `0/6 → 6/6`，通用修复，已入回归。
+
+**定位但未修 `event9319` 家族（3256/9526/9829/15293_8040）**：这是与 step201 修好的 `event7117` **不同的、更复杂的**骨骼/morph 顶点解码 shader。逐语句轨迹：法线 `TEXCOORD10` 正确，但切线 `TEXCOORD11`、世界坐标 `TEXCOORD7` 错。关键：`o0`(法线) 因本例 `r15.x=r15.y≈0` 实际只等于 `r15.z*r18`（基第 2 列），**并不约束基第 0/1 列**；而 `o1`(切线) 重度依赖基第 0/1 列。确认 `r2.xyz` 到输出间无覆盖（解释器数据流无误）→ 切线错是**基第 0/1 列与真机不符**。矛盾在于同段解码代码在 `event7117` 上整例通过，故差异应来自输入数据装载或数据相关分支；无逐语句 golden 难以确证，贸然改动风险高（易砸已通过例），本轮**不改**，如实记录。
+
+**回归**：全量 **152/155**（新增 `event7117`），3 个未过均为与本改动无关的既有失败（`witcher16834`、`OldWorld_1034/2767`）→ B8G8R8A8 修复零回归。`event8040` 也已加入回归。诚实记录：本轮修 1 个、留 5 个（不同根因）。
+
+# 204
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: fix(gs): index GS input by register (pack shared-slot semantics) + Texture1D scalar SampleLevel
+
+## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel.md`。
+
+定时扫描发现 7 个新 case（4× heaven_frame2596、3× longshu-*）。5 个直接通过；2 个 longshu 粒子几何着色器（GS + Stream Output）失败，报 `GS emitted-vertex count != golden`。
+
+**主 bug —— GS 输入寄存器打包错位**：反编译体用 `v[i][r]`（r=输入寄存器号）读输入，但 `GS_input_output_signature.csv` 把 `SIZE`(.xy) 与 `AGE`(.z) 打包在**同一 slot 2**。`executeGS_with_params` 原按"每签名行一条目"的扁平列表建 `v2d`，`v[i][j]` 按列表位置索引 → `v[0][2].z`（应为 AGE）读到 SIZE、`v[0][3].x`（应为 TYPE）读到 AGE，粒子发射判断全乱。修复：按寄存器号(slot)分组签名条目，把打包进同寄存器的语义按连续分量偏移合并成一个向量，`v2d[i][r]` 改为**按寄存器号索引**；单语义寄存器直传（未打包 GS 如 sekiro4 字节级不变，零回归）。
+
+**次 bug —— Texture1D 的 SampleLevel 标量坐标被守卫误挡**：新粒子速度/位置取自 `g_TextureRandom.SampleLevel(...)`（Texture1D，坐标是标量）。`SampleLevel` 的 `len(coords)>=2` 守卫把 1D 标量坐标挡掉返回 None（静默清零）。修复：标量/单元素坐标补成 `[u,0.0]` 再采样。
+
+结果：`longshu-case-35-1_event128` **0/19 → 19/19 全过**，已 `cp` 进 `Cases/` 并入回归。`event166` 156/161，剩 5 行随机纹理发射粒子 POSITION 差 0.007~0.028（`= EmitPos + 30*random`，采样误差被 ×30 且不归一化）——落在既有 GS/纹理 float32 精度极限（step153/162/163），判为已知精度差、不追。定向回归：清单里全部 5 个含 GS 的 case + witcher/Octopath SampleLevel 重点例全 0 error、零回归（沙箱无法跑完 157 例全量，建议本机复跑 `run_regression.py` 终验）。7 个新 case 名全部登记进 `dump_case.csv`。
+
+# 205
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: chore(dump): commit pending step203 longshu GS + Texture1D SampleLevel fix
+
+## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step204-commit-pending-longshu-gs-fix.md`。
+
+本轮定时扫描 `Dump/` **无新 case**（差集为 0；step 203 已把 7 个新 case 全部登记进 `dump_case.csv`）。核心发现：step 203 的修复（longshu 粒子 GS 输入寄存器打包错位 + Texture1D 标量 `SampleLevel` 被守卫误挡）**代码已落盘但从未提交/推送**——当时被残留的空 `.git/index.lock` 卡住，而 mount 禁止删除该锁。
+
+本轮关键突破：mount 现已允许**同目录 rename**（删除仍被禁）。故把残留 `index.lock` `mv` 挪开即可解锁 git 提交。gitignore 甄别：`dump_*`、`Cases`、`*.zip` 均被忽略，故 step203 对 `dump_case.csv`/回归 CSV/`event128.zip` 的改动只存在工作区（符合仓库约定，不进 git）；可提交项仅 `hlsl_interpreter.py` + Prompts + step203/step204 两个 Session。
+
+提交前定向回归（全流水线，tol=0.005）：`longshu-case-35-1_event128` PASS 19/19、`manhattan_frame_274_event50`（GS 单语义寄存器直传）PASS 1000/1000、`Octopath-frame746_event102`（纹理）PASS 6/6，全 0 error，零回归。已 `git commit` + `git push origin main`。已通过 case 因 mount 仍禁 `rm` 无法从 `Dump/` 物理删除，但已登记 `dump_case.csv`，下轮自动跳过。
+
+# 206 继续修复 not fixed: event9319 family (3256/9526/9829/15293_8040)
+## Prompts
+继续修复下列问题
+Investigated, not fixed: event9319 family (3256/9526/9829/15293_8040)
+A different, deeper skinning/morph decode shader. Per-statement tracing showed: normal (TEXCOORD10) is correct, but tangent (TEXCOORD11) and worldpos (TEXCOORD7) are off. I traced it to basis columns 0/1 disagreeing with the GPU (o0 happens to only validate col 2 here, so it stays correct) — and confirmed the interpreter's dataflow is right (no missed overwrite). The paradox: the identical decode code passes fully on step201's event7117, so the difference must be in data loading or a data-dependent path I couldn't confirm without per-statement golden. I chose not to force a speculative change — the risk of breaking already-passing cases (like event7117) is real. Documented honestly for follow-up.
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: fix(interpreter): parallel semantics for movc swap pairs (step 205)
+
+## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step205-blackmyth-movc-swap-pair-parallel-semantics.md`。
+
+**根因 —— movc 交换对的并行 vs 顺序语义**（数据相关的切线错）。用 `event9319` row 0 逐语句轨迹测各基向量幅值：法线列（`r18`）`|·|=1.0` 正确，切线两列（`r17`/`r2.xyw`）只有 ~0.57。定位到 3Dmigoto 把一对 DXBC `movc` 渲染成一行：`r0.x = (int)r5.z ? r0.x : r5.w; r2.x = (int)r5.z ? r5.w : r0.x;`。GPU 上两条并行、各读**旧** `r0.x`；解释器拆成两条顺序语句后，第 2 条读到第 1 条刚写的**新** `r0.x`，`r2.x` 拿错值 → 切线基幅值错。
+
+**为何 step201 的 `event7117` 过、`event9319` 不过**（同段代码）：条件 `(int)r5.z` 是逐顶点符号位——`event7117` row0=32768(TRUE)，第 1 条是恒等操作、不改 `r0.x`，无冲突；`event9319` row0=0(FALSE)，第 1 条改了 `r0.x`，触发冲突。典型**数据相关顺序冲突**。
+
+**修复**（`GenerateStmts` 新增 `_rewrite_movc_swaps`）：识别相邻 movc 交换对 `d1=c?A:B; d2=c?B:A;`（同条件、操作数互换、`d1` 被第 2 条读构成冲突、第 1 条不读 `d2`），把两条**换序**（先跑读 `d1` 的那条）→ 两条都读旧 `d1`，等价 GPU 并行语义，无需临时变量。判定极严格，单元测试确认只对真交换对生效。
+
+**结果**：家族 6 个全过——`event9319 1050/1050`、`3256 1065/1065`、`9526 705/705`、`9829 1050/1050`、`15293_8040 1050/1050`，加 step202 的 `event8040 6/6`；`event7117` 仍 6/6。全量回归 **154/157**（3 未过均无关既有失败）→ 零回归。`event9319` 已入回归。**至此 step201/202/205 把 BlackMyth 压缩/骨骼解码四类根因（cast-三元、`;`-else、B8G8R8A8、movc 交换对）全部修掉。**
+
+# 207
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 208
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 209
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 210
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 211
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 212
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 213
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 214
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 215
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 216
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 217
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 218
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 219
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 220
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 221
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 222
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 223
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 224
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 225
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 226
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 227
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 228
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 229
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 230
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 231
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 232
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 233
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 234
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 235
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 236
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 237
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 238
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 239
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 240
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 241
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 242
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 243
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 244
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 245
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 246
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 247
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 248
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 249
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 250
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 251
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 252
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 253
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 254
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 255
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 256
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 257
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 258
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 259
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 260
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 261
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 262
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 263
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 264
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 265
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 266
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 267
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 268
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 269
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 270
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 271
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 272
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 273
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 274
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 275
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 276
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 277
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 278
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 279
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 280
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 281
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 282
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 283
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 284
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 285
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 286
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 287
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 288
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 289
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 290
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 291
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 292
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 293
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 294
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 295
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 296
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 297
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 298
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 299
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 300
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 301
+## Prompts
+
+Notice:
+把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
+把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
+
+
+## Git commit: 
+
+## Claude Code Session
+
+# 302

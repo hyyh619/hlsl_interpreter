@@ -4,10 +4,11 @@
 > 系统说明"如何与 AI 协作完成一个真实工程"。所有例子都取自本仓库的提交、
 > `Sessions/` 步骤日志与 `Prompts/` 提示词历史，可逐条核对。
 >
-> 本手册按**项目的两个开发周期**组织成三大部分：
+> 本手册按**项目的开发周期 + 自动化运维**组织成四大部分：
 > - **第一部分 · 项目总体介绍** —— 这是什么、怎么跑、怎么验证。
 > - **第二部分 · 基于 OpenCode + minimax-m2.7 的开发（奠基期）** —— 从零搭骨架的协作方式。
 > - **第三部分 · 基于 ClaudeCode 的开发（攻坚期）** —— 真机数据攻坚长尾的协作方式。
+> - **第四部分 · 周期任务的创建和执行（自动化期）** —— 把开发/巡检交给定时任务无人值守闭环。
 
 ---
 
@@ -33,6 +34,14 @@
 8. 如何纠正 AI 的错误
 9. 记忆系统避免重复开发
 10. b/c 两个开发部分的对比和优缺点总结
+
+**第四部分 · 周期任务的创建和执行（自动化期）**
+1. 什么是周期任务、它解决什么问题
+2. 如何创建一个周期任务（调度 + 任务提示词 + 留痕）
+3. 周期任务如何执行（无人值守闭环）
+4. 例一：`hlsl-interpreter-hourly-develop`（每小时开发）
+5. 例二：`daily-hlsl-status-report`（每日巡检）
+6. 两个周期任务的对比与设计要点
 
 > 每节都附本仓库 `Prompts/` 提示词历史与 `Sessions/` 步骤日志的超链接，可逐条核对。
 
@@ -610,6 +619,81 @@ AI 用 `TodoWrite` 把计划落成可勾选清单，并按 ROI 排序：
 ```
 AI 的"输入"是**累积的对话上下文**：项目说明、记忆、用户指令打底，之后每次工具调用的返回值（源码、日志、命令输出）不断追加。上下文过长时会被**摘要**后进入下一窗口。
 
+上图最顶端的两层——**`CLAUDE.md`（常驻规则）**与 **`MEMORY.md`（跨会话记忆）**——是每轮开发都会被自动注入的"打底上下文"。它们具体装了什么、如何影响 AI 的行为，值得单独拆开看（这也是本项目让 AI"越修越对、越修越聪明"的两块基石）。
+
+#### 4.1.1 `CLAUDE.md` 具体写了什么：项目规则 / 陷阱 / 纪律
+
+`CLAUDE.md` 在**每次会话开始时整篇注入**，且带有最高优先级——它明确声明"这些指令覆盖任何默认行为，必须逐字遵守"。它的内容可归成三类：
+
+| 类别 | 常驻内容（本项目 `CLAUDE.md` 实录） | 对 AI 行为的约束 |
+|---|---|---|
+| **① 项目规则（是什么 / 怎么跑 / 怎么组织）** | · **定位**：纯 Python 解释 HLSL 源码、模拟 D3D11 管线、与 golden 逐分量对比；**零第三方依赖**、无 `requirements.txt`/构建/lint/单测。<br>· **入口**：`python render.py ./Cases/Default.json`（单个 JSON 配置驱动，zip 工作流为主路径、legacy struct 工作流仅后向兼容）。<br>· **模块分工**：`render.py` 编排；`hlsl_interpreter.py`(~3300 行核心)；`hlsl_syntax_tree.py`(**运算符优先级表 `_OPERATORS` 是唯一真源**)；`rasterizer.py`/`output_merger.py`/`texture.py`。<br>· **数据文件约定**：zip 内每个 CSV/HLSL/BMP/bin 的作用与解析函数。<br>· **verify-by-log 工作流**：跑管线 → grep 日志里 `Error:` 行 → 迭代到无错；`[STMT]`/`[SYNTAX TREE]` 轨迹是主调试面。 | AI 无需重新摸索项目结构，改哪个文件、看哪个日志、动优先级要去哪张表，开局即知 |
+| **② 陷阱（反直觉、极易改错的点）** | · **陷阱#1 · 3Dmigoto 尾部 `float3` 错位**：`MeshOut_*_mesh.csv` golden 把尾部 `float3`（如 WORLDPOS）整体偏移一个 float，`WORLDPOS.x` 实际存的是 `o.y`……**golden 看着"不对"但它就是权威基准**，该改的是解释器侧对齐。<br>· **陷阱#2 · 一元 vs 二元 `+`/`-`**：`r0.xyz * -r2.xxx + r1.xyz` 里 `*` 后的 `-` 是一元负号、不能当减法；bitwise `\|`/`&` 也有特判。**precedence 错在这里表现为错色/错向量而非崩溃**。<br>· 附带提醒：`.vscode/tasks.json` 是无关旧项目的残留、要忽略；CSV 里的 topology 覆盖 JSON（除非显式设置）。 | AI 面对"golden 看起来错了"的诱惑时，**不会去改基准凑数字**；解析一元负号时**不会误判成减法**——这两个坑在第二/三部分都真实反复出现过 |
+| **③ 纪律（不可逾越的硬规则）** | · **每次代码改动后、"认为完成"之前必须跑 `python run_regression.py`**——无单测，回归套件就是唯一安全网。<br>· **通过 = 三条同时成立**：① `render.py` 干净退出；② 日志无 `Error:` 行；③ `Total PASSED rows: X/Y` 满足 `X==Y`。<br>· **数据驱动**：增删覆盖面只改 `Cases/regression_test_zip_files.csv`，**不许在 runner 里硬编码 case 名**。<br>· **失败必须回到解释器侧修**，不许动 golden 或放宽判据。 | 把"修好了"从 AI 的**一句话**，变成 `run_regression.py` 的**退出码 + `X==Y`**——AI 不能自称完成、也堵死了"改基准/绕 runner"两条捷径（详见 §1.1） |
+
+> **一句话**：`CLAUDE.md` = "团队 onboarding 文档 + 不可逾越的规则"。规则让 AI **少猜**，陷阱让 AI **少犯同一个错**，纪律让 AI **不能自欺欺人地"假绿"**。
+
+**举例 · "模拟 D3D11 管线"这条项目规则如何直接指导修 bug** —— 因为 `CLAUDE.md` 开宗明义写明"本项目是 **D3D11 图形管线的软件仿真**"，AI 修 bug 时就有了一个**明确的"正确性权威"：D3D11 官方规范本身**。"什么才算对"不靠猜、不靠拼凑，而是**去查 D3D11 规范里对应算法的硬性要求**，让代码逐条对齐。[step101](Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.md) 就是典型：
+
+> **现象**：光栅化时相邻三角形的**共享边被两个三角形重复绘制**（overdraw），画面在三角形接缝处出现瑕疵。
+>
+> **依 D3D11 规范定位根因**：AI 把 `rasterizer.py` 的三角形遍历**逐条对照 D3D11 光栅化规范**，发现两处不符合：
+> - **违反 §3.4.1 坐标吸附（Coordinate Snapping）**：规范要求顶点 x/y 在透视除法 + 视口变换后吸附到 `n.8` 定点（8 位小数 = 1/256 子像素栅格），且覆盖测试要取**像素中心** `(x+0.5, y+0.5)` 采样；而原代码用 `int(...)` 直接截断到整像素、并在**像素角点**求边函数——等于完全没有子像素精度。
+> - **违反 §3.4.2.1 左上填充规则（Top-Left Rule）**：规范规定，采样点**正好落在边上**时，只有当该边是**上边或左边**才算被覆盖，以此保证相邻三角形不重复画共享边；而原代码三条边函数一律用 `>= 0`（inclusive），共享边对两个三角形都通过 → 正是该规则要防的 overdraw。
+>
+> **依规范修复**：新增 `transform_to_screen_subpixel`（`round(v*256)/256` 做 1/256 吸附，替代截断）；覆盖测试改为在像素中心采样；实现一个**与绕序无关**的 Top-Left 判定（按有符号面积归一化后，`is_top = D.y==0 and D.x<0`、`is_left = D.y>0`）。
+>
+> **依规范验证**：把一个 8×8 quad 沿对角线拆成两个三角形分别光栅化，比较覆盖像素集——**共享边重复覆盖 = 0，并集 = 64 = 8×8**，证明共享对角线恰好由一个三角形绘制、无缝无叠。回归 6/6 仍全绿。
+
+> **要点**：这正是"项目定位"写进 `CLAUDE.md` 的价值——它把一个模糊问题（"接缝为什么有瑕疵"）转成一个**有权威答案的问题**（"D3D11 §3.4.2.1 是怎么规定边覆盖的"）。凡是本项目在仿真的 D3D11 行为（光栅化边规则、透视正确插值、深度裁剪、float→int 的舍入、纹理寻址模式、FTZ 反规格化……），bug 的判据都不是"看起来对不对"，而是"**和 D3D11 规范/真机一致不一致**"。
+
+#### 4.1.2 `MEMORY.md` 记忆了什么：帮助 AI 开发的经验
+
+如果说 `CLAUDE.md` 是"写死的规则"，`MEMORY.md` 就是**会生长的经验库**——它是 `~/.claude/projects/.../memory/` 下"**一事一文件 + 一个索引**"结构的索引层，会话开始时**全量载入索引**，相关经验在需要时被**召回**（recall）。它记的是那些**"非显而易见、且未来还会再用到"的事实**，典型有四类：
+
+| 记忆类型（frontmatter `type`） | 记的是什么 | 举例（本项目已有 / 可有的记忆） | 帮 AI 省掉的重复劳动 |
+|---|---|---|---|
+| **project（项目知识）** | 从代码/git 看不出的领域坑与数据格式约定 | `golden-vs-mesh-sv-position-first`（golden CSV 把 SV_Position 排最前、按位置而非表头映射）；`witcher3-array-cbuffers-instanced-inputs`（数组 cbuffer + 实例化输入的加载坑） | 下次遇到同类 case 不必重新推导列序 / 逆向格式 |
+| **reference（外部资源指针）** | 特定格式的解码方式、外部资料 | `per-vertex-binary-vb-decode-r10a2`（NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2）；`raw-img-texture-loading`（纹理按 DXGI 格式从 `.img` 读、BC7 回退 BMP） | 直接复用解码路径，不重造轮子 |
+| **feedback（用户的工作方式纠偏）** | 用户给过的"该怎么做"的指导 + **为什么** | 例如"golden 是基准、只许改解释器"（§1.5 教训沉淀）；"已知 capture 限制的类别别再试探" | 不再重蹈"改错地方"的返工（如 §1.5 的 #2→#3） |
+| **user（用户是谁）** | 角色、偏好、专长 | 用户关注 VS 计算正确性、验证靠 golden、偏好 verify-by-log | 交流与产出对齐用户习惯 |
+
+每条记忆的正文遵循固定骨架：**事实本身 + `**Why:**`（为什么重要）+ `**How to apply:**`（下次怎么用）**，并用 `[[其它记忆名]]` 相互链接成网。
+
+上面表格里的名字太浓缩、单看容易不知所云。下面把 **project** 和 **reference** 各挑一条，按"踩到什么坑 → 记忆里到底写了什么 → 下次怎么帮上忙"完整展开，就能看清一条记忆长什么样、怎么省事：
+
+**例① · project 类 · `golden-vs-mesh-sv-position-first`**
+
+- **踩到什么坑**：验证 VS 输出要拿解释器的结果去和 golden CSV（`MeshOut_*_mesh.csv`）逐列对比。直觉做法是"按 CSV 表头名字对齐列"——但 3Dmigoto 导出的 golden CSV **会把 `SV_Position` 列强制排到最前面**，不管 shader 里 `out` 参数原本声明成什么顺序。若按"表头顺序 = shader 声明顺序"去映射，整张表**列序就整体错位**，每个分量都对不上、满屏 `Error:`，还很容易误以为是解释器算错了而去乱改数学。
+- **记忆里写了什么**（按骨架）：
+  ```
+  事实：golden mesh CSV 把 SV_Position 列排在最前，与 shader 声明顺序无关。
+  Why ：按表头顺序映射会整体错位 → 假 Error，误导去改本来正确的 VS 数学。
+  How to apply：对齐 golden 时按【语义/位置】映射，先把 SV_Position 认到第 0 列，
+                 其余列再顺次对上；参见 [[trailing-float3-golden-misalignment]]。
+  ```
+- **下次怎么帮上忙**：再遇到任何 witcher / Octopath 等 case，AI 一召回这条记忆，就**直接按位置映射**、不再重新推导列序，也不会把"列序错位"误诊成"数学错误"去改解释器。
+
+**例② · reference 类 · `per-vertex-binary-vb-decode-r10a2`**
+
+- **踩到什么坑**：某些 case 的法线/切线在 CSV 里读出来是 0 或明显不对。根因是这些属性在**二进制顶点缓冲**里不是普通的 3×float，而是被打包成 **`R10G10B10A2` 格式**——一个 32 位里塞 R/G/B 各 10 位、A 占 2 位的归一化整数。不知道这个格式，就会按 float 去读那 4/12 个字节，解出一堆垃圾；而 `ia_vertex_data.csv` 对这种格式往往直接存成 0（有损），光看 CSV 根本发现不了。
+- **记忆里写了什么**（按骨架）：
+  ```
+  事实：这批 case 的 NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2 打包格式（非 3×float）。
+  Why ：按 float 解会得到垃圾；CSV 对该格式存 0，只有 raw VB 才有真值。
+  How to apply：从 vb_slot*.bin 按 R10G10B10A2 拆位解码（10/10/10/2 → 归一化），
+                 再喂给 VS；raw 优先、CSV 仅回退。参见 [[binary-vb-raw-precision]]。
+  ```
+- **下次帮上忙**：这条记忆记的是**一个可复用的解码配方**——下次再碰到同格式的顶点属性，AI 直接套这套"按位拆 10/10/10/2 再归一化"的解码，不必重新逆向一遍字节布局（reference 类的价值就在于"配方可直接复用、不重造轮子"）。
+
+> **两个例子的区别**：`golden-...` 记的是**本项目特有的数据约定**（列序陷阱），属 **project**；`...decode-r10a2` 记的是**一种通用格式的解码方法**（换个项目也能用），属 **reference**。前者防"踩同一个坑"，后者省"重写同一段解码"。
+
+> **记忆如何帮助开发（闭环）**：`Sessions/` 文档里每轮的 `## Blocked classes` 与 `Fix 根因`（见 §1.4）是"这一轮的收尾"，而把其中**跨会话仍成立的结论**提炼成一条 `MEMORY.md` 记忆，就成了"未来所有轮次的开局先验"。这样**同一个坑只踩一次**——golden 列序错位、SNORM/UNORM capture 无解这类反直觉点，一旦入记忆，后续 case 直接命中、不再从零困惑。
+>
+> **记忆的三条纪律**（与 §9 一致）：① 不记录代码/git 已经记录的东西（结构、历史、CLAUDE.md 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"**当时为真**"的背景，引用到具体文件/函数时**要先核实其仍存在**。
+
+> **两者的分工**：`CLAUDE.md` 管**"绝不能违反的"**（规则/陷阱/纪律，人工维护、整篇注入）；`MEMORY.md` 管**"最好别忘的"**（经验事实，随开发生长、按需召回）。前者防 AI 越界，后者防 AI 重复劳动——合起来构成 §4.1 输入数据流最顶端那层"打底上下文"。§9 会从"避免重复开发"的角度再展开记忆系统。
+
 ### 4.2 输出数据流（AI 产出什么）
 AI 的每条输出要么是**给用户的文字**，要么是**工具调用**：
 - `Read/Grep/Glob` —— 获取信息（无副作用）。
@@ -719,6 +803,24 @@ event20899 一开始被（step119）误判为"精度/不可解"。step120 重新
 
 > 与单元 TDD 的差别：这里的"测试用例"不是手写断言，而是**真机 golden 数据**；"测试框架"是 verify-by-log + 回归脚本。但红绿节奏、"测试驱动最小实现"、"测试防回归"三大要义完全一致。
 
+### 7.1 一个"AI 自己写测试"的例外：`depth clip`（step91）
+
+绝大多数轮次都靠 golden + 回归当裁判。但有一个**回归和 golden 都盖不到**的角落，AI **主动手写了自己的 TDD 用例**——[step91 实现完整 D3D depth clip](../Sessions/hlsl-interpreter-step91-implement-depth-clip.md)〔提示词原文：[ClaudeCode #20 实现 depth clip](Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-20)〕。
+
+- **为什么 golden 失灵**：回归集里的每个真机 capture **都整幅落在屏幕内**，永远不会跨近/远平面，也没有相机背后（`w < 0`）的顶点。于是新写的几何裁剪代码（三角形切分、`w<0` 剔除、点/线深度重映射）**无论对错，golden 都是全绿**——真机数据对这段新逻辑完全"沉默"。回归 6/6 PASS 只能证明"没改坏既有路径"，**证明不了新功能是对的**。
+- **AI 的应对**：既然没有现成的"期望输出"，AI 就**自己造输入、自己定期望值**，写了一个**一次性 ad-hoc 脚本**（跑完即删，不进回归集），断言五条：
+
+  | 用例 | AI 自定的期望 |
+  |------|------|
+  | A. 完全在内的三角形 | `_clip_triangle` 原样返回 1 个子三角形（**同一批顶点对象**，恒等、零浮点扰动） |
+  | B. 跨近平面的三角形 | 裁开成 2 个子三角形，像素比关闭时少，所有深度 ∈ [0,1]；关闭时多渲染那块、深度被钳制 |
+  | C. 相机背后顶点（`w < 0`） | 几何上被剔除，无垃圾坐标，深度 ∈ [0,1] |
+  | D. 点列 | 开启保留 1/3（近/远越界丢弃）；关闭保留 3/3、深度钳到 `[0, 0.5, 1.0]` |
+  | E. `pipeline_state.csv` 里 `DepthClip,False` | 被正确解析成 `depth_clip_enable = False` |
+
+- **这才是"经典 TDD"的形态**：用例是**手写断言**（不是 golden CSV），输入是**合成的**（不是真机 capture），期望值由 AI 依据 D3D 规范**自己推导**。它和 §7 主线的"golden 即测试"互补——**golden 覆盖不到的新行为，AI 自己补一层测试兜底**。
+- **和回归的分工**：ad-hoc 脚本验证"**新功能对不对**"（用完即删）；回归集守"**别把老功能改坏**"（6/6 常驻）。两者叠加，才让这个"重写图元裁剪"的高风险改动敢落地。为什么脚本用完就删而不进回归？因为它依赖手工构造的合成图元，不是真机 capture，进回归会偏离"数据驱动、真机为准"的套件定位——它的价值在**实现当下的一次性验证**。
+
 ---
 
 ## 8 · 如何纠正 AI 的错误
@@ -745,17 +847,36 @@ C3 改动会改变 `(int)floatattr` 的语义，AI 担心破坏既有的打包-u
 - `MEMORY.md` —— 索引，每条一行，会话开始时全量载入。
 - 每个 `*.md` —— 一条经验事实，带 `type`（user/feedback/project/reference）。
 
-本项目已有的记忆（节选）：
-| 记忆文件 | 内容 | 避免的重复劳动 |
-|---|---|---|
-| `golden-vs-mesh-sv-position-first` | golden CSV 把 SV_Position 列排在最前，要按位置而非表头映射 | C2 分析时无需重新推导列序，直接确认 o6 对得上 |
-| `per-vertex-binary-vb-decode-r10a2` | NORMAL/TANGENT 在二进制 VB 里是 R10G10B10A2 | 不必重新逆向顶点格式 |
-| `raw-img-texture-loading` | 纹理按 DXGI 格式从 .img 读、BC7 回退 BMP | 直接复用，不重造 |
-| `witcher3-array-cbuffers-instanced-inputs` | 数组 cbuffer 与实例化输入的加载与坑 | C1 的背景知识 |
+§4.1.2 已经从"输入数据流"的角度介绍过这套机制，并**完整展开**了两条示例（`golden-vs-mesh-sv-position-first`、`per-vertex-binary-vb-decode-r10a2`，另提及 `raw-img-texture-loading`、`witcher3-array-cbuffers-instanced-inputs`）。本节换一个角度——**"避免重复开发"**——再给一批**与 §4.1.2 不重复**的记忆，每条都能回溯到本仓库对应的 `Sessions/` 步骤（记忆的实质就是把那一轮的根因/结论沉淀下来，供后续会话召回）。
 
-> **如何避免重复开发**：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带"为什么"和"怎么用"），并在 `MEMORY.md` 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样**同一个坑只踩一次**——例如 golden 列序错位这种反直觉点，靠记忆一次性记住，后续所有 witcher case 都不再重新困惑。
+### 9.1 更多记忆示例（均可回溯到对应 Session）
+
+这些都是**"当时啃了很久、且后续同类 case 还会再遇到"**的事实——正是最值得写进记忆、避免下次从零再啃一遍的东西：
+
+| 记忆文件（`type`） | 记的是什么（事实） | 帮 AI 省掉的重复劳动 | 来源 Session |
+|---|---|---|---|
+| `gpu-ftz-denormal-flush-to-zero`（project） | GPU 对反规格化数（denormal）做 **FTZ**（flush-to-zero）：`cb12[271].z` 的字节是 `0x00000001`（`1.4e-45`），GPU 当 `0`，三元 `denormal ? a : b` 走 **false** 分支；解释器保留非零 denormal 会走错分支 | 再遇到"大气散射/光照数学差一点点、疑似精度长尾"时，**先怀疑 denormal 分支**，不再误判成"不可解的精度长尾" | [step120](Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.md) |
+| `dxbc-asfloat-bitpattern-through-fma`（project） | DXBC 寄存器**带类型**：`ishl`/`+` 构造的是 float 的**位模式**，随后按 float 读回（隐式 `asfloat`）；解释器的 `<<`/`+` 返回普通 int，会把 41 亿这种整数直接乘进向量 → 万亿级垃圾。位选择 `&` 的结果也要**穿透 FMA 路径**再当 float 用 | 每个 BlackMyth / EndlessSpace2 顶点**压缩解码** shader 不必重新逆向"这个数到底是整数值还是 float 位模式" | [step196](Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.md) · [step198](Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.md) |
+| `topology-list-vs-strip-trust-iaprimitives`（project） | `pipeline_state.csv` 里的图元拓扑枚举**不可靠**（会把 triangle **LIST 谎报成 STRIP**）；真机 `pipeline_statistics.csv` 的 `IAPrimitives` 才是 ground truth | 遇到"颜色偏亮/整片错色但 VS 数学没错"时，**先核对真机图元数**，不再去 PS 数学里瞎找 | [step100](Sessions/hlsl-interpreter-step100-fix-triangle-topology-list-vs-strip.md) |
+| `sv-vertexid-from-raw-ib`（project） | 必须从 **raw 索引缓冲**（`ib_res_*.bin`）还原真实 `SV_VertexID`；否则每个顶点都读 `Buffer<float4>` texcoord 表的**元素 0**（Octopath 就栽在这） | 再遇到用 `SV_VertexID` 索引 typed-buffer 的 case，直接接 raw IB，不再从 CSV 的 `IDX` 列绕 | [step118](Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.md) |
+| `reused-output-register-genuine-zero`（project） | 交叉复用的输出寄存器上，一次**真实写入 `0.0`** 不能被当成"未写入的默认值"——否则 `.w` 等分量会被错误地填默认值 | 再遇到多个 `out` 参数复用同一寄存器槽位的 case，直接按"写过就是写过（含 0）"处理 | [step194](Sessions/hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default.md) · [step195](Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.md) |
+| `rasterizer-d3d11-top-left-subpixel-snap`（reference） | D3D11 光栅化规范：**§3.4.1** 顶点 x/y 吸附到 `n.8`（1/256 子像素）、覆盖测试取像素中心 `(x+0.5,y+0.5)`；**§3.4.2.1** 左上填充规则（采样落在边上时只有上/左边算覆盖） | 任何"共享边 overdraw / 接缝瑕疵"直接套这份规范配方，不用重查 spec | [step101](Sessions/hlsl-interpreter-step101-fix-rasterizer-coordinate-snapping-and-top-left-rule.md) |
+| `autonomous-cron-env-constraints`（feedback） | 无人值守 cron 环境的硬约束：**每次 shell ≤45s**、**后台进程跨调用不保活**（VM 只持久化文件系统）、**挂载目录禁止删除文件**（`rm`→Operation not permitted）、`/tmp` 仅 ~4GB（大 case 要把 `TMPDIR` 指到挂载盘） | 每个每小时轮次不必重新撞这些墙——回归改**前台分片**跑、已通过的 case 写进 `dump_case.csv` 而非删 zip、大 case 先改 `TMPDIR` | [step195](Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.md) |
+
+### 9.2 记忆的两面价值：既"跳过死路"，也要"复核暂缓"
+
+记忆最典型的用法是把一轮的 **`## Blocked classes`**（§1.4）沉淀成"别再试"的先验，让下轮直接跳过——但**"无解"分两种，记忆要区别对待**：
+
+- **真死路（记下就长期跳过）**：如"**四元数 typed-buffer 的 SNORM/UNORM 无法区分**"——`capture 根本没记录 view 的格式`，`R8G8B8A8_SNORM` 与 `UNORM` 在 dump 里字节一样、无从判别（§1.3 表里的 ❌ 项）。这类是**信息层面的死路**，写成一条 project/feedback 记忆后，后续会话读到就**合法跳过**，不在死路上空转。
+- **暂缓（记下但必须定期复核）**：如 event20899 一度被 [step119](Sessions/hlsl-interpreter-step119-witcher-multi-array-cbuffer-binary-override.md) 判成"大气数学精度长尾、不可解"——但这其实是**误判**。[step120](Sessions/hlsl-interpreter-step120-ftz-denormal-and-ftoi-cast-and-longtail-assessment.md) 重新用逐语句轨迹深挖，发现真因是 denormal 分支选错（FTZ），一行修复即绿（详见 §8.1）。
+
+> **要点**：所以记忆里"无解"的条目要**带上"为什么无解"**——是**信息缺失**（capture 没 dump 那层数据 → 真死路），还是**当时没查到根因**（→ 暂缓、待更厚的 dump 或更细的轨迹再复核，见 §4.4）。区分这两者，记忆才既能"止损"又不会"把可修的 bug 永久判死"。
+
+### 9.3 如何避免重复开发（机制 + 纪律）
+
+> **机制**：当一个"非显而易见、且未来还会用到"的事实被发现，就写成一条记忆（带 `**Why:**` 和 `**How to apply:**`），并在 `MEMORY.md` 留一行指针。下次会话开始即载入索引，相关记忆在需要时被召回。这样**同一个坑只踩一次**——上表每一条，都是某一轮啃了很久的结论，一旦入记忆，后续所有同类 case 直接命中、不再从零困惑。
 >
-> 纪律：① 不记录代码/git 已经记录的东西；② 先查重再写，宁可更新已有文件；③ 召回的记忆是"当时为真"的背景，引用到具体文件/函数时要先核实其仍存在。
+> **纪律**：① 不记录代码/git 已经记录的东西（结构、历史、`CLAUDE.md` 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"**当时为真**"的背景，引用到具体文件/函数时**要先核实其仍存在**；④ "无解"条目必须写清是**信息死路**还是**暂缓待复核**（见 §9.2）。
 
 ---
 
@@ -804,6 +925,139 @@ step 186–188 立起动态 Web 视图后，step 189–193 继续把它做深：
 step 194 则回到正确性主线：一次**逐指令 VS/PS 轨迹 + verify-by-log** 的组合把 `manhattan_event1041` 从 0/228 修到 228/228——VS 只写 `o6.xy`，`TEX_COORD1` 打包进从未写的 `o6.zw`，而 D3D 语义要求未写的输出寄存器分量取每寄存器初值 `(0,0,0,1)`；`_resolve_slot_shared_params` 原来只在主参数溢出时回填次级参数，遗漏了「主参数恰好只写自己分量」的情形。修复让未写的次级输出继承寄存器默认（落在索引 3 的 `.w` 取 `1.0`）。同一步还把空的 `dump_case.csv` 补齐为 `Dump/` 现有 31 个 zip 并逐个 triage（11 PASS / 4 精度 FAIL / 1 无 golden / 15 因体量超时未评估）。
 
 这条轨迹印证了第三部分的方法论在成熟阶段依旧成立：**先把执行过程"看得见"，再沿数据流回溯根因**——观测器的逐指令轨迹直接指向了未写寄存器的默认值这一根因，而回归/golden 比对继续充当裁判。
+
+---
+
+# 第四部分 · 周期任务的创建和执行（自动化期）
+
+> 前三部分讲的是**人坐在旁边、一轮轮和 AI 对话**推进项目。到了成熟阶段，很多工作是**重复且可判定**的——"有没有新 case、跑不跑得过、状态有没有变化"。这类工作没必要每次都靠人发起，可以交给**周期任务（scheduled / cron task）**：由定时调度器在固定时刻拉起一个**无人值守**的 Claude Code 会话，按一份**固定的任务提示词**跑完整条闭环（扫描 → 执行 → 修复 → 验证 → 提交 → 留痕），跑完即退出，下次到点再来。
+>
+> 本部分用本项目真实运行的两个周期任务作为例子：
+> - **`hlsl-interpreter-hourly-develop`**（每小时）——**开发型**：发现并攻克 `Dump/` 里的新 draw case，能修则修、修好进回归。
+> - **`daily-hlsl-status-report`**（每天）——**巡检型**：产出一份项目状态日报，并顺手把 `ReadMe.md` / 手册 / 站点刷新。
+
+## 1 · 什么是周期任务、它解决什么问题
+
+一个周期任务 = **调度（何时触发）** + **任务提示词（触发后做什么）** + **一个无人值守会话（谁来做）**。它和前三部分的交互式开发的根本区别是：**没有人在环里逐步纠偏**。因此它只适合两类工作：
+
+- **重复且高确定性**：每小时/每天都要做一遍，判据机器可判（有没有 `Error:`、`X==Y`、git 有没有新提交）。
+- **可自我兜底**：即使某次跑偏，也不会破坏主线——改动要么被回归 gate 拦住，要么只落在自己的留痕文件里，等人事后审阅。
+
+在本项目里，它正好接住第三部分留下的两类长尾负担：**① 源源不断新增的 draw dump**（人工一个个跑太累）；**② 每天的项目状态漂移**（提交了什么、哪块没提交、回归还绿不绿）。把它们交给周期任务后，人只需**事后读日报、审提交**，从"操作员"退到"验收者"。
+
+## 2 · 如何创建一个周期任务（调度 + 任务提示词 + 留痕）
+
+创建一个周期任务，实操上就是把三件事定下来：
+
+1. **起个名、定个频率**：给任务一个稳定的名字（如 `hlsl-interpreter-hourly-develop`）和 cron 频率（每小时 / 每天）。名字要能一眼看出"多久一次 + 干什么"。
+2. **写死一份任务提示词**：这是周期任务的灵魂。它和第三部分 §1 的交互式提示词写法一脉相承，但因为**无人在环**，对"提示词工程"的要求更苛刻：
+   - **Steps 写成有序清单**：把整条闭环拆成编号步骤，AI 照着走，不用即兴发挥。
+   - **判据必须机器可判**：什么叫"通过"要写死（本项目复用 `Error:` + `Total PASSED rows: X/Y` 的 X==Y 判据），不能留给 AI"自我感觉"。
+   - **给足边界（Notice / 不要做什么）**：例如"修好的才进回归、没修好的只记名并删 zip"——这正是第三部分 §1 反复强调的"约束比目标更重要"。
+   - **强制留痕**：要求把思考/执行/结果写进 `Sessions/hlsl-interpreter-stepN-*.md`，并把 summary 回填到 `Prompts/hlsl-interpreter-prompt-ClaudeCode.md`——让每次无人值守的运行都**可追溯、可核对**。
+3. **约定产物与提交**：跑完要 `git commit && git push`，把留痕文件、状态报告一并入库。这样"人"第二天读 git log 和日报，就能验收昨晚发生的一切。
+
+> **一句话**：交互式开发里，纠偏靠人；周期任务里，纠偏靠**提示词里写死的判据 + 回归 gate + 事后审阅**。所以周期任务的提示词，本质是把第三部分那套"CLAUDE.md 常驻规则 + 可机判成功标准 + 强制留痕"**固化成一份可反复触发的脚本**。
+
+## 3 · 周期任务如何执行（无人值守闭环）
+
+到点后，调度器拉起一个**全新的、headless 的**会话（没有前一次的上下文），它读到的只有：**这份任务提示词** + **常驻的 `CLAUDE.md`** + **仓库当前状态**。然后照 Steps 跑：
+
+```
+定时触发 → 扫描仓库/Dump 现状 → 按 Steps 执行（跑管线 / 生成报告）
+         → 用机器判据验证 → 能修则修、否则记录 → commit & push
+         → 写 Sessions 留痕 + 回填 Prompts → 退出
+```
+
+**两个真实的执行约束**（这也是无人值守区别于交互式的地方，必须写进提示词或事后靠人补）：
+
+- **单次 shell 调用有 ~45s 预算**：`Dump/` 里的大 capture（19 MB–264 MB）在沙箱里跑不完。所以任务提示词允许"超预算的 case 不算失败、只记录不评估"——见例一的 15 个未评估 case。
+- **上下文是干净的**：每次触发都从零开始，所以**自跟踪文件**（如 `dump_case.csv`）就是它的"记忆"——靠它区分"哪些 case 已处理过、哪些是新的"，保证任务**幂等**（重复触发不重复劳动）。
+
+## 4 · 例一：`hlsl-interpreter-hourly-develop`（每小时开发）
+
+**任务提示词**（原文，Steps + Notice 双段式）：
+
+```
+Run the new draw case on the HLSL interpreter project located at .../hlsl_interpreter/Dump.
+Steps:
+ 1. Scan the folder .../Dump. If there is new case whose name is not in dump_case.csv.
+ 2. Add the new case's name to dump_case.csv.
+ 3. Run the new case.
+ 4. If the case cannot pass, find the root cause in hlsl_interpreter code and fix it.
+ 5. Commit the fix and push it to github.
+ 6. 修复后通过的 case 加入 regression test；没修复直接通过的把 case name 写入
+    dump_case.csv，并删除 Dump 文件夹中的 draw zip 文件。
+Notice:
+ - 把思考、执行和结果写入 Sessions/hlsl-interpreter-stepN-***.md（stepnum 按当前 step 值填）。
+ - 把 summary 填入 Prompts/hlsl-interpreter-prompt-ClaudeCode.md 对应的 Claude Code Session。
+```
+
+**它是一条"发现→攻克→固化"的开发闭环**，对应第三部分的方法论：`dump_case.csv` 是**自跟踪文件**（无人值守会话的"记忆"，实现幂等），回归套件是**固化闸门**，`Sessions/` + `Prompts/` 是**留痕**。
+
+**真实一次运行**（见 [`Sessions/hlsl-interpreter-step194-*.md`](Sessions/hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default.html)，2026-07-07）：触发时 `dump_case.csv` 是空的（0 字节），于是 `Dump/` 里的 **31 个 zip 全部算新**，逐个 triage：
+
+| 结果 | 数量 | 说明 |
+|---|---|---|
+| **PASS** | 11 | 直接通过（含本次新修好的 `manhattan_event1041`） |
+| **FAIL — 逐顶点精度** | 4 | `manhattan_event87/124/198/124_indirect`，1–2 行孤立大 diff，另一类根因，本次未攻 |
+| **FAIL — 无 golden** | 1 | `BlackMyth_event2063` 无 `MeshOut_*_mesh.csv`，数据缺失非 bug |
+| **未评估 — 超 45s 预算** | 15 | 大 capture（最大 264 MB），沙箱跑不完，**不算失败** |
+
+其中真正体现"能修则修"的是 `manhattan_event1041`：每行 `TEX_COORD1[1]` 都 output=`0.0` vs golden=`1.0`。逐指令轨迹显示 VS 只写了 `o6.xy`，而 `TEX_COORD1` 被打包进**从未写过的 `o6.zw`**——D3D 语义要求未写的输出寄存器分量取每寄存器初值 `(0,0,0,1)`。修 `_resolve_slot_shared_params` 让未写的次级输出继承寄存器默认后，`manhattan_event1041` 从 **0/228 → 228/228**，随即按 Step 6 **进回归**（`Cases/regression_test_zip_files.csv` 从 123 涨到 152）、commit & push。这一步的每个动作都可在 step194 session 与提交 `2cc8307` 里逐条核对。
+
+## 5 · 例二：`daily-hlsl-status-report`（每日巡检）
+
+**任务提示词**（原文节选）：
+
+```
+Produce a daily status report on the HLSL interpreter project located at .../hlsl_interpreter.
+Steps:
+ 1. Scan the folder; read key source & project files (README, main sources, tests, TODO, config).
+ 2. If it's a git repo, check recent activity: commits since yesterday, current branch, dirty files.
+ 3. Summarize state & changes: new/modified/removed files, progress, TODOs, test status, anything broken.
+ 4. Save to daily-status/status-YYYY-MM-DD.md (create the folder; use today's date). Clean Markdown.
+ 5. Commit status-YYYY-MM-DD.md and push to github.
+ 6. Based on current status, update ReadMe.md, Docs/AI-Development-Handbook*, Docs/index.html.
+    Commit & push.
+Keep it concise and focused on status and changes. If the folder is empty/inaccessible, note that.
+```
+
+**它是一条"观察→记录→同步文档"的巡检闭环**，与例一互补：例一**改代码**，例二**只读状态 + 刷文档**，几乎不碰解释器正确性，风险极低，非常适合无人值守。
+
+**真实产物**（见 [`daily-status/status-2026-07-07.md`](../daily-status/status-2026-07-07.md)）。报告结构稳定，每天同一套骨架，便于横向对比：
+
+- **Summary**：一句话定性昨天到今天的重心（如"视图深化 steps 189–193 + 一处未提交的正确性修复 step 194"）。
+- **Git activity**：列出昨日报告以来的新提交（如 `8f10895` step193 … `8dd37cf` step189），并核对 `origin/main == HEAD`。
+- **Uncommitted / in-progress**：点名工作树里**尚未提交**的真实改动（step 194 的 `hlsl_interpreter.py` 修改），提醒人去审。
+- **Dump triage / Test status**：复述回归口径（当前 152 case），并诚实标注"回归日志 stale、本次未全量重跑"——**不谎报绿**，这是巡检任务的底线。
+- **Needs attention**：把需要人介入的事项单列。
+
+跑完 Step 5/6 后，日报入库，`ReadMe.md`、`Docs/AI-Development-Handbook*`、`Docs/index.html` 一并刷新提交（见提交 `c32e83a`、`8236b88`）。第二天人只要读这份日报，就能不看代码地掌握"昨晚发生了什么、哪块要盯"。
+
+## 6 · 两个周期任务的对比与设计要点
+
+| 维度 | 例一 `hlsl-interpreter-hourly-develop` | 例二 `daily-hlsl-status-report` |
+|---|---|---|
+| 频率 | 每小时 | 每天 |
+| 性质 | **开发型**（改代码） | **巡检型**（读状态 + 刷文档） |
+| 触发对象 | `Dump/` 里的新 draw case | 整个仓库 + git 状态 |
+| 机器判据 | `Error:` + `X==Y`（回归口径） | git log / 工作树 / 回归口径（只读） |
+| 自跟踪"记忆" | `dump_case.csv` | 上一份 `status-*.md` |
+| 主要产物 | 修复提交 + 回归条目 + step session | `daily-status/status-*.md` + 文档刷新 |
+| 风险 | 中（动解释器，靠回归 gate 兜底） | 低（几乎只读） |
+| 留痕 | `Sessions/` + `Prompts/` 回填 | `daily-status/` + `ReadMe`/手册/站点 |
+
+**从这两个例子提炼的设计要点**（都是让无人值守可靠的关键）：
+
+1. **判据写死、可机判**：复用第三部分那套 `Error:` + `X==Y`——绝不让 AI"自我感觉良好"就算过（回想第二部分 [OpenCode #37](Prompts/hlsl-interpreter-prompt-OpenCode.html#step-37) 的"假修复"教训，无人值守下这类假绿更危险）。
+2. **幂等 + 自跟踪文件**：每次触发上下文归零，靠 `dump_case.csv` / 上一份日报区分"新旧"，避免重复劳动、避免遗漏。
+3. **只固化"真绿"**：例一明确规定——**修复后通过的才进回归**；没修好、直接过的只记名并删 zip。回归套件的"金身"绝不被无人值守的乐观污染。
+4. **诚实优先**：例二宁可写"回归日志 stale、未全量重跑"，也不谎报一个通过数——留痕的价值在于**真实可核对**。
+5. **强制留痕 + 提交**：每次运行都落到 `Sessions/` / `daily-status/` 并 push，把"无人值守"变成"事后完全可审计"，人从操作员退为验收者。
+6. **接受环境边界**：把"~45s/调用预算、超大 capture 跑不完"写进任务约定，让超预算 case **只记录不误判为失败**——诚实标注未知，胜过强行下结论。
+
+> **与前三部分的关系**：周期任务不是新方法，而是把第三部分成熟的那套纪律（CLAUDE.md 常驻规则、可机判判据、回归 gate、记忆系统、强制留痕）**打包成一份可定时触发、无人值守的脚本**。前三部分回答"人和 AI 怎么协作把项目做出来"，第四部分回答"做出来之后，怎么让 AI 定时自己维护它、而人只需验收"。
 
 ---
 

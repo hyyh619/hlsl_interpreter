@@ -3,36 +3,36 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HLSL Interpreter 开发文档</title>
 <style>
-:root{--bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--line:#2a2f3a;--accent:#5db0ff;
-  --green:#46d39a;--amber:#e0a93b;--red:#ff6b6b;--muted:#9aa4b2;
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:#d4dae4;font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
 .wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
-.top{position:sticky;top:0;background:rgba(14,17,22,.92);backdrop-filter:blur(6px);
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
   border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
 .top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
 .top .crumb{color:var(--muted)}
-h1{font-size:27px;margin:30px 0 14px;line-height:1.3}
-h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px}
-h3{font-size:18px;margin:26px 0 9px;color:#cdd6e4}
-h4{font-size:15.5px;margin:20px 0 8px;color:#cdd6e4}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
 h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
   border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
   text-decoration:none;white-space:nowrap;vertical-align:middle}
-h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#7fe3bb}
-p,li{color:#d4dae4}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
 a{color:var(--accent)}
-code{font-family:var(--mono);font-size:13px;background:#11151c;border:1px solid var(--line);
-  border-radius:5px;padding:1px 6px;color:#bfe1ff}
-pre{background:#0c0f14;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
-pre code{background:none;border:none;padding:0;color:#cfe3f5;font-size:12.5px;line-height:1.55}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
 table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
 th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
-th{background:var(--panel2);color:#cdd6e4}
-tr:nth-child(even) td{background:#13161d}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
 blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
-  background:#12202e;border-radius:8px;color:#c7d2de}
+  background:#f1f6fe;border-radius:8px;color:#37414d}
 hr{border:none;border-top:1px solid var(--line);margin:26px 0}
 ul,ol{padding-left:26px}
 .sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
@@ -50,7 +50,7 @@ ul,ol{padding-left:26px}
 <li><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html">Claude Code Session 提示词历史</a>（每步经 <code>Sessions/...md</code> 引用链接到对应 Session）</li>
 <li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html">OpenCode Session 提示词历史</a>（每步标题带 → Session 链接）</li>
 </ul>
-<h2>开发步骤日志 (Sessions, 177)</h2>
+<h2>开发步骤日志 (Sessions, 190)</h2>
 <ol style="line-height:1.9">
 <li><a href="Sessions/hlsl-step1-init-code.html">Python实现HLSL着色器代码解释器</a> <span style="color:#6b7480;font-size:12px">hlsl-step1-init-code</span></li>
 <li><a href="Sessions/hlsl-step2-print-cbuffer.html">CSV字符串值根据data type转换为对应数据类型</a> <span style="color:#6b7480;font-size:12px">hlsl-step2-print-cbuffer</span></li>
@@ -226,6 +226,19 @@ ul,ol{padding-left:26px}
 <li><a href="Sessions/hlsl-interpreter-step192-split-info-panels.html">Step 192 — Split &quot;Selected Info&quot; into two independent panels</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step192-split-info-panels</span></li>
 <li><a href="Sessions/hlsl-interpreter-step193-draw-data-panel.html">Step 193 — &quot;Draw Data&quot; panel: browse &amp; preview the raw zip</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step193-draw-data-panel</span></li>
 <li><a href="Sessions/hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default.html">Step 194 — Run new Dump draw cases, fix slot-shared output .w default</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step194-dump-new-cases-and-fix-slot-shared-w-default</span></li>
+<li><a href="Sessions/hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write.html">Step 195 — 运行 Dump 新 draw case，修复交叉复用输出寄存器&quot;真零写入被误判为未写&quot;</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step195-fix-slot-shared-genuine-zero-write</span></li>
+<li><a href="Sessions/hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent.html">Step 196 — 运行 Dump 新 draw case（BlackMyth 批次），修复 asfloat(exp&lt;&lt;23) 位模式被当整数值用</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step196-blackmyth-asfloat-shift-exponent</span></li>
+<li><a href="Sessions/hlsl-interpreter-step197-dump-scan-no-new-cases.html">197 扫描 Dump 新 draw case —— 本次无新增</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step197-dump-scan-no-new-cases</span></li>
+<li><a href="Sessions/hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits.html">Step 198 — EndlessSpace2 new draw cases: bit-select &amp; → _RawBits through the fused-multiply-add path</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step198-endlessspace2-bit-select-fma-rawbits</span></li>
+<li><a href="Sessions/hlsl-interpreter-step199-dump-scan-no-new-cases.html">Step 199 — Hourly dump scan: no new cases; deferred 3061/3093 unchanged</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step199-dump-scan-no-new-cases</span></li>
+<li><a href="Sessions/hlsl-interpreter-step200-dump-scan-heaven-frame-cases-pass.html">Step 200 — Hourly dump scan: 14 new cases (heaven_frame2596 + Frame-frame9222) all pass directly</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step200-dump-scan-heaven-frame-cases-pass</span></li>
+<li><a href="Sessions/hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split.html">Step 201 — BlackMyth 顶点压缩解码：两处解析器/控制流根因（cast-吞噬-三元、;前的else被拆散）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step201-blackmyth-cast-ternary-and-else-split</span></li>
+<li><a href="Sessions/hlsl-interpreter-step201-dump-scan-no-new-cases.html">Step 201 — Hourly dump scan: no new cases; git blockers cleared</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step201-dump-scan-no-new-cases</span></li>
+<li><a href="Sessions/hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage.html">Step 202 — BlackMyth 收尾：B8G8R8A8 顶点色 R/B 通道交换（修复），骨骼/morph 解码变体（定位未修）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage</span></li>
+<li><a href="Sessions/hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel.html">Step 203 — Hourly dump scan: longshu particle-GS 新 case，修复 GS 输入寄存器打包 + Texture1D SampleLevel</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel</span></li>
+<li><a href="Sessions/hlsl-interpreter-step204-commit-pending-longshu-gs-fix.html">Step 204 — Hourly dump scan: no new case; commit/push the pending step203 longshu GS fix</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step204-commit-pending-longshu-gs-fix</span></li>
+<li><a href="Sessions/hlsl-interpreter-step205-blackmyth-movc-swap-pair-parallel-semantics.html">Step 205 — BlackMyth 骨骼/morph 解码：movc 交换对的并行语义（数据相关的切线错）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step205-blackmyth-movc-swap-pair-parallel-semantics</span></li>
+<li><a href="Sessions/hlsl-interpreter-step206-dump-fail-status.html">Step 206 — Dump 目录 fail 状态汇总（step201/202/205 修复后重新 triage）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step206-dump-fail-status</span></li>
 <li><a href="Sessions/hlsl-SyntaxTreeParser-cannot-cache.html">Python 函数缓存你知道吗</a> <span style="color:#6b7480;font-size:12px">hlsl-SyntaxTreeParser-cannot-cache</span></li>
 <li><a href="Sessions/hlsl-optimization.html">2026.5.20</a> <span style="color:#6b7480;font-size:12px">hlsl-optimization</span></li>
 <li><a href="Sessions/hlsl-python-float-precision.html">Python实现IEEE754单精度浮点精度</a> <span style="color:#6b7480;font-size:12px">hlsl-python-float-precision</span></li>

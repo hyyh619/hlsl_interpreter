@@ -13,6 +13,7 @@
 - **HLSL 解释执行**：手写递归下降表达式解析器，构建语法树后求值；支持 swizzle（`r0.xyz`）、类型转换（`(int2)`）、按位运算（`| & << >> ^ ~ %`）、十六进制字面量、一元/二元 `+/-` 区分、三目运算符、矩阵/向量内建函数（`mul` / `dot` / `normalize` / `reflect` / `length` / `sincos` / `exp2` / `f16tof32` / `f32tof16` 等）。
 - **完整管线**：VS → Rasterizer → Depth/Stencil → PS → Output Merger，各阶段独立模块，支持 early-Z 与 late-Z。
 - **golden 数据比对**：VS 输出按语义逐分量与抓帧参考数据比对，支持浮点容差。
+- **顶点格式解码**：按输入布局解码各类顶点属性；`B8G8R8A8` / `B8G8R8X8` 等 BGRA 格式自动做 R/B 通道交换，交叉复用输出寄存器按 D3D 语义补默认值（step 194–202）。
 - **纹理采样**：BMP 纹理、mipmap 生成、最近/线性采样、wrap/mirror/clamp/border 寻址模式。
 - **GPU 精度模拟**：VS 阶段模拟 GPU float32 算术（非规格化数 FTZ，与 GPU 行为一致）。
 - **零第三方依赖**：仅用 Python 标准库；可选的 Mesh 可视化界面用内置 `tkinter`。

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 203 — Hourly dump scan: longshu particle-GS 新 case，修复 GS 输入寄存器打包 + Texture1D SampleLevel</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel</span></div>
+<div class="wrap">
+<h1>Step 203 — Hourly dump scan: longshu particle-GS 新 case，修复 GS 输入寄存器打包 + Texture1D SampleLevel</h1>
+<h2>背景 / 任务</h2>
+<p>定时任务（每小时）：扫描 <code>Dump/</code>，找出未登记进 <code>dump_case.csv</code> 的新 draw case 并运行；<br>不通过的定位 <code>hlsl_interpreter</code> 根因并修复、提交推送、纳入回归；直接通过的写入<br><code>dump_case.csv</code> 并从 <code>Dump/</code> 删除。思考/执行/结果写入本 Session，摘要补入 Prompts 文档。</p>
+<h2>1. 扫描结果 —— 7 个新 case</h2>
+<p><code>Dump/*.zip</code> 与 <code>./dump_case.csv</code> 的差集为 7 个：</p>
+<ul>
+<li><code>heaven_frame2596_event11844.zip</code>、<code>_event9450</code>、<code>_event9682</code>、<code>_event9944</code></li>
+<li><code>longshu-case-35-1_event128.zip</code>、<code>longshu-case-35-1_event166.zip</code>、<code>longshu-case-37_event25.zip</code></li>
+</ul>
+<p>其中 4 个 heaven case 早已在 <code>Cases/</code>（且 <code>event11844</code> 已在回归清单里），只是从未登记进<br><code>dump_case.csv</code>。3 个 <code>longshu-*</code> 是全新的游戏 capture（<code>Cases/</code> 下没有）。</p>
+<h2>2. 首轮运行 —— 5 通过 / 2 失败</h2>
+<p>用自建 driver（<code>--vs-only</code> 口径；因本 mount 禁止 <code>os.remove</code>，<code>triage_dump.py</code> 收尾清理会崩，<br>故绕开）跑 7 例：</p>
+<table>
+<tr><th>case</th><th>结果</th></tr>
+<tr><td>heaven_frame2596_event11844</td><td>PASS 54/54</td></tr>
+<tr><td>heaven_frame2596_event9450</td><td>PASS 4680/4680</td></tr>
+<tr><td>heaven_frame2596_event9682</td><td>PASS 9/9</td></tr>
+<tr><td>heaven_frame2596_event9944</td><td>PASS 3/3</td></tr>
+<tr><td>longshu-case-37_event25</td><td>PASS 10920/10920</td></tr>
+<tr><td><b>longshu-case-35-1_event128</b></td><td><b>FAIL</b> 0/19，<code>GS emitted-vertex count 21 != golden 19</code></td></tr>
+<tr><td><b>longshu-case-35-1_event166</b></td><td><b>FAIL</b> 150/161，<code>GS emitted-vertex count 186 != golden 161</code></td></tr>
+</table>
+<p>两个失败 case 都是 <b>粒子系统几何着色器（Geometry Shader）+ Stream Output</b>（`dcl_inputprimitive<br>point<code> / </code>dcl_outputtopology pointlist<code>，</code>maxvertexcount(2)<code>/</code>(6)`），报"发射顶点数不符"。</p>
+<h2>3. 根因分析</h2>
+<h3>3.1 主 bug：GS 输入寄存器打包错位（<code>v[i][r]</code> 按签名行号索引而非寄存器号）</h3>
+<p>GS 反编译体用 <code>v[0][2].z</code>（AGE）、<code>v[0][3].x</code>（TYPE）读输入。看 <code>GS_input_output_signature.csv</code>：</p>
+<pre><code>Input,2,0,SIZE
+Input,2,0,AGE     &lt;- 与 SIZE 同为 slot 2（SIZE 占 .xy，AGE 打包在 .z）
+Input,3,0,TYPE</code></pre>
+<p><code>executeGS_with_params</code> 原本把 <code>slot_meta</code> 建成<b>每签名行一个条目的扁平列表</b>，<code>v[i][j]</code> 按列表<br><b>位置</b>索引 → <code>[POSITION, VELOCITY, SIZE, AGE, TYPE]</code>（下标 0..4）。于是：</p>
+<ul>
+<li><code>v[0][2]</code> → 取到 SIZE（无 .z，读到 0/垃圾），而 shader 期望这里 <code>.z</code> 是 AGE；</li>
+<li><code>v[0][3]</code> → 取到 AGE，而 shader 期望这里 <code>.x</code> 是 TYPE。</li>
+</ul>
+<p>AGE、TYPE 双双读错 → <code>if (v[0][3].x==0)</code>（判断是否发射器粒子）与 <code>g_EmitInterval &lt; age</code><br>（是否到发射间隔）全乱 → 发射的顶点数/内容错位。</p>
+<p><b>修复</b>（<code>hlsl_interpreter.py</code> <code>executeGS_with_params</code>）：按<b>寄存器号（slot）分组</b>签名条目，<br>把打包进同一寄存器的多个语义按"连续分量偏移"合并成一个寄存器向量（SIZE.xy 后接 AGE.z），<br>并让 <code>v2d[i][r]</code> <b>按寄存器号 r 建索引</b>（0..max_slot）。分量宽度取自 GS 输入参数类型<br>（<code>float2 SIZE</code>→2、<code>float AGE</code>→1…）。单语义寄存器保持原样直传 —— 未打包的常见 GS（sekiro4 等）<br>行为完全不变，回归零风险。</p>
+<p>修复后：<code>event128</code> 21→19 顶点数<b>对齐</b>（"emitted-vertex count"错误消失），18/19 通过；<br><code>event166</code> 186→161 对齐，156/161 通过。仅剩"新发射粒子"那几行差异。</p>
+<h3>3.2 次 bug：Texture1D 的 SampleLevel 坐标是标量，被守卫挡掉返回 0</h3>
+<p>新发射粒子的速度/位置来自 <code>g_TextureRandom.SampleLevel(g_SamLinear_s, r0.y, r0.z)</code> —— 一张<br><b>Texture1D</b>（1024×1，R32G32B32A32_FLOAT 的随机向量表，<code>.img</code> 原始数据，已支持解码）。</p>
+<p><code>SampleLevel</code> 分支的坐标守卫是 <code>if coords and isinstance(coords, list) and len(coords) &gt;= 2:</code>。<br>Texture1D 的坐标是<b>标量</b>（只有 u），不是长度≥2 的列表 → 守卫为假 → 返回 <code>None</code> → 采样项被<br>静默清零 → 新粒子速度/位置为默认值（错）。</p>
+<p><b>修复</b>（<code>hlsl_interpreter.py</code> SampleLevel 分支）：坐标若是标量（或单元素列表），补成<br><code>[u, 0.0]</code>（v=0 命中 1D 纹理的单行）再走既有采样。</p>
+<p>修复后：<code>event128</code> <b>19/19 全过</b>。</p>
+<h2>4. 剩余差异：event166 的精度极限（非逻辑 bug）</h2>
+<p><code>event166</code> 修复后 156/161，剩 5 行（随机纹理发射出的新粒子）POSITION 差 <b>0.007~0.028</b>，<br>略超 <code>float_tolerance=0.005</code>。原因：</p>
+<ul>
+<li>该 shader 的新粒子 <code>POSITION = g_EmitPosW + float2(30,30)*random.xz</code> —— <b>不归一化、直接放大 30 倍</b>； 采样误差 ~0.0003 被 ×30 放到 ~0.01，正好越过容差。</li>
+<li>对照 <code>event128</code>（同一随机纹理、同坐标）却全过：因为它的速度是 <code>normalize(random)*4</code>，归一化 把逐分量误差消掉了。</li>
+</ul>
+<p>即差异纯粹来自 <b>wrap 大坐标（<code>g_GameTime+n/5</code>）下线性过滤的 float32/double 精度</b>，落在此前<br>Session（step 153/162/163）已记录的 GS/纹理精度极限区间（相对容差需 ~3e-4；且 <code>float32_emulation</code><br>只在 VS 阶段启用）。线性过滤本身的纹素中心约定（<code>u*w-0.5</code>）与 wrap 取 frac 都已正确。深挖需对整个<br>GS+纹理路径做 float32 仿真，收益低、回归风险高，<b>判定为已知精度极限，不再追</b>。</p>
+<h2>5. 收尾动作</h2>
+<ul>
+<li><b>代码修复</b>：<code>hlsl_interpreter.py</code> 两处（GS 输入寄存器分组打包；SampleLevel 标量坐标兼容 Texture1D）。</li>
+<li><b><code>dump_case.csv</code></b>：7 个新 case 名全部追加登记（146→153 行）。</li>
+<li><b>回归清单</b>：<code>longshu-case-35-1_event128.zip</code>（经修复通过）已 <code>cp</code> 进 <code>Cases/</code> 并加入 <code>Cases/regression_test_zip_files.csv</code>（按 step 6）。直接通过的 4 个 heaven + <code>longshu-case-37_event25</code> 按 step 7 仅登记 <code>dump_case.csv</code>（heaven 本就在 <code>Cases/</code>；<code>longshu-37</code> 未加回归）。</li>
+<li><b><code>event166</code></b>：未完全通过（剩精度差异），登记进 <code>dump_case.csv</code> 但<b>不加回归</b>，本文档记录其精度极限成因。</li>
+<li><b>回归验证</b>：改动后跑 <code>python run_regression.py --keep-logs</code>（<code>--keep-logs</code> 规避本 mount 的 <code>os.remove</code> 限制）。结果见下节。</li>
+</ul>
+<h2>6. 回归结果</h2>
+<p>本沙箱两个限制影响完整回归：(a) 后台进程不跨独立 bash 调用存活（<code>nohup</code> 起的 157 例全量跑到<br>第 10 例即被回收）；(b) 单次 bash 调用上限 45s，跑不完带 500MB 级 zip 的全量套件。故改为<br><b>定向回归</b>——本次改动只可能影响两类 case：GS 路径（<code>executeGS_with_params</code>）与标量坐标的<br><code>SampleLevel</code>。GS 改动对"单语义寄存器"完全直传、字节级不变，只有"打包寄存器"的 GS 才受影响；<br><code>SampleLevel</code> 标量分支对 2D 纹理（坐标恒≥2 分量）是纯 no-op。</p>
+<p>跑了回归清单里<b>全部 5 个含 GS 的 case</b> + 若干纹理/SampleLevel 重点 case（全流水线口径，<br><code>float_tolerance=0.005</code>）：</p>
+<table>
+<tr><th>case</th><th>结果</th></tr>
+<tr><td>manhattan_frame_274_event50</td><td>PASS 1000/1000, 0 err</td></tr>
+<tr><td>sekiro4_event20560</td><td>PASS 1074/1074, 0 err</td></tr>
+<tr><td>Octopath-frame746_event102</td><td>PASS 6/6, 0 err</td></tr>
+<tr><td>Octopath-frame746_event4014</td><td>PASS 6/6, 0 err</td></tr>
+<tr><td><b>longshu-case-35-1_event128（新增）</b></td><td><b>PASS 19/19, 0 err</b></td></tr>
+<tr><td>witcher3_countryside_event895（VS SampleLevel）</td><td>PASS 4428/4428, 0 err</td></tr>
+<tr><td>Octopath-frame746_event283</td><td>PASS 48/48, 0 err</td></tr>
+<tr><td>heaven_frame2596_event7611</td><td>0 err（大 case，未跑完汇总，无 Error）</td></tr>
+<tr><td>valley_frame272_event608</td><td>0 err（大 case，未跑完汇总，无 Error）</td></tr>
+</table>
+<p>含 GS 的 case <b>零回归</b>，<code>event128</code> 全流水线通过。建议用户在本机跑一次完整<br><code>python run_regression.py</code> 做最终确认。</p>
+<h2>7. 环境限制（非任务失败）</h2>
+<ul>
+<li>本 mount <b>禁止删除/重命名文件</b>（<code>rm</code> 报 <code>Operation not permitted</code>）：无法从 <code>Dump/</code> 删除已通过的 zip（step 7 的删除动作）。文件保留在 <code>Dump/</code>，已登记进 <code>dump_case.csv</code>，下次扫描会跳过，不会重复运行。</li>
+<li><code>cp</code>（新建文件）可用，故能把 <code>event128</code> 复制进 <code>Cases/</code> 供回归。</li>
+<li><b>git 提交/推送被阻断</b>（step 5）：<code>.git/index.lock</code> 为残留空锁文件且本 mount 不可删除 （<code>Operation not permitted</code>），任何 <code>git add/commit</code> 都 <code>fatal: Unable to create '.git/index.lock'</code>。 所有改动已落盘在用户目录，<b>请用户在本机删除 <code>.git/index.lock</code> 后提交并 push</b>： <code>hlsl_interpreter.py</code>、<code>dump_case.csv</code>、<code>Cases/regression_test_zip_files.csv</code>、 <code>Cases/longshu-case-35-1_event128.zip</code>、本 Session、<code>Prompts/hlsl-interpreter-prompt-ClaudeCode.md</code>。</li>
+</ul>
+<h2>8. 结论</h2>
+<p>发现 7 个新 case，5 个直接通过。2 个 longshu 粒子 GS case 定位并修复了<b>两个真实解释器 bug</b>：<br>(1) GS 输入寄存器打包错位（<code>v[i][r]</code> 应按寄存器号而非签名行号索引）、(2) Texture1D 的 SampleLevel<br>标量坐标被守卫误挡。<code>event128</code> 由此全过并入回归；<code>event166</code> 剩 5 行随机纹理放大误差，属已知<br>精度极限。</p>
+</div></body></html>
