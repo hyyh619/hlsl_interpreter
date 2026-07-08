@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>golden-vs-mesh-sv-position-first</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Memory / golden-vs-mesh-sv-position-first</span></div>
+<div class="wrap">
+<h1>golden-vs-mesh-sv-position-first</h1><p style="color:var(--muted);margin-top:-6px">RenderDoc *_vs_mesh.csv golden data dumps SV_Position columns first regardless of header order</p><p><span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:1px 9px;font-size:12px;color:var(--muted)">project</span></p><p>In RenderDoc/3Dmigoto <code>*_vs_mesh.csv</code> golden VS-output dumps, the <b>data columns are laid out with SV_Position FIRST</b>, then the remaining outputs in declared order — even though the column <i>header</i> names follow declaration order. So when a shader declares e.g. <code>out float2 o0 : TEXCOORD0; out float4 o1 : SV_Position0</code>, the columns labelled <code>TEXCOORD.x/y</code> actually hold SV_Position data (header is shifted relative to data).</p>
+<p><code>load_vs_golden_from_mesh_csv</code> (step105) handles this by assigning physical component columns <b>positionally</b> in <code>[SV_Position, then remaining outputs in declared order]</code>, NOT by header label. When SV_Position is already output register 0 (e.g. the Collision suite), this is identical to header-order mapping, so no regression.</p>
+<p>Diagnostic tell: VS comparison fails on ALL rows but the depth comparison still matches ~99% → our SV_Position is actually correct and the golden column mapping is the problem, not the interpreter. Related: [[witcher3-array-cbuffers-instanced-inputs]]. This is distinct from CLAUDE.md gotcha #1 (trailing-float3 MeshOut shift).</p>
+</div></body></html>

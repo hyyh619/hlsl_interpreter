@@ -45,12 +45,20 @@ ul,ol{padding-left:26px}
 <ul>
 <li><a href="AI-Development-Handbook.html">AI 辅助开发手册</a></li>
 </ul>
-<h2>记忆库 (Memory, 3)</h2>
+<h2>记忆库 (Memory, 11)</h2>
 <p style="color:#6b7480;margin-top:-6px">跨会话沉淀的经验事实，另见 <a href="memory/MEMORY.html">MEMORY.md 索引</a>。</p>
 <ul>
+<li><a href="memory/MEMORY1.html">MEMORY1</a></li>
 <li><a href="memory/dxbc-register-golden-tool.html">dxbc-register-golden-tool</a> <span style="color:#6b7480;font-size:13px">— How to localize VS output divergence — decompile bug vs shared-infra bug — using the DXBC register-level golden</span></li>
 <li><a href="memory/failure-class-structural-walls.html">failure-class-structural-walls</a> <span style="color:#6b7480;font-size:13px">— Which remaining Dump/ failure classes are structural (unfixable in the HLSL-source interpreter) vs genuine bugs</span></li>
+<li><a href="memory/golden-vs-mesh-sv-position-first.html">golden-vs-mesh-sv-position-first</a> <span style="color:#6b7480;font-size:13px">— RenderDoc *_vs_mesh.csv golden data dumps SV_Position columns first regardless of header order</span></li>
+<li><a href="memory/nested-ifelse-intrinsics-and-rel-tolerance.html">nested-ifelse-intrinsics-and-rel-tolerance</a> <span style="color:#6b7480;font-size:13px">— interpreter now supports arbitrary-depth nested if/else, floor/frac/ceil/round/trunc, and abs+rel golden tolerance — recall when debugging zero/identical VS output or tiny-diff-on-large-value failures</span></li>
+<li><a href="memory/per-vertex-binary-vb-decode-r10a2.html">per-vertex-binary-vb-decode-r10a2</a> <span style="color:#6b7480;font-size:13px">— NORMAL/TANGENT are R10G10B10A2 in binary VB (CSV dumps zero); POSITION precision from binary; CSV-agreement guard protects UINT BLENDINDICES</span></li>
+<li><a href="memory/raw-img-texture-loading.html">raw-img-texture-loading</a> <span style="color:#6b7480;font-size:13px">— Textures load from raw .img dumps decoded per DXGI format; BC formats fall back to .bmp</span></li>
+<li><a href="memory/rundrawfromdump-octopath-tank-batch.html">rundrawfromdump-octopath-tank-batch</a> <span style="color:#6b7480;font-size:13px">— RunDrawFromDump/Dump has 280 zips (Octopath GS/instanced, Tank, witcher); triage-first workflow + Octopath interpreter gaps (comments, mad, binary cbuffer, typed Buffer.Load, SV_VertexID) and the still-unfixed sincos/cmp/ternary class</span></li>
 <li><a href="memory/stage-execution-gs-ds-hs.html">stage-execution-gs-ds-hs</a> <span style="color:#6b7480;font-size:13px">— How multi-stage (GS, HS, DS + fixed-function tessellation) shader execution + mesh-output comparison works</span></li>
+<li><a href="memory/structured-buffer-skinning-support.html">structured-buffer-skinning-support</a> <span style="color:#6b7480;font-size:13px">— StructuredBuffer (skinning bone palette) support and two related harness/parser fixes added in step106</span></li>
+<li><a href="memory/witcher3-array-cbuffers-instanced-inputs.html">witcher3-array-cbuffers-instanced-inputs</a> <span style="color:#6b7480;font-size:13px">— How the hlsl_interpreter supports array cbuffers and per-instance vertex inputs (witcher3 captures)</span></li>
 </ul>
 <h2>提示词历史 (Prompts)</h2>
 <ul>

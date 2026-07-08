@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rundrawfromdump-octopath-tank-batch</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Memory / rundrawfromdump-octopath-tank-batch</span></div>
+<div class="wrap">
+<h1>rundrawfromdump-octopath-tank-batch</h1><p style="color:var(--muted);margin-top:-6px">RunDrawFromDump/Dump has 280 zips (Octopath GS/instanced, Tank, witcher); triage-first workflow + Octopath interpreter gaps (comments, mad, binary cbuffer, typed Buffer.Load, SV_VertexID) and the still-unfixed sincos/cmp/ternary class</p><p><span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:1px 9px;font-size:12px;color:var(--muted)">project</span></p><p><code>C:\Development\Verisilicon\DirectX\tools\hy\RunDrawFromDump\Dump</code> holds <b>280</b><br>capture zips: Collision×1, Octopath-frame746×44, TankMechanicSimulator×75,<br>witcher3_countryside×160. Octopath captures add a <b>Geometry Shader</b> stage and<br><code>*_vs_mesh.csv</code>/<code>*_gs_mesh.csv</code> golden, plus files the witcher set lacks:<br><code>{VS,PS,GS}_constant_buffer_info.csv</code> (slot→<code>constant_&lt;id&gt;.bin</code>),<br><code>buffer_params.csv</code> (typed/structured buffer → <code>buffer_&lt;resid&gt;.bin</code>).</p>
+<p>Workflow that works: <b>triage first</b> with a headless runner (per-case timeout;<br>parse the VS verdict from the log even on PS timeout), group failures by first<br><code>Error:</code> signature + shader features, fix per root-cause class, commit each with<br>one representative added to the (gitignored, local) regression CSV.</p>
+<p>Step118 fixed 3 Octopath classes (regression 39/39; reps event102, event1031,<br>event1320):</p>
+<ol>
+<li><code>GenerateStmts</code> never stripped <code>//</code>/<code>/* */</code>; 3Dmigoto's <code>// Needs manual fix</code> comment block fused with the next assignment → dropped. Added <code>_strip_comments</code>. Also added <code>asint/asuint/asfloat</code>.</li>
+<li><code>mad(a,b,c)</code> unimplemented + scalar swizzle <code>.xx</code> on a scalar returned None → garbage SV_POSITION on instanced StructuredBuffer-matrix meshes. See [[per-vertex-binary-vb-decode-r10a2]] for the related VB decode.</li>
+<li>Binary cbuffer reload (<code>override_cbuffers_from_binary</code>) so <code>asint</code>/<code>asuint</code> get real int bits (float CSV prints int 1 as 0, -1 as NaN); typed <code>Buffer&lt;T&gt;.Load(index)</code> (<code>load_typed_buffer_data</code>, format inferred from bytes-per-component: 1→RGBA8_UNORM else float32×elem_size//4); per-vertex <code>SV_VertexID</code> = index-buffer value; <code>_cbuffer_component_raw_int</code> for exact int32 of a <code>cbN[i].c</code> arg. All no-ops when the info/param CSVs are absent, so witcher cases are untouched.</li>
+</ol>
+<p>Step118 also fixed 2 more classes (regression 40/40; rep event1487 added):</p>
+<ol>
+<li><code>sincos(angle,s,c)</code> void statement (writes sin→2nd lvalue, cos→3rd) — the <code>#define cmp -</code> macro and vector ternaries <code>r9.zzz?a:b</code> already worked.</li>
+<li><code>_safe_pow</code> saturates exp2/pow to ±inf instead of raising OverflowError (event576/2651/2682 no longer crash).</li>
+</ol>
+<p>Step118 classes 6-7 (regression 41/41; rep event1854 added):</p>
+<ol>
+<li>Bitwise operators <code>^</code>/<code>&lt;&lt;</code>/<code>&gt;&gt;</code>/<code>%</code> + unary <code>~</code> + hex/<code>u</code> literals (added to <code>_OPERATORS</code> in hlsl_syntax_tree.py with renumbering, <code>execute_binary_op</code>/ <code>execute_unary_op</code>, <code>get_value</code>). Pre-cast split so <code>(uint)r0.x&lt;&lt;1</code> parses right. event2135 errors 78-&gt;11.</li>
+<li>binary-VB override now rescues an ALL-ZERO csv column (<code>_is_all_zero</code>) — fixes event1854 colour (B8G8R8A8_UNORM in binary VB, CSV had 0). Non-zero CSV disagreement still kept (protects BLENDINDICES).</li>
+</ol>
+<p>Step118 classes 9-10 (witcher Dump set — a NEWER format than the witcher cases<br>already in regression; cbuffer named <code>Constants : register(b0)</code> with dynamic<br><code>vfuniforms[48]</code>, CSV captures only element 0):</p>
+<ol>
+<li><code>override_cbuffers_from_binary</code> now matches the binary file to the cbuffer by <code>register==slot</code> (parsed into <code>CbufferDefinition.register</code>), not by <code>cb{slot}</code> name — so <code>Constants</code>/<code>vfuniforms</code> loads from constant_&lt;id&gt;.bin. event23303 0/6-&gt;6/6. Octopath cb0/cb1 unaffected.</li>
+<li><code>f16tof32</code>/<code>f32tof16</code> intrinsics (Python <code>'&lt;e'</code> half codec).</li>
+</ol>
+<p>STILL BLOCKED / deferred:</p>
+<ul>
+<li>witcher Dump set (160 zips) triaged: 99/160 clean-pass after class 9.</li>
+<li>class 11 (commit 36bb4be): usage-based format inference — <code>(uint)</code>/<code>(int)</code> cast of a FLOAT-typed vertex attribute, and <code>f16tof32</code> of a float, reinterpret the float32 bits (<code>_bitcast_to_int</code>) instead of converting. Restricted to float-typed inputs (<code>_vertex_input_names</code>) so uint index attrs (event1031) are unaffected. Fixes event16215 sv_position (390-&gt;180 errs); residual TexCoord is octahedral-normal decode (open). event16834 similar.</li>
+<li>still-failing witcher: <code>TexCoord*</code> groups (event20571/21719/22229), octahedral normal residual (event16215/16834).</li>
+<li>Quaternion typed buffers (event2135/1250/3542/3601/3012): t3 is R8G8B8A8_SNORM but sibling texcoord t2 is R8G8B8A8_UNORM, both 4 bytes; the capture records NO view format for VS typed buffers (buffer_params.csv = byte size only; texture_params.csv = PS textures only; disasm = all <code>(float,...)</code>). UNORM vs SNORM undecidable from metadata — a capture-data limitation, NOT fixable.</li>
+<li>float32-precision noise hashes: FIXED by class 8 (<code>_to_f32</code> rounds every<ul>
+<li>- * /, literal, frac/mad to float32 via struct.pack('&lt;f'); config <code>float32_emulation</code>, VS-stage only so the per-pixel PS stays fast; on in run_regression BASE_CONFIG). event1897 6/6, event283 48/48. event1828 has a different non-arithmetic precision issue (still open); event2091 just slow.</li>
+</ul></li>
+<li>18 Tank timeouts: pure-Python rasterize+depth-compare of ~62k px is just slow (event1090 VS has 0 errors); perf, not a bug. witcher 160 not re-triaged.</li>
+</ul>
+</div></body></html>

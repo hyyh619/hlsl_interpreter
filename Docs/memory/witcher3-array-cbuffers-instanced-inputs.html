@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>witcher3-array-cbuffers-instanced-inputs</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Memory / witcher3-array-cbuffers-instanced-inputs</span></div>
+<div class="wrap">
+<h1>witcher3-array-cbuffers-instanced-inputs</h1><p style="color:var(--muted);margin-top:-6px">How the hlsl_interpreter supports array cbuffers and per-instance vertex inputs (witcher3 captures)</p><p><span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:1px 9px;font-size:12px;color:var(--muted)">project</span></p><p>The witcher3_countryside captures (step104+) introduced two features the interpreter gained in step104:</p>
+<ol>
+<li><b>Array cbuffers</b> — <code>float4 cb1[4]</code> declared in HLSL, stored in <code>VS_constant_buffers.csv</code> as <code>cb1_v0, cb1_v1, ...</code>. Handled by: <code>parse_cbuffer</code> strips <code>[N]</code> → <code>FieldDefinition.array_size</code>; <code>load_cbuffer_data_from_csv</code> fills array fields from <code>&lt;name&gt;_v&lt;idx&gt;</code> rows into a list-of-vectors; <code>get_value</code> has an array-subscript branch for <code>cb1[0]</code>, <code>cb2[8].xyz</code>, <code>arr[i].w</code>.</li>
+</ol>
+<ol>
+<li><b>Instanced vertex inputs</b> — <code>INSTANCE_TRANSFORM*</code> etc. are NOT in <code>ia_vertex_data.csv</code> (per-vertex slot 0 only). They live in a separate <code>PerInstance=True</code> binary vertex buffer <code>vb_slot{N}_res_{resid}.bin</code>. <code>load_per_instance_data</code> (in hlsl_interpreter.py) parses <code>ia_input_layouts.csv</code> and decodes instance 0 at <code>binding.ByteOffset + instance*stride + element.ByteOffset</code>. <b>Critical gotcha:</b> the bound <code>ByteOffset</code> for the slot (from the VertexBuffer section) is often non-zero (e.g. 1727552) — instance data does NOT start at byte 0 of the file. render.py merges instance-0 inputs into every vertex.</li>
+</ol>
+<p><b>Assumption:</b> single-instance draws (all vertices share instance 0). Confirmed for witcher3 cases by <code>golden rows == vertex rows</code>. Multi-instance not yet modelled.</p>
+<p><code>Cases/</code> is gitignored, so <code>regression_test_zip_files.csv</code> and <code>Default.json</code> edits are local-only and never committed.</p>
+</div></body></html>
