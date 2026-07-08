@@ -1544,7 +1544,17 @@ class HLSLInterpreter:
             def _and_lane(l, r):
                 li, ri = int(l), int(r)
                 res = li & ri
-                if ri in (0, -1, 0xFFFFFFFF) or li in (0, -1, 0xFFFFFFFF):
+                # Only a genuine bit-SELECT (mask = all-ones -1/0xFFFFFFFF that
+                # PRESERVES the other operand's float bits) needs the _RawBits
+                # tag. Require res != 0: a zero result is 0.0 as float and 0 as
+                # int alike — nothing to preserve — and (since x & 0 == 0) a
+                # non-zero result rules out an all-zeros mask, so this keys on
+                # the all-ones preserve case only. Tagging a zero result was a
+                # false positive for FIELD extraction like `(int)x & 0x3f800000`
+                # when x happens to be 0: the bogus _RawBits(0) then forced a
+                # downstream float add (`cb0[7].w + r0.z`) onto the integer path,
+                # collapsing a BlackMyth particle position to zero.
+                if res != 0 and (ri in (-1, 0xFFFFFFFF) or li in (-1, 0xFFFFFFFF)):
                     return _RawBits(self._wrap_i32(res))
                 return res
             if isinstance(left, list) and isinstance(right, list):

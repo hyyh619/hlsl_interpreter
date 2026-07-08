@@ -4248,17 +4248,41 @@ Notice:
 
 **结果**：家族 6 个全过——`event9319 1050/1050`、`3256 1065/1065`、`9526 705/705`、`9829 1050/1050`、`15293_8040 1050/1050`，加 step202 的 `event8040 6/6`；`event7117` 仍 6/6。全量回归 **154/157**（3 未过均无关既有失败）→ 零回归。`event9319` 已入回归。**至此 step201/202/205 把 BlackMyth 压缩/骨骼解码四类根因（cast-三元、`;`-else、B8G8R8A8、movc 交换对）全部修掉。**
 
-# 207
+# 207 The single biggest remaining bug is Category 1 — ~14+ BlackMyth cases share one new root cause.
 ## Prompts
+Fix the following issue,
+The single biggest remaining bug is Category 1 — ~14+ BlackMyth cases share one new root cause (per-instance + multi-level buffer indirection collapsing to zero). Fixing that would likely clear the largest chunk, same as steps 201/202/205 did for the earlier families.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-
-## Git commit: 
+## Git commit: fix(interpreter): don't tag zero AND-result as _RawBits (step 207)
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step207-blackmyth-and-zero-rawbits-poison.md`。
+
+**根因 —— 值为 0 的按位与结果被误标 `_RawBits`，毒化下游浮点加法。** 用最小标本 `event4812`
+（144 顶点、逐实例 `ATTRIBUTE13` + 多级 `t3→t1→t0` 间接寻址）逐语句 `[STMT]` 定位：per-instance
+输入与多级间接链其实都**解析正确**（triage 猜的"t3[idx]=0 走无数据零分支"不成立）。真正分歧在
+`r0.z = (int)r0.z & 0x3f800000`（提取"1.0 的位"）：当左操作数位恰为 0、结果为 0 时，`_and_lane`
+旧逻辑（`li in (0,-1,0xFFFFFFFF)`）把 **0 标成 `_RawBits(0)`**。下游 `cb0[7].w + r0.z` 因一侧是
+`_RawBits` 而走**整数 raw-bits 路径**，把真浮点 `cb0[7].w=1.0` 当成其位模式 `0x3f800000=1065353216`，
+级联使淡入乘子 `r4.z→0`、`o11`(SV_POSITION) 及全部输出**坍缩为零**。
+
+**修复**（`hlsl_interpreter.py` `_and_lane`）：从判定集合去掉 `0` 并加 `res != 0` 守卫——
+`if res != 0 and (ri in (-1,0xFFFFFFFF) or li in (-1,0xFFFFFFFF))`。只有**非零**且掩码为全 1 的
+"位保留选择"才需 `_RawBits`；零结果无位可保留（0 作 float 是 0.0、作 int 是 0）。通用类型推断修复，
+非专用补丁。
+
+**结果**：event4812 支 **9 例全过**（`4767/4812/4892/5219/5361/5945/6018/6836/7719`，HEAD 版
+event4812 为 `0/144`→修后 `144/144` 单点确证）。全量回归 **155/158**，3 个未过均为无关既有失败
+（`witcher16834`、`OldWorld_1034/2767`）→ 零回归；既有 BlackMyth 全绿。`event4812` 已入回归。
+**诚实记录**：triage 把 14 例当作同一根因，实测只有 9 例是此 AND-zero bug；`8750/9055` 部分通过是
+另一数据相关路径问题，`9999/10575/11070` 是**另一支着色器变体**（typed `Buffer<float4>` 的切线帧
+`t5` 被按错误视图格式装载成单位四元数，法线/切线归零，SV_POSITION 却正确）——根因不同、验证成本高，
+已定位留作 follow-up。类 1 净收益 **0/14 → 9/14**。
 
 # 208
 ## Prompts
