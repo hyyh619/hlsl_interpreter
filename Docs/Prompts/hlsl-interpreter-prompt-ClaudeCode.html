@@ -1888,6 +1888,10 @@ ul,ol{padding-left:26px}
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
+<p>详见 <a href="../Sessions/hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage.html"><code>Sessions/hlsl-interpreter-step202-blackmyth-bgra-vertex-color-and-skinning-variant-triage.md</code></a>。</p>
+<p><b>修复 <code>event8040</code>（B8G8R8A8 顶点色 R/B 通道交换）</b>：这是个简单的 sRGB 顶点色 shader（非压缩解码那支）。<code>COLOR1.x</code>/<code>.z</code> 对调——<code>ATTRIBUTE4 : B8G8R8A8_UNORM</code> 在内存里按 B,G,R,A 排布，但输入装配交给 shader 时是 <code>.x=R,.y=G,.z=B,.w=A</code>。<code>_decode_vertex_element</code> 对 <code>UNORM/1字节</code> 直接按内存序 <code>[B,G,R,A]</code> 解码，漏了 R/B 交换（同 shader 的 <code>ATTRIBUTE3</code> 也是 B8G8R8A8 但数据全 1.0，交换不可见，所以 <code>COLOR0</code> 碰巧对）。修复：解码后若格式以 <code>B8G8R8</code> 开头则交换分量 0 与 2。<code>event8040</code> <code>0/6 → 6/6</code>，通用修复，已入回归。</p>
+<p><b>定位但未修 <code>event9319</code> 家族（3256/9526/9829/15293_8040）</b>：这是与 step201 修好的 <code>event7117</code> <b>不同的、更复杂的</b>骨骼/morph 顶点解码 shader。逐语句轨迹：法线 <code>TEXCOORD10</code> 正确，但切线 <code>TEXCOORD11</code>、世界坐标 <code>TEXCOORD7</code> 错。关键：<code>o0</code>(法线) 因本例 <code>r15.x=r15.y≈0</code> 实际只等于 <code>r15.z*r18</code>（基第 2 列），<b>并不约束基第 0/1 列</b>；而 <code>o1</code>(切线) 重度依赖基第 0/1 列。确认 <code>r2.xyz</code> 到输出间无覆盖（解释器数据流无误）→ 切线错是<b>基第 0/1 列与真机不符</b>。矛盾在于同段解码代码在 <code>event7117</code> 上整例通过，故差异应来自输入数据装载或数据相关分支；无逐语句 golden 难以确证，贸然改动风险高（易砸已通过例），本轮<b>不改</b>，如实记录。</p>
+<p><b>回归</b>：全量 <b>152/155</b>（新增 <code>event7117</code>），3 个未过均为与本改动无关的既有失败（<code>witcher16834</code>、<code>OldWorld_1034/2767</code>）→ B8G8R8A8 修复零回归。<code>event8040</code> 也已加入回归。诚实记录：本轮修 1 个、留 5 个（不同根因）。</p>
 <h1 id="step-204">204</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>

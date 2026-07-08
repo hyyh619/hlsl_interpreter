@@ -63,7 +63,7 @@ ul,ol{padding-left:26px}
 </ul>
 <p>矛盾点：<b>同一段基解码代码在 step201 的 <code>event7117</code> 上整例通过</b>（含切线），说明解码逻辑本身对；<br>本例第 0/1 列却错、第 2 列对。差异只可能来自<b>输入数据装载</b>（本例基数据来自 <code>t1</code>，<code>event7117</code><br>来自 <code>t2</code>）或某条<b>数据相关的罕见分支</b>。在没有逐语句 golden 的情况下无法进一步确证，且贸然改动<br>风险高（易砸 <code>event7117</code> 等已通过例），故本轮<b>不改</b>，如实记录待后续。</p>
 <h2>回归</h2>
-<p>&lt;!-- REGRESSION_RESULT --&gt;</p>
+<p><code>python run_regression.py</code> 全量 <b>152/155 PASS</b>（155 = step198 的 154 + step201 新增的<br><code>event7117</code>）。3 个未过均为与本改动无关的既有失败：<code>witcher3_countryside_event16834</code>（3/30）、<br><code>OldWorld_event1034</code> / <code>event2767</code>（0/203328，改前即 0/N）。其余全绿（含所有用到 B8G8R8A8<br>顶点属性的例）→ <b>R/B 交换零回归</b>。已把 <code>event8040</code> 也加入 <code>Cases/regression_test_zip_files.csv</code>。</p>
 <h2>结论</h2>
 <ul>
 <li>修好 <code>event8040</code>（B8G8R8A8 顶点色 R/B 交换）——通用正确性修复，已加入回归。</li>
