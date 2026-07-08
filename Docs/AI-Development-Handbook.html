@@ -615,6 +615,24 @@ Comparison FAILED: Some output data does not match golden data</code></pre>
 <li><b>失败先驱动定位</b>：和 TDD 一样，<b>先让失败可复现、可量化</b>（哪一行哪一分量差多少），再写最小修复。C1 就是先确认 <code>texgen</code> 读成 0（红），再精确改二进制重载循环（绿）。</li>
 </ul>
 <blockquote>与单元 TDD 的差别：这里的"测试用例"不是手写断言，而是<b>真机 golden 数据</b>；"测试框架"是 verify-by-log + 回归脚本。但红绿节奏、"测试驱动最小实现"、"测试防回归"三大要义完全一致。</blockquote>
+<h3>7.1 一个"AI 自己写测试"的例外：<code>depth clip</code>（step91）</h3>
+<p>绝大多数轮次都靠 golden + 回归当裁判。但有一个<b>回归和 golden 都盖不到</b>的角落，AI <b>主动手写了自己的 TDD 用例</b>——<a href="../<a href="Sessions/hlsl-interpreter-step91-implement-depth-clip.html">Sessions/hlsl-interpreter-step91-implement-depth-clip.html</a>">step91 实现完整 D3D depth clip</a>〔提示词原文：<a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html#step-20">ClaudeCode #20 实现 depth clip</a>〕。</p>
+<ul>
+<li><b>为什么 golden 失灵</b>：回归集里的每个真机 capture <b>都整幅落在屏幕内</b>，永远不会跨近/远平面，也没有相机背后（<code>w &lt; 0</code>）的顶点。于是新写的几何裁剪代码（三角形切分、<code>w&lt;0</code> 剔除、点/线深度重映射）<b>无论对错，golden 都是全绿</b>——真机数据对这段新逻辑完全"沉默"。回归 6/6 PASS 只能证明"没改坏既有路径"，<b>证明不了新功能是对的</b>。</li>
+<li><b>AI 的应对</b>：既然没有现成的"期望输出"，AI 就<b>自己造输入、自己定期望值</b>，写了一个<b>一次性 ad-hoc 脚本</b>（跑完即删，不进回归集），断言五条：</li>
+</ul>
+<table>
+<tr><th>用例</th><th>AI 自定的期望</th></tr>
+<tr><td>A. 完全在内的三角形</td><td><code>_clip_triangle</code> 原样返回 1 个子三角形（<b>同一批顶点对象</b>，恒等、零浮点扰动）</td></tr>
+<tr><td>B. 跨近平面的三角形</td><td>裁开成 2 个子三角形，像素比关闭时少，所有深度 ∈ [0,1]；关闭时多渲染那块、深度被钳制</td></tr>
+<tr><td>C. 相机背后顶点（<code>w &lt; 0</code>）</td><td>几何上被剔除，无垃圾坐标，深度 ∈ [0,1]</td></tr>
+<tr><td>D. 点列</td><td>开启保留 1/3（近/远越界丢弃）；关闭保留 3/3、深度钳到 <code>[0, 0.5, 1.0]</code></td></tr>
+<tr><td>E. <code>pipeline_state.csv</code> 里 <code>DepthClip,False</code></td><td>被正确解析成 <code>depth_clip_enable = False</code></td></tr>
+</table>
+<ul>
+<li><b>这才是"经典 TDD"的形态</b>：用例是<b>手写断言</b>（不是 golden CSV），输入是<b>合成的</b>（不是真机 capture），期望值由 AI 依据 D3D 规范<b>自己推导</b>。它和 §7 主线的"golden 即测试"互补——<b>golden 覆盖不到的新行为，AI 自己补一层测试兜底</b>。</li>
+<li><b>和回归的分工</b>：ad-hoc 脚本验证"<b>新功能对不对</b>"（用完即删）；回归集守"<b>别把老功能改坏</b>"（6/6 常驻）。两者叠加，才让这个"重写图元裁剪"的高风险改动敢落地。为什么脚本用完就删而不进回归？因为它依赖手工构造的合成图元，不是真机 capture，进回归会偏离"数据驱动、真机为准"的套件定位——它的价值在<b>实现当下的一次性验证</b>。</li>
+</ul>
 <hr>
 <h2>8 · 如何纠正 AI 的错误</h2>
 <p>AI 会犯错，纠错来自<b>四个机制</b>，本轮都出现了（与第二部分"靠人手改兜底"相比，这一期 AI 更多能<b>自我纠错</b>，人退到"裁判 + 推动者"）：</p>
