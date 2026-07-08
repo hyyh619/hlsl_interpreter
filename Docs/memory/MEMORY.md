@@ -1,0 +1,3 @@
+- [DXBC register-level golden tool](dxbc-register-golden-tool.md) — localize VS divergence: decompile bug vs shared-infra bug
+- [Failure-class structural walls](failure-class-structural-walls.md) — which Dump/ failure classes are structural (unfixable) vs genuine bugs
+- [Stage execution GS/DS/HS](stage-execution-gs-ds-hs.md) — multi-stage (GS done, DS/HS/tessellation planned) execution + bin+layout mesh-output comparison
