@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>stage-execution-gs-ds-hs</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Memory / stage-execution-gs-ds-hs</span></div>
+<div class="wrap">
+<h1>stage-execution-gs-ds-hs</h1><p style="color:var(--muted);margin-top:-6px">How multi-stage (GS, HS, DS + fixed-function tessellation) shader execution + mesh-output comparison works</p><p><span style="display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:1px 9px;font-size:12px;color:var(--muted)">project</span></p><p>The interpreter now runs <b>stages beyond VS</b> and compares each against RenderDoc's exact bin+layout mesh-output golden. Context for extending this (DS/HS/tessellation is the planned next step).</p>
+<p><b>Mesh-output golden (step 165):</b> <code>&lt;name&gt;_&lt;stage&gt;_mesh.bin</code> + <code>_&lt;stage&gt;_mesh_layout.csv</code> (Stage/Stride/NumVerts + per-attr SemanticName,Index,ComponentCount,VarType). <code>HLSLInterpreter.load_mesh_output_golden(bin, layout)</code> decodes it (keyed by canonical semantic, same keys the results use); <code>find_stage_mesh_dump(folder, stage)</code> locates the pair. Exact and unambiguous — prefer over the <code>_vs_mesh.csv</code>.</p>
+<p><b>GS execution (step 166):</b> <code>render._run_gs_stage</code> builds a GS interpreter, runs the GS over VS-output primitives, compares to <code>_gs_mesh.bin</code>. Key pieces in hlsl_interpreter.py: <code>_assemble_primitives(idx_list, topology)</code> (triangle-strip winding: even tri (i,i+1,i+2), odd (i,i+2,i+1)); <code>executeGS_with_params</code> (GS input slot → VS-output key by semantic; SV_VertexID = drawn index, SV_InstanceID = instance); <code>_execute_gs_main</code> (sets <code>v[i][j]</code> 2D per-primitive-vertex input; runs main); <code>stream.Append()</code>/<code>RestartStrip()</code> intercepted in <code>execute_statement</code> when <code>self._gs_emit</code> is set; <code>get_value</code> handles nested <code>v[i][j].swz</code>. Passthrough GS (Octopath event102/event4014) pass 6/6.</p>
+<p><b>GS emit classes SOLVED in step 169 — the "cbuffer decodes wrong" theory was FALSE</b> (birth indices decoded correctly all along; 411/412 IS the real birth range and the failing rows match it exactly). The real causes were 8 independent bugs, all fixed (regression 130/130):</p>
+<ul>
+<li>manhattan "GS" is a <b>VS+Stream-Output</b> draw (disasm <code>vs_4_0</code>, GS_shader.hlsl byte-identical to VS): <code>_run_gs_stage</code> now passes VS results through when the source has no <code>Stream&lt;&gt;</code>/<code>.Append(</code>, and trims the golden's all-zero SO-capacity tail. event50 PASSes (promoted); 87/124/161/198 fail only their 1-2 birthed rows = <code>frac(87362*sin(~80000))</code> big-phase hash → transcendental wall.</li>
+<li>StructuredBuffer struct members were killed by <code>// Offset:</code> comments (stride 176→16); stride now also overridden by buffer_params.csv ElementByteSize (<code>_captured_sb_strides</code>).</li>
+<li>SB member trailing swizzle was dropped (<code>t0[i].Position.y</code> → whole float4 → scalarized to .x — the "broadcast sv_position" signature).</li>
+<li><b>Non-indexed draws: SV_VertexID starts at 0</b> (StartVertexLocation offsets only VB fetch — D3D11, opposite of Vulkan/GL). VertexOffset=1 had shifted every particle.</li>
+<li><b>RenderDoc post-GS golden expands trianglestrips to triangle lists</b> (rows = strips×6 for quad strips; odd triangle = (i, i+2, i+1)). executeGS_with_params collects per-strip and expands when the disasm says <code>dcl_outputtopology trianglestrip</code>.</li>
+<li><code>f32tof16</code> must round TOWARD ZERO (<code>_f32_to_f16_rtz</code>), not nearest-even.</li>
+<li>Primitive-element SBs (<code>StructuredBuffer&lt;uint3&gt;</code>, <code>[i].xy</code> swizzles the element), matrix members (<code>._mRC</code> column-major c*4+r), and the 3Dmigoto artifact <code>rX = rX ? 0.000000 : 0</code> (= <code>and rX,rX,0xffff</code>) repaired in preprocess_hlsl.</li>
+</ul>
+<p>Residuals: sekiro2_14998 → 28974/29148 (TexCoord4 ~0.13, precision class); sekiro4_20560 count-exact, only TEXCOORD9 wrong = irradiance volume (Texture3D) RGBM alpha reads 1.0 → exp2 blowup (texture-decode class).</p>
+<p><b>Output-register convention:</b> RenderDoc inits each 4-component output register to (0,0,0,1); <code>_execute_void_main</code>/<code>_execute_gs_main</code> init float4 outputs to <code>[0,0,0,1]</code> so unwritten lanes match.</p>
+<p><b>HS/DS + tessellation (step 167):</b> <code>tessellator.py</code> = standalone fixed-function tessellator <code>tessellate(domain, edge_factors, inside_factors, partitioning)</code> → (points, prims) for tri/quad/isoline; integer factor 1 = minimal patch (quad→4 corners, tri→3). <code>executeHS_with_params</code> runs the HS control-point phase (empty decompiled body → identity passthrough of VS-output control points). <code>executeDS_with_params</code>/<code>_execute_ds_main</code> run the DS once per domain point per patch, setting <code>vicp[i][j]</code> (2D control points, reuses GS's <code>v[i][j]</code>), <code>vDomain</code>/<code>SV_DomainLocation</code>, and <code>vpc0..7</code> (patch constants, default 0). <code>render._run_ds_stage</code> wires VS→HS→tessellator→DS and compares to <code>_ds_mesh.bin</code>. <b>Key: RenderDoc DS-out golden count = patches × out_cp</b> (one DS eval per output control point/corner) — take the first <code>out_cp</code> minimal-patch corners as per-patch domain locations. All 5 golden cases count-match; framework proven by sekiro4 Color.xyz exact match (<code>o0.xyz=vicp[0][5]*vicp[0][1]</code>) + witcher geometry <code>vDomain*size+corner</code> (diff==size).</p>
+<p><b>Step 183 — witcher _ds_mesh golden layout SOLVED (16803/16817 PASS+promoted, 21346 855/1024, regression 152/152):</b> the "composite multi-corner rows" were a dump-writer artifact: the bin holds the VS OUTPUT STREAM (= HS input CPs) as records at the VS <code>dcl_output</code> MASK widths (o1 declared int4 in HLSL but dcl_output o1.x → width 1; int -1 bits = the NaN seen in golden), while the writer copies each row at the DS-OUT layout stride → rows OVERRUN into following records (16803: 16B records read with 60B stride; verified bit-exact sliding-window rows[i][4:]==rows[i+1][:11]). Fix: CP-stream compare truncates to cp_width = sum of VS dcl_output mask widths, gate generalized to in_cp==out_cp (21346 is 4x4), per-semantic lane placement for shared slots (CORNER@.xy SIZE@.z CM@.w), plus the interpreter-wide <code>_dedupe_duplicate_out_params</code> preprocess fix: 3Dmigoto names ALL slot-shared extra outputs <code>pN</code>, so two semantics collide (both <code>p0</code>) and the second body assignment silently destroyed the first's value — renamed p0__dupK by program order (assignment count must equal decl count). 21346's remaining 169 rows are cp[4] (clipmap page index from the per-frame-updated t17 page table): our containment test is provably correct against the dumped rects — t17 is the FOURTH member of the stale-frame-dynamic-resource family (t22, cb12, t1, t17). HS/DS as an interpreter-defect class is now EMPTY.</p>
+<p><b>Step 181 UPDATE — HS fork/join phases now EXECUTABLE + sekiro4 pair PASSES (regression 150/150):</b> (1) dxbc_interp.py extended: icb (immediateConstantBuffer) operands, dynamic <code>o[r0.x+0].x</code> dests, real <code>ld/ld_indexable</code> + <code>resinfo</code> via resource hooks. render.<code>_run_hs_patch_phases</code> splits HS disasm fork/join phases, runs them per patch/instance through the VM (vicp/vocp/vForkInstanceID inputs, HS cbuffer bins + HS textures wired), collects SV_TessFactor via dcl_output_siv (_SIV_FACTOR_NAMES) and vpc rows, feeding executeDS_with_params(patch_constants=...) — witcher's 464-instruction fork phase runs fine (vpc0.y real now). (2) sekiro4_19857/20244 SOLVED: the step-167 diagnosis was wrong on both counts — SB stride was already fixed by step-169 machinery, and the <code>_ds_mesh</code> golden for in_cp=out_cp=1 point-sprite patches is the HS CONTROL-POINT STREAM (every varying golden column = a CP attribute), flat CP floats re-sliced by the DS-out layout with widths from HS disasm dcl_input masks (v[1][9].xyz→3; decompiled HLSL pads all to float4) and multi-semantic slot packing (CORNER.xy+SIZE.z+CM_LEVEL.w share a slot). CP-passthrough compare implemented in _run_ds_stage; both promoted. (3) witcher 16803/16817/21346 STILL BLOCKED on the golden layout: their _ds_mesh rows pack MULTIPLE domain-corner evaluations into ONE row (sv_position=(corner.xy,size,0) at domain(0,0); TexCoord=corner+size at domain(1,0); UInt bit-pattern columns) — needs dedicated forensics of the dump format before comparisons can align.</p>
+<p><b>HS/DS structural walls (step 167):</b> witcher3 (16803/16817/21346) DS reads <code>vpc0.y</code> = the HS <b>fork/join (patch-constant) phase</b> output, which the 3Dmigoto decompiler <b>drops</b> (HLSL keeps only the empty control-point phase) → unfixable without that source. sekiro4 (19857/20244) DS: point-sprite SV_POSITION golden is <code>(0,0,0,w)</code> (xyz≡0 RenderDoc convention) + tile-based lighting reads <code>StructuredBuffer&lt;PointLight&gt;</code> whose struct stride is misdetected as 16B (should infer from struct layout) → <code>o10</code>/TEXCOORD10 wrong. sekiro2 tessellation cases have no <code>_ds_mesh.bin</code> (no golden).</p>
+<p>Related: [[dxbc-register-golden-tool]], [[failure-class-structural-walls]].</p>
+</div></body></html>

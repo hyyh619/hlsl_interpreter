@@ -16,6 +16,7 @@ PROMPT_DIR = os.path.join(ROOT, 'Prompts')
 DOCS = os.path.join(ROOT, 'Docs')
 OUT_SESS = os.path.join(DOCS, 'Sessions')
 OUT_PROMPT = os.path.join(DOCS, 'Prompts')
+MEM_DIR = os.path.join(DOCS, 'memory')  # memory *.md live here; html written alongside
 
 CSS = """
 :root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
@@ -468,6 +469,53 @@ for fname, hl in prompt_specs:
                home='../index.html', crumb=f'Prompts / {stem}')
     print(f'Prompt: {stem}.html written')
 
+# ---- 2b. Convert Docs/memory/*.md -> Docs/memory/*.html --------------------
+# Memory files carry YAML frontmatter (name/description/metadata.type) and no
+# markdown '#' heading. Strip the frontmatter, synthesize a title + description +
+# type badge header, then render the body. MEMORY.md is the index; its
+# `[t](file.md)` links are rewritten to `.html` by inline() automatically.
+def split_frontmatter(md):
+    m = re.match(r'^---\s*\n(.*?)\n---\s*\n?', md, re.S)
+    if not m:
+        return {}, md
+    fm = {}
+    for line in m.group(1).split('\n'):
+        km = re.match(r'^\s*([A-Za-z_][\w]*):\s*(.*)$', line)
+        if km and km.group(2).strip():
+            v = km.group(2).strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in '"\'':
+                v = v[1:-1]
+            fm.setdefault(km.group(1), v)
+    return fm, md[m.end():]
+
+mem_entries = []  # (stem, name, description) for the index, MEMORY.md excluded
+if os.path.isdir(MEM_DIR):
+    for p in sorted(glob.glob(os.path.join(MEM_DIR, '*.md'))):
+        stem = os.path.splitext(os.path.basename(p))[0]
+        md = open(p, encoding='utf-8').read()
+        fm, body_md = split_frontmatter(md)
+        body = convert_body(body_md, sess_prefix='../')  # memory/ -> ../Sessions/
+        if stem == 'MEMORY':
+            name, desc = '记忆库索引 (MEMORY.md)', '所有记忆条目的索引'
+            header = f'<h1>{html.escape(name)}</h1>'
+        else:
+            name = fm.get('name', stem)
+            desc = fm.get('description', '')
+            typ = fm.get('type', '')
+            badge = (f'<span style="display:inline-block;background:var(--panel2);'
+                     f'border:1px solid var(--line);border-radius:10px;padding:1px 9px;'
+                     f'font-size:12px;color:var(--muted)">{html.escape(typ)}</span>'
+                     if typ else '')
+            header = (f'<h1>{html.escape(name)}</h1>'
+                      + (f'<p style="color:var(--muted);margin-top:-6px">{html.escape(desc)}</p>'
+                         if desc else '')
+                      + (f'<p>{badge}</p>' if badge else ''))
+            mem_entries.append((stem, name, desc))
+        title = name
+        write_page(os.path.join(MEM_DIR, stem + '.html'), title, header + body,
+                   home='../index.html', crumb=f'Memory / {stem}')
+    print(f'Memory: {len(glob.glob(os.path.join(MEM_DIR, "*.md")))} html written')
+
 # ---- 3. Index page ----------------------------------------------------------
 def step_num(stem):
     m = re.search(r'step(\d+)', stem)
@@ -481,11 +529,23 @@ for p in sorted(sess_files, key=lambda x: step_num(os.path.basename(x))):
     sess_links.append(f'<li><a href="Sessions/{stem}.html">{html.escape(t)}</a> '
                       f'<span style="color:#6b7480;font-size:12px">{stem}</span></li>')
 
+mem_links = []
+for stem, name, desc in mem_entries:
+    d = f' <span style="color:#6b7480;font-size:13px">— {html.escape(desc)}</span>' if desc else ''
+    mem_links.append(f'<li><a href="memory/{stem}.html">{html.escape(name)}</a>{d}</li>')
+mem_section = ''
+if mem_links:
+    mem_section = (f'<h2>记忆库 (Memory, {len(mem_links)})</h2>\n'
+                   f'<p style="color:#6b7480;margin-top:-6px">跨会话沉淀的经验事实，另见'
+                   f' <a href="memory/MEMORY.html">MEMORY.md 索引</a>。</p>\n<ul>\n'
+                   + os.linesep.join(mem_links) + '\n</ul>')
+
 idx_body = f"""<h1>HLSL Interpreter 开发文档</h1>
 <h2>手册</h2>
 <ul>
 <li><a href="AI-Development-Handbook.html">AI 辅助开发手册</a></li>
 </ul>
+{mem_section}
 <h2>提示词历史 (Prompts)</h2>
 <ul>
 <li><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html">Claude Code Session 提示词历史</a>（每步经 <code>Sessions/...md</code> 引用链接到对应 Session）</li>
