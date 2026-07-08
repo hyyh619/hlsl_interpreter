@@ -2669,6 +2669,15 @@ class HLSLInterpreter:
             lod = self.evaluate_syntax_tree(args[2], local_vars) if len(args) > 2 else 0.0
             if isinstance(lod, list):
                 lod = lod[0] if lod else 0.0
+            # A Texture1D's coordinate arrives as a bare scalar (u only), not a
+            # (u, v) list — e.g. particle GSs sampling a 1024x1 R32G32B32A32_FLOAT
+            # random-vector table by g_GameTime. Treat it as u with v=0 (the
+            # texture's single row) so the sample resolves instead of returning
+            # None (which silently zeroed the sampled term).
+            if isinstance(coords, (int, float)):
+                coords = [float(coords), 0.0]
+            elif coords and isinstance(coords, list) and len(coords) == 1:
+                coords = [coords[0], 0.0]
             if coords and isinstance(coords, list) and len(coords) >= 2:
                 u, v = coords[0], coords[1]
                 binding = self._find_texture_binding(obj_name)
@@ -7286,9 +7295,31 @@ class HLSLInterpreter:
             sem_full = f'{sem.upper()}{idx}' if idx > 0 else sem.upper()
             return sem_to_key.get(sem_full, sem_full)
 
-        # GS input slot -> (canonical VS-result key, semantic upper), by slot.
-        slot_meta = [(_canon(s['semantic'], s['index']), s['semantic'].upper())
-                     for s in sorted(gs_input_sig, key=lambda r: r['slot'])]
+        # GS input registers: the decompiled body reads `v[i][r]`, where r is the
+        # INPUT REGISTER index — NOT the signature-row position. Multiple
+        # signature rows can pack into a single register (e.g. SIZE.xy + AGE.z
+        # both at slot 2), so grouping by list position shifts every later
+        # register by one and misreads packed lanes (AGE read as SIZE.z, TYPE
+        # read as AGE, etc. — which flips a particle GS's emit decisions). Group
+        # the signature entries by their register (slot) and merge the packed
+        # semantics into one register vector at consecutive component offsets.
+        # Component widths come from the GS input params (by semantic).
+        comp_by_sem = {}
+        for p in gs_input_params:
+            base = p['semantic_base'].upper()
+            semf = f'{base}{p["semantic_index"]}' if p['semantic_index'] > 0 else base
+            comp_by_sem[semf] = min(self._type_component_count(p['type']), 4)
+
+        reg_groups = {}   # register index -> [(canonical key, semantic upper, comp)]
+        max_reg = -1
+        for s in sorted(gs_input_sig, key=lambda r: r['slot']):
+            sem_up = s['semantic'].upper()
+            sem_full = f'{sem_up}{s["index"]}' if s['index'] > 0 else sem_up
+            key = _canon(s['semantic'], s['index'])
+            comp = comp_by_sem.get(sem_full, 4)
+            reg_groups.setdefault(s['slot'], []).append((key, sem_up, comp))
+            if s['slot'] > max_reg:
+                max_reg = s['slot']
         # GS output param -> (canonical key, component count).
         out_keys = [(_canon(p['semantic_base'], p['semantic_index']),
                      p['name'], min(self._type_component_count(p['type']), 4))
@@ -7325,14 +7356,43 @@ class HLSLInterpreter:
                         # (falls back to the position); SV_InstanceID = inst.
                         vid = (idx_list[vpos] if idx_list and vpos < len(idx_list)
                                else vpos)
-                        attrs = []
-                        for key, sem in slot_meta:
+
+                        def _fetch(key, sem):
                             if sem.startswith('SV_VERTEXID'):
-                                attrs.append(vs.get(key, vid))
-                            elif sem.startswith('SV_INSTANCEID'):
-                                attrs.append(inst)
+                                return vs.get(key, vid)
+                            if sem.startswith('SV_INSTANCEID'):
+                                return inst
+                            return vs.get(key, [0.0, 0.0, 0.0, 0.0])
+
+                        # Build the register array indexed by register number, so
+                        # v2d[i][r] == input register r (matches the `v[i][r]`
+                        # decompiled accessor even when semantics pack per slot).
+                        attrs = []
+                        for r in range(max_reg + 1):
+                            entries = reg_groups.get(r, [])
+                            if len(entries) <= 1:
+                                # One semantic (or none) in this register: pass the
+                                # value straight through — identical to the prior
+                                # behaviour for the common unpacked case.
+                                if entries:
+                                    key, sem, _ = entries[0]
+                                    attrs.append(_fetch(key, sem))
+                                else:
+                                    attrs.append([0.0, 0.0, 0.0, 0.0])
                             else:
-                                attrs.append(vs.get(key, [0.0, 0.0, 0.0, 0.0]))
+                                # Packed register: lay each semantic's components
+                                # into consecutive lanes (SIZE.xy then AGE.z, ...).
+                                merged = [0.0, 0.0, 0.0, 0.0]
+                                off = 0
+                                for key, sem, comp in entries:
+                                    val = _fetch(key, sem)
+                                    if not isinstance(val, list):
+                                        val = [val]
+                                    for i in range(comp):
+                                        if off < 4:
+                                            merged[off] = val[i] if i < len(val) else 0.0
+                                            off += 1
+                                attrs.append(merged)
                         v2d.append(attrs)
                     self._execute_gs_main(self.hlsl_code, main_func,
                                           gs_input_params, gs_output_params, v2d, inst)

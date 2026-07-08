@@ -4189,9 +4189,19 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit: fix(gs): index GS input by register (pack shared-slot semantics) + Texture1D scalar SampleLevel
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel.md`。
+
+定时扫描发现 7 个新 case（4× heaven_frame2596、3× longshu-*）。5 个直接通过；2 个 longshu 粒子几何着色器（GS + Stream Output）失败，报 `GS emitted-vertex count != golden`。
+
+**主 bug —— GS 输入寄存器打包错位**：反编译体用 `v[i][r]`（r=输入寄存器号）读输入，但 `GS_input_output_signature.csv` 把 `SIZE`(.xy) 与 `AGE`(.z) 打包在**同一 slot 2**。`executeGS_with_params` 原按"每签名行一条目"的扁平列表建 `v2d`，`v[i][j]` 按列表位置索引 → `v[0][2].z`（应为 AGE）读到 SIZE、`v[0][3].x`（应为 TYPE）读到 AGE，粒子发射判断全乱。修复：按寄存器号(slot)分组签名条目，把打包进同寄存器的语义按连续分量偏移合并成一个向量，`v2d[i][r]` 改为**按寄存器号索引**；单语义寄存器直传（未打包 GS 如 sekiro4 字节级不变，零回归）。
+
+**次 bug —— Texture1D 的 SampleLevel 标量坐标被守卫误挡**：新粒子速度/位置取自 `g_TextureRandom.SampleLevel(...)`（Texture1D，坐标是标量）。`SampleLevel` 的 `len(coords)>=2` 守卫把 1D 标量坐标挡掉返回 None（静默清零）。修复：标量/单元素坐标补成 `[u,0.0]` 再采样。
+
+结果：`longshu-case-35-1_event128` **0/19 → 19/19 全过**，已 `cp` 进 `Cases/` 并入回归。`event166` 156/161，剩 5 行随机纹理发射粒子 POSITION 差 0.007~0.028（`= EmitPos + 30*random`，采样误差被 ×30 且不归一化）——落在既有 GS/纹理 float32 精度极限（step153/162/163），判为已知精度差、不追。定向回归：清单里全部 5 个含 GS 的 case + witcher/Octopath SampleLevel 重点例全 0 error、零回归（沙箱无法跑完 157 例全量，建议本机复跑 `run_regression.py` 终验）。7 个新 case 名全部登记进 `dump_case.csv`。
 
 # 205
 ## Prompts
@@ -4201,9 +4211,17 @@ Notice:
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit: chore(dump): commit pending step203 longshu GS + Texture1D SampleLevel fix
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step204-commit-pending-longshu-gs-fix.md`。
+
+本轮定时扫描 `Dump/` **无新 case**（差集为 0；step 203 已把 7 个新 case 全部登记进 `dump_case.csv`）。核心发现：step 203 的修复（longshu 粒子 GS 输入寄存器打包错位 + Texture1D 标量 `SampleLevel` 被守卫误挡）**代码已落盘但从未提交/推送**——当时被残留的空 `.git/index.lock` 卡住，而 mount 禁止删除该锁。
+
+本轮关键突破：mount 现已允许**同目录 rename**（删除仍被禁）。故把残留 `index.lock` `mv` 挪开即可解锁 git 提交。gitignore 甄别：`dump_*`、`Cases`、`*.zip` 均被忽略，故 step203 对 `dump_case.csv`/回归 CSV/`event128.zip` 的改动只存在工作区（符合仓库约定，不进 git）；可提交项仅 `hlsl_interpreter.py` + Prompts + step203/step204 两个 Session。
+
+提交前定向回归（全流水线，tol=0.005）：`longshu-case-35-1_event128` PASS 19/19、`manhattan_frame_274_event50`（GS 单语义寄存器直传）PASS 1000/1000、`Octopath-frame746_event102`（纹理）PASS 6/6，全 0 error，零回归。已 `git commit` + `git push origin main`。已通过 case 因 mount 仍禁 `rm` 无法从 `Dump/` 物理删除，但已登记 `dump_case.csv`，下轮自动跳过。
 
 # 206
 ## Prompts
