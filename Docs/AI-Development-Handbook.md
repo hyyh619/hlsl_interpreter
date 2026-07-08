@@ -896,6 +896,49 @@ C3 改动会改变 `(int)floatattr` 的语义，AI 担心破坏既有的打包-u
 >
 > **纪律**：① 不记录代码/git 已经记录的东西（结构、历史、`CLAUDE.md` 已写的）；② 先查重再写，宁可更新已有文件、错的要删；③ 召回的记忆是"**当时为真**"的背景，引用到具体文件/函数时**要先核实其仍存在**；④ "无解"条目必须写清是**信息死路**还是**暂缓待复核**（见 §9.3）。
 
+### 9.5 真实记忆库逐条详解（`Docs/memory/` 十条）
+
+前面 §9.1–9.4 讲机制、§9.2 用**概念化**示例说明"记什么"。本节换成**本项目此刻真实在用的记忆文件**——它们已随仓库归档到 [`Docs/memory/`](memory/MEMORY.html) 并渲染成可读网页（会话运行时的正本在 `~/.claude/projects/.../memory/`）。除两份索引（`MEMORY.md`、`MEMORY1.md`）外共 **10 条经验事实**，全部 `type: project`。
+
+**一条记忆长什么样（`golden-vs-mesh-sv-position-first.md` 原文格式）**——`YAML frontmatter`（`name`/`description`/`metadata.type`）+ 一段"事实 + 为什么 + 怎么用"的正文：
+
+```markdown
+---
+name: golden-vs-mesh-sv-position-first
+description: RenderDoc *_vs_mesh.csv golden data dumps SV_Position columns first regardless of header order
+metadata:
+  type: project
+---
+
+In RenderDoc/3Dmigoto `*_vs_mesh.csv` golden VS-output dumps, the data columns
+are laid out with SV_Position FIRST … even though the column header names follow
+declaration order. `load_vs_golden_from_mesh_csv` (step105) assigns physical
+component columns positionally … Diagnostic tell: VS comparison fails on ALL rows
+but the depth comparison still matches ~99% → our SV_Position is correct and the
+golden column mapping is the problem, not the interpreter.
+```
+
+> 三段式是关键：**事实**（是什么）+ **诊断信号 / Why**（凭什么现象想到它）+ **How to apply**（下次怎么用）。只记"事实"而不记"诊断信号"，召回时对不上现场；只记结论而不记"为什么"，就退化成又一条无法复核的 `CLAUDE.md` 规则。
+
+下表把 10 条逐一展开——**记的核心事实** / **诊断信号即"看到什么就召回它"** / **来源 step**：
+
+| 记忆文件（`memory/*.md`） | 记的核心事实 | 诊断信号 / 如何应用 | 来源 |
+|---|---|---|---|
+| [`golden-vs-mesh-sv-position-first`](memory/golden-vs-mesh-sv-position-first.html) | `*_vs_mesh.csv` golden 的**数据列把 SV_Position 排最前**、其余按声明序，但**列 header 仍按声明序**→ header 与数据错位。`load_vs_golden_from_mesh_csv` 按**物理位置**赋列而非按 header 名 | **VS 全行报错但 depth 比对仍 ~99% 匹配** → 我们的 SV_Position 其实对，错的是 golden 列映射，别去改解释器 | [step105](Sessions/hlsl-interpreter-step105-golden-mesh-sv-position-first-column-order.md) |
+| [`witcher3-array-cbuffers-instanced-inputs`](memory/witcher3-array-cbuffers-instanced-inputs.html) | ① 数组 cbuffer（`float4 cb1[4]` 存成 `cb1_v0/_v1…`）；② 逐实例输入（`INSTANCE_TRANSFORM*` 不在 `ia_vertex_data.csv`，在 `PerInstance=True` 的 `vb_slot{N}.bin`） | **关键陷阱**：slot 的 bound `ByteOffset` 常非零（如 1727552），实例数据**不从文件字节 0 开始**；假设单实例 draw（`golden 行数==顶点数` 时成立） | [step104](Sessions/hlsl-interpreter-step104-array-cbuffers-and-instanced-vertex-inputs.md) |
+| [`per-vertex-binary-vb-decode-r10a2`](memory/per-vertex-binary-vb-decode-r10a2.html) | witcher NORMAL/TANGENT 的 CSV 列**全 0**、`CompByteWidth=0`，真实字节是 **R10G10B10A2_UNORM**（4 分量塞进 4 字节、2-bit alpha 是切线手性符号），按 R10G10B10A2 解、不是 R8G8B8A8 | **一致性守卫** `_values_agree`：非退化元素**仅当二进制与 CSV 一致才替换**（退化的零 CSV 才无条件用二进制）——否则会把 `BLENDINDICES:R8G8B8A8_UINT` 解坏成 `[0,0,0,0]` | [step117](Sessions/hlsl-interpreter-step117-witcher-countryside-event6977-8775-binary-vb-and-multioutput.md) |
+| [`structured-buffer-skinning-support`](memory/structured-buffer-skinning-support.html) | 骨骼调色板 `StructuredBuffer<t0_t> t0`、`t0[r1.y].val[48/4]` 的解析/按需解码（step106 加） | 两个通用修复：**① NaN mask 比对**（旧 `abs>tol` 对 NaN 恒 False → NaN 静默算 PASS；诊断信号：**VS "过"但管线 0 像素/全裁剪** → 实为 NaN）；② `[]` 深度跟踪（`48/4` 曾被误当顶层除法） | [step106](Sessions/hlsl-interpreter-step106-structured-buffer-skinning-and-nan-mask-fix.md) |
+| [`raw-img-texture-loading`](memory/raw-img-texture-loading.html) | 纹理优先从 raw `.img` 按 `texture_params.csv` 的 DXGI Format 解码（.img **行主序不翻转**，BMP 才翻）；`R0G0B0A0_UNORM`=BC7 回退 .bmp | 旧 BMP 路径有 **R/B 交换**（用 .img 修）；PS 颜色比对 `Error [PixelDiff]` **非门禁**。**同条还记了 DXBC split-vector-load hazard → `_sb_index_burst` 按语句复位**——正是 §step208 把它扩到 if/while 块内的那个机制 | [step113](Sessions/hlsl-interpreter-step113-raw-img-texture-loading.md) · [step114](Sessions/hlsl-interpreter-step114-texture-load-and-dxbc-vector-load-hazard-event1399.md) |
+| [`nested-ifelse-intrinsics-and-rel-tolerance`](memory/nested-ifelse-intrinsics-and-rel-tolerance.html) | step116 起补齐：`floor/frac/ceil/round/trunc`、花括号匹配抽任意深 `if/else`、`else` 粘 `if`、相对容差 `max(tol, 2e-5·abs(golden))` | **VS 全 0** → 疑某个**未实现 intrinsic** 返回 None 毒化表达式；**所有顶点输出相同** → 疑 `else` 分支被丢；**大幅值输出的微小绝对差** → f32-vs-f64 精度、非逻辑 bug | [step116](Sessions/hlsl-interpreter-step116-witcher-countryside-nested-if-else-intrinsics-and-relative-tolerance.md) |
+| [`stage-execution-gs-ds-hs`](memory/stage-execution-gs-ds-hs.html) | 解释器跑 VS 之外阶段（GS/HS/DS + 定点镶嵌），对 RenderDoc 精确 `bin+layout` mesh golden 比对；含图元装配、`stream.Append`、镶嵌、**输出寄存器初值 `(0,0,0,1)`** 约定 | 扩 DS/HS/镶嵌时的上下文底座；多条"曾判不可修、实为 bug"的翻案都在此（别再当死路追） | [step165](Sessions/hlsl-interpreter-step165-mesh-output-bin-layout-comparison.md)–[step183](Sessions/hlsl-interpreter-step183-witcher-ds-golden-layout-solved.md) |
+| [`dxbc-register-golden-tool`](memory/dxbc-register-golden-tool.html) | `dxbc_diff.py`+`dxbc_interp.py`（step154）是**寄存器级 golden**：`dxbc_interp` 是 vs_5_0 反汇编 VM，跑 `VS_shader_disasm.txt` 的**精确**指令流 | VS 输出偏离 golden 时**判因**：DXBC VM 匹配 golden 但 HLSL 解释器不匹配 → **反编译 bug**；DXBC VM 也错 → **共享基础设施 bug**（输入装载/采样）。用法 `python dxbc_diff.py ./Cases/<case>.zip <vtx>` | [step154](Sessions/hlsl-interpreter-step154-vs-register-level-dxbc-golden.md) |
+| [`failure-class-structural-walls`](memory/failure-class-structural-walls.html) | `Dump/` 失败的**结构墙 vs 真 bug 地图**：无 golden、transcendental 墙（GPU sin/rsqrt 硬件近似，**libm 已是最佳、勿再试 reduction 模型**）、stale frame-dynamic 资源（capture 时序）、203k 顶点超时（性能非正确性） | §9.3"死路 vs 暂缓"的**实体清单**；也记了多个"曾判死路、后被修"的翻案——引用前先看该条是否已被后续 step 推翻 | [step154](Sessions/hlsl-interpreter-step154-vs-register-level-dxbc-golden.md)–[step183](Sessions/hlsl-interpreter-step183-witcher-ds-golden-layout-solved.md) |
+| [`rundrawfromdump-octopath-tank-batch`](memory/rundrawfromdump-octopath-tank-batch.html) | Dump 有 280 zip（Octopath GS/instanced、Tank、witcher）；**triage-first** 工作流：headless runner → 按首个 `Error:` 签名+shader 特征聚类 → 按根因类修 → 每类一个代表加进本地回归 CSV | 面对一大批新 capture 的**标准打法**；列了 Octopath 多类修复（注释剥离/`mad`/标量 swizzle/二进制 cbuffer/typed `Buffer.Load`/`SV_VertexID`）与仍未修类（quaternion SNORM-vs-UNORM 不可判、Tank 超时） | [step118](Sessions/hlsl-interpreter-step118-rundrawfromdump-octopath-tank-triage-and-fixes.md) |
+
+> **"复利"的一个实锤**：`raw-img-texture-loading` 在 **step113/114** 记下的 *DXBC split-vector-load hazard → `_sb_index_burst` 按语句复位* 这条机制，直接是 **step208** 修 BlackMyth `event8750/9055`（切线有限差分 `t8[i+1]` 被读成 `t8[i]`）的钥匙——那次只是发现该复位漏在了 `if/while` 块体内、把同一条规则补进 `execute_block`。**一条 90+ 步之前写下的记忆，省掉了重新逆向"为什么两次结构化读拿到同一个索引"的一整轮。** 这正是 §9.1"能力随项目累积而复利"的字面兑现。
+>
+> **对照看**：§9.2 的表是**按"避免重复开发"重新叙述**的概念条目（名字可能与文件名不同），本节 §9.5 是**磁盘上真实文件的逐条正本**——两者互为索引：想懂"机制/价值"看 §9.2，想查"现在到底有哪些、原文怎么写"看 §9.5。
+
 ---
 
 ## 10 · b/c 两个开发部分的对比和优缺点总结
