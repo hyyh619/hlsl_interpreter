@@ -1895,20 +1895,36 @@ ul,ol{padding-left:26px}
 <h1 id="step-204">204</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
-<h2>Git commit:</h2>
+<h2>Git commit: fix(gs): index GS input by register (pack shared-slot semantics) + Texture1D scalar SampleLevel</h2>
 <h2>Claude Code Session</h2>
+<p>详见 <a href="../Sessions/hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel.html"><code>Sessions/hlsl-interpreter-step203-longshu-gs-register-packing-and-texture1d-samplelevel.md</code></a>。</p>
+<p>定时扫描发现 7 个新 case（4× heaven_frame2596、3× longshu-*）。5 个直接通过；2 个 longshu 粒子几何着色器（GS + Stream Output）失败，报 <code>GS emitted-vertex count != golden</code>。</p>
+<p><b>主 bug —— GS 输入寄存器打包错位</b>：反编译体用 <code>v[i][r]</code>（r=输入寄存器号）读输入，但 <code>GS_input_output_signature.csv</code> 把 <code>SIZE</code>(.xy) 与 <code>AGE</code>(.z) 打包在<b>同一 slot 2</b>。<code>executeGS_with_params</code> 原按"每签名行一条目"的扁平列表建 <code>v2d</code>，<code>v[i][j]</code> 按列表位置索引 → <code>v[0][2].z</code>（应为 AGE）读到 SIZE、<code>v[0][3].x</code>（应为 TYPE）读到 AGE，粒子发射判断全乱。修复：按寄存器号(slot)分组签名条目，把打包进同寄存器的语义按连续分量偏移合并成一个向量，<code>v2d[i][r]</code> 改为<b>按寄存器号索引</b>；单语义寄存器直传（未打包 GS 如 sekiro4 字节级不变，零回归）。</p>
+<p><b>次 bug —— Texture1D 的 SampleLevel 标量坐标被守卫误挡</b>：新粒子速度/位置取自 <code>g_TextureRandom.SampleLevel(...)</code>（Texture1D，坐标是标量）。<code>SampleLevel</code> 的 <code>len(coords)&gt;=2</code> 守卫把 1D 标量坐标挡掉返回 None（静默清零）。修复：标量/单元素坐标补成 <code>[u,0.0]</code> 再采样。</p>
+<p>结果：<code>longshu-case-35-1_event128</code> <b>0/19 → 19/19 全过</b>，已 <code>cp</code> 进 <code>Cases/</code> 并入回归。<code>event166</code> 156/161，剩 5 行随机纹理发射粒子 POSITION 差 0.007~0.028（<code>= EmitPos + 30*random</code>，采样误差被 ×30 且不归一化）——落在既有 GS/纹理 float32 精度极限（step153/162/163），判为已知精度差、不追。定向回归：清单里全部 5 个含 GS 的 case + witcher/Octopath SampleLevel 重点例全 0 error、零回归（沙箱无法跑完 157 例全量，建议本机复跑 <code>run_regression.py</code> 终验）。7 个新 case 名全部登记进 <code>dump_case.csv</code>。</p>
 <h1 id="step-205">205</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
-<h2>Git commit:</h2>
+<h2>Git commit: chore(dump): commit pending step203 longshu GS + Texture1D SampleLevel fix</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-206">206</h1>
+<p>详见 <a href="../Sessions/hlsl-interpreter-step204-commit-pending-longshu-gs-fix.html"><code>Sessions/hlsl-interpreter-step204-commit-pending-longshu-gs-fix.md</code></a>。</p>
+<p>本轮定时扫描 <code>Dump/</code> <b>无新 case</b>（差集为 0；step 203 已把 7 个新 case 全部登记进 <code>dump_case.csv</code>）。核心发现：step 203 的修复（longshu 粒子 GS 输入寄存器打包错位 + Texture1D 标量 <code>SampleLevel</code> 被守卫误挡）<b>代码已落盘但从未提交/推送</b>——当时被残留的空 <code>.git/index.lock</code> 卡住，而 mount 禁止删除该锁。</p>
+<p>本轮关键突破：mount 现已允许<b>同目录 rename</b>（删除仍被禁）。故把残留 <code>index.lock</code> <code>mv</code> 挪开即可解锁 git 提交。gitignore 甄别：<code>dump_*</code>、<code>Cases</code>、<code>*.zip</code> 均被忽略，故 step203 对 <code>dump_case.csv</code>/回归 CSV/<code>event128.zip</code> 的改动只存在工作区（符合仓库约定，不进 git）；可提交项仅 <code>hlsl_interpreter.py</code> + Prompts + step203/step204 两个 Session。</p>
+<p>提交前定向回归（全流水线，tol=0.005）：<code>longshu-case-35-1_event128</code> PASS 19/19、<code>manhattan_frame_274_event50</code>（GS 单语义寄存器直传）PASS 1000/1000、<code>Octopath-frame746_event102</code>（纹理）PASS 6/6，全 0 error，零回归。已 <code>git commit</code> + <code>git push origin main</code>。已通过 case 因 mount 仍禁 <code>rm</code> 无法从 <code>Dump/</code> 物理删除，但已登记 <code>dump_case.csv</code>，下轮自动跳过。</p>
+<h1 id="step-206">206 继续修复 not fixed: event9319 family (3256/9526/9829/15293_8040)</h1>
 <h2>Prompts</h2>
+<p>继续修复下列问题<br>Investigated, not fixed: event9319 family (3256/9526/9829/15293_8040)<br>A different, deeper skinning/morph decode shader. Per-statement tracing showed: normal (TEXCOORD10) is correct, but tangent (TEXCOORD11) and worldpos (TEXCOORD7) are off. I traced it to basis columns 0/1 disagreeing with the GPU (o0 happens to only validate col 2 here, so it stays correct) — and confirmed the interpreter's dataflow is right (no missed overwrite). The paradox: the identical decode code passes fully on step201's event7117, so the difference must be in data loading or a data-dependent path I couldn't confirm without per-statement golden. I chose not to force a speculative change — the risk of breaking already-passing cases (like event7117) is real. Documented honestly for follow-up.</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
-<h2>Git commit:</h2>
+<h2>Git commit: fix(interpreter): parallel semantics for movc swap pairs (step 205)</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-207">207</h1>
+<p>详见 <a href="../Sessions/hlsl-interpreter-step205-blackmyth-movc-swap-pair-parallel-semantics.html"><code>Sessions/hlsl-interpreter-step205-blackmyth-movc-swap-pair-parallel-semantics.md</code></a>。</p>
+<p><b>根因 —— movc 交换对的并行 vs 顺序语义</b>（数据相关的切线错）。用 <code>event9319</code> row 0 逐语句轨迹测各基向量幅值：法线列（<code>r18</code>）<code>|·|=1.0</code> 正确，切线两列（<code>r17</code>/<code>r2.xyw</code>）只有 ~0.57。定位到 3Dmigoto 把一对 DXBC <code>movc</code> 渲染成一行：<code>r0.x = (int)r5.z ? r0.x : r5.w; r2.x = (int)r5.z ? r5.w : r0.x;</code>。GPU 上两条并行、各读<b>旧</b> <code>r0.x</code>；解释器拆成两条顺序语句后，第 2 条读到第 1 条刚写的<b>新</b> <code>r0.x</code>，<code>r2.x</code> 拿错值 → 切线基幅值错。</p>
+<p><b>为何 step201 的 <code>event7117</code> 过、<code>event9319</code> 不过</b>（同段代码）：条件 <code>(int)r5.z</code> 是逐顶点符号位——<code>event7117</code> row0=32768(TRUE)，第 1 条是恒等操作、不改 <code>r0.x</code>，无冲突；<code>event9319</code> row0=0(FALSE)，第 1 条改了 <code>r0.x</code>，触发冲突。典型<b>数据相关顺序冲突</b>。</p>
+<p><b>修复</b>（<code>GenerateStmts</code> 新增 <code>_rewrite_movc_swaps</code>）：识别相邻 movc 交换对 <code>d1=c?A:B; d2=c?B:A;</code>（同条件、操作数互换、<code>d1</code> 被第 2 条读构成冲突、第 1 条不读 <code>d2</code>），把两条<b>换序</b>（先跑读 <code>d1</code> 的那条）→ 两条都读旧 <code>d1</code>，等价 GPU 并行语义，无需临时变量。判定极严格，单元测试确认只对真交换对生效。</p>
+<p><b>结果</b>：家族 6 个全过——<code>event9319 1050/1050</code>、<code>3256 1065/1065</code>、<code>9526 705/705</code>、<code>9829 1050/1050</code>、<code>15293_8040 1050/1050</code>，加 step202 的 <code>event8040 6/6</code>；<code>event7117</code> 仍 6/6。全量回归 <b>154/157</b>（3 未过均无关既有失败）→ 零回归。<code>event9319</code> 已入回归。<b>至此 step201/202/205 把 BlackMyth 压缩/骨骼解码四类根因（cast-三元、<code>;</code>-else、B8G8R8A8、movc 交换对）全部修掉。</b></p>
+<h1 id="step-207">207 The single biggest remaining bug is Category 1 — ~14+ BlackMyth cases share one new root cause.</h1>
 <h2>Prompts</h2>
+<p>Fix the following issue,<br>The single biggest remaining bug is Category 1 — ~14+ BlackMyth cases share one new root cause (per-instance + multi-level buffer indirection collapsing to zero). Fixing that would likely clear the largest chunk, same as steps 201/202/205 did for the earlier families.</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
