@@ -4010,8 +4010,97 @@ class HLSLInterpreter:
             if stmt:
                 statements.append(stmt)
 
-        return statements
+        return self._rewrite_movc_swaps(statements)
 
+    @staticmethod
+    def _parse_select_assign(stmt: str):
+        """Parse `dst = cond ? t : f` into (dst, cond, t, f) of stripped strings,
+        or None if `stmt` is not a single top-level ternary-select assignment."""
+        s = stmt.strip()
+        depth = 0
+        eq = -1
+        for i, ch in enumerate(s):
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == '=' and depth == 0:
+                prev = s[i - 1] if i > 0 else ''
+                nxt = s[i + 1] if i + 1 < len(s) else ''
+                if prev in '=<>!' or nxt == '=':
+                    continue
+                eq = i
+                break
+        if eq < 0:
+            return None
+        dst = s[:eq].strip()
+        rhs = s[eq + 1:].strip()
+        depth = 0
+        q = -1
+        for i, ch in enumerate(rhs):
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == '?' and depth == 0:
+                q = i
+                break
+        if q < 0:
+            return None
+        # matching ':' for this top-level '?', skipping nested ternaries
+        depth = 0
+        tern = 0
+        colon = -1
+        for i in range(q + 1, len(rhs)):
+            ch = rhs[i]
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif depth == 0:
+                if ch == '?':
+                    tern += 1
+                elif ch == ':':
+                    if tern == 0:
+                        colon = i
+                        break
+                    tern -= 1
+        if colon < 0:
+            return None
+        return (dst, rhs[:q].strip(), rhs[q + 1:colon].strip(),
+                rhs[colon + 1:].strip())
+
+    def _rewrite_movc_swaps(self, statements):
+        """3Dmigoto renders a DXBC `movc` swap pair on ONE source line:
+        `d1 = c ? d1 : x;  d2 = c ? x : d1;`  Both movc execute in PARALLEL on
+        the GPU (each reads the OLD d1), but split into two sequential statements
+        the second reads the value the first just wrote — corrupting d2 whenever
+        the condition selects the branch that changes d1 (BlackMyth's tangent
+        basis: cond=r5.z is per-vertex, so the same shader passes when it's set
+        and fails when it's clear). Reorder the pair (run the d1-reader first) so
+        both see the old d1. Safe because the pair swaps operands and d1's writer
+        does not read d2."""
+        out = []
+        i = 0
+        n = len(statements)
+        while i < n:
+            if i + 1 < n:
+                p1 = self._parse_select_assign(statements[i])
+                p2 = self._parse_select_assign(statements[i + 1])
+                if p1 and p2:
+                    d1, c1, t1, f1 = p1
+                    d2, c2, t2, f2 = p2
+                    if (c1 == c2 and d1 != d2
+                            and t1 == f2 and f1 == t2        # operands swapped
+                            and d1 in (t2, f2)               # S2 reads d1 (hazard)
+                            and d2 not in (t1, f1)):         # S1 doesn't read d2
+                        out.append(statements[i + 1])        # run the reader first
+                        out.append(statements[i])
+                        i += 2
+                        continue
+            out.append(statements[i])
+            i += 1
+        return out
 
     def execute_main_function(self, code: str, main_func: str, input_struct_name: str, row_index: int, data: Dict[str, Any], shader_stage: int = None):
         """

@@ -4223,17 +4223,30 @@ Notice:
 
 提交前定向回归（全流水线，tol=0.005）：`longshu-case-35-1_event128` PASS 19/19、`manhattan_frame_274_event50`（GS 单语义寄存器直传）PASS 1000/1000、`Octopath-frame746_event102`（纹理）PASS 6/6，全 0 error，零回归。已 `git commit` + `git push origin main`。已通过 case 因 mount 仍禁 `rm` 无法从 `Dump/` 物理删除，但已登记 `dump_case.csv`，下轮自动跳过。
 
-# 206
+# 206 继续修复 not fixed: event9319 family (3256/9526/9829/15293_8040)
 ## Prompts
+继续修复下列问题
+Investigated, not fixed: event9319 family (3256/9526/9829/15293_8040)
+A different, deeper skinning/morph decode shader. Per-statement tracing showed: normal (TEXCOORD10) is correct, but tangent (TEXCOORD11) and worldpos (TEXCOORD7) are off. I traced it to basis columns 0/1 disagreeing with the GPU (o0 happens to only validate col 2 here, so it stays correct) — and confirmed the interpreter's dataflow is right (no missed overwrite). The paradox: the identical decode code passes fully on step201's event7117, so the difference must be in data loading or a data-dependent path I couldn't confirm without per-statement golden. I chose not to force a speculative change — the risk of breaking already-passing cases (like event7117) is real. Documented honestly for follow-up.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
 
-## Git commit: 
+## Git commit: fix(interpreter): parallel semantics for movc swap pairs (step 205)
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step205-blackmyth-movc-swap-pair-parallel-semantics.md`。
+
+**根因 —— movc 交换对的并行 vs 顺序语义**（数据相关的切线错）。用 `event9319` row 0 逐语句轨迹测各基向量幅值：法线列（`r18`）`|·|=1.0` 正确，切线两列（`r17`/`r2.xyw`）只有 ~0.57。定位到 3Dmigoto 把一对 DXBC `movc` 渲染成一行：`r0.x = (int)r5.z ? r0.x : r5.w; r2.x = (int)r5.z ? r5.w : r0.x;`。GPU 上两条并行、各读**旧** `r0.x`；解释器拆成两条顺序语句后，第 2 条读到第 1 条刚写的**新** `r0.x`，`r2.x` 拿错值 → 切线基幅值错。
+
+**为何 step201 的 `event7117` 过、`event9319` 不过**（同段代码）：条件 `(int)r5.z` 是逐顶点符号位——`event7117` row0=32768(TRUE)，第 1 条是恒等操作、不改 `r0.x`，无冲突；`event9319` row0=0(FALSE)，第 1 条改了 `r0.x`，触发冲突。典型**数据相关顺序冲突**。
+
+**修复**（`GenerateStmts` 新增 `_rewrite_movc_swaps`）：识别相邻 movc 交换对 `d1=c?A:B; d2=c?B:A;`（同条件、操作数互换、`d1` 被第 2 条读构成冲突、第 1 条不读 `d2`），把两条**换序**（先跑读 `d1` 的那条）→ 两条都读旧 `d1`，等价 GPU 并行语义，无需临时变量。判定极严格，单元测试确认只对真交换对生效。
+
+**结果**：家族 6 个全过——`event9319 1050/1050`、`3256 1065/1065`、`9526 705/705`、`9829 1050/1050`、`15293_8040 1050/1050`，加 step202 的 `event8040 6/6`；`event7117` 仍 6/6。全量回归 **154/157**（3 未过均无关既有失败）→ 零回归。`event9319` 已入回归。**至此 step201/202/205 把 BlackMyth 压缩/骨骼解码四类根因（cast-三元、`;`-else、B8G8R8A8、movc 交换对）全部修掉。**
 
 # 207
 ## Prompts
