@@ -4284,17 +4284,45 @@ event4812 为 `0/144`→修后 `144/144` 单点确证）。全量回归 **155/15
 `t5` 被按错误视图格式装载成单位四元数，法线/切线归零，SV_POSITION 却正确）——根因不同、验证成本高，
 已定位留作 follow-up。类 1 净收益 **0/14 → 9/14**。
 
-# 208
+# 208 修复剩余的5个case
 ## Prompts
+修复下列问题
+event8750（1293/30960）、event9055（4158/58212）：同属 A 支着色器（有淡入块），但仅 少数行通过；AND-zero 修复前后均为此数（1293/1293、4158/4158 不变）→ 其余行是另一 条数据相关路径的错，非本 bug。
+event9999 / event10575 / event11070（各 12162 顶点，0/N）：另一支着色器变体 （输出仅 o0..o7、无 INSTANCE_LOCAL_TO_WORLD；t4/t5 是 typed Buffer<float4> 而非 StructuredBuffer；无距离淡入块）。逐语句轨迹：SV_POSITION(o7) 正确，但 TEXCOORD10/11 (o0/o1，法线/切线) 坍缩为 0。定位到 r4.xyz = t5.Load(i).xyz 每次读回单位四元数 [0,0,0,1]——t5（声明 Buffer<float4>）被按 R16_UINT / 2B/elem / 131072 装载， 而其真实 SRV 应为逐顶点切线帧四元数（buffer_4927.bin 262144B）。这是typed-buffer 视图 格式推断的独立 bug，改动面广、验证慢（12162 顶点/例 >150s），留作后续，不在本步冒险改。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
 把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中
 
-
-## Git commit: 
+## Git commit: fix(interpreter): stage-aware typed-buffer views + reset SB index burst inside blocks (step 208)
 
 ## Claude Code Session
+
+详见 `Sessions/hlsl-interpreter-step208-blackmyth-typed-buffer-stage-and-burst-in-block.md`。
+
+step207 遗留的两支各是**独立、通用**的根因，本步全修，类 1 收尾到 **14/14**。
+
+**Bug 1 —— typed-buffer 视图格式跨 VS/PS 串号**（`9999/10575/11070`，3 例）。`buffer_params.csv`
+对同一 t-slot 在 VS/PS 各有一行，`load_typed_buffer_data` 只按 slot 建键、逻辑
+`slot not in by_reg or dtype=='TypedBuffer'` 让后出现的 **PS 行（R16_UINT）盖掉 VS 行
+（R8G8B8A8_SNORM 的切线帧）**→ VS 的 `t5.Load(i)` 每次读回单位四元数 `[0,0,0,1]`，法线/切线全 0。
+修复：`HLSLInterpreter` 增 `shader_stage`（`_make_interpreter` 设），`load_typed_buffer_data` 读
+`Stage` 列**优先选阶段匹配的行**、绝不让不匹配行覆盖已匹配行；stage 未知则退化旧行为（零风险）。
+（step207 的 event4812 支不受影响：其 PS slot5 是 UAV/`ReadWriteBuffer` 而非 TypedBuffer。）
+结果 `t5` 正确装 `R8G8B8A8_SNORM/4586elem`，三例各 `12162/12162`。
+
+**Bug 2 —— if/while 块体内 SB 索引 burst 未按语句复位**（`8750/9055`，2 例；第三支 `t0..t12`
+蒙皮+样条切线着色器）。切线取自 `t8` 相邻元素有限差分 `t8[i+1]-t8[i]`。DXBC split-vector-load 的
+`_sb_index_burst`（把拆成多行的同索引读合并、索引只解析一次）**只在顶层语句循环里按语句复位**；而这段
+解码在 `if(r1.w==0){…}` 块体内，经 `execute_block` 顺序执行、**从不复位**。于是 `t8[r4.z]` 的
+burst(idx=48) 跨过 `r4.z=49` 赋值存活，第二次 `t8[r4.z]` 复用陈旧 48 → 读成 `t8[48]-t8[48]=0` →
+法线/切线归零（row<270 分支里索引没在两次同 token 读间被改，故只有 row≥270 暴露，典型数据相关）。
+修复：`execute_block` 语句循环加与顶层**同款**的 burst 复位（token 不在当前语句即清），连续同 token 的
+split-load 仍正常合并。结果 `event8750 30960/30960`、`event9055 58212/58212`。
+
+**回归**：全量 **158/161**，3 未过均为无关既有失败（`witcher16834`、`OldWorld_1034/2767`）→ 零回归；
+新加 `event9999`(typed-buffer 修复)、`event8750`(块内 burst 修复) 入本地回归。**至此 step206 triage 的
+类 1（14 例）0/14 → 14/14 全清**，三个独立通用根因（AND-zero / typed-buffer 跨阶段 / 块内 burst）修完。
 
 # 209
 ## Prompts

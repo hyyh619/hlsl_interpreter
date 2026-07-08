@@ -125,6 +125,7 @@ def _make_interpreter(config: dict, shader_stage: int = d3d.SHADER_STAGE_VS, log
                        and shader_stage == d3d.SHADER_STAGE_VS),
         trig_model=config.get('trig_model', 'libm'),
     )
+    interp.shader_stage = shader_stage
     _live_interpreters.append(interp)
     return interp
 

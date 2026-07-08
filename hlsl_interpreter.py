@@ -506,6 +506,10 @@ class HLSLInterpreter:
         # Typed-buffer bindings (Buffer<float4> t1 : register(t1)).
         # name -> {register, comp, elem_size, data(bytes)}
         self.typed_buffers: Dict[str, dict] = {}
+        # Which pipeline stage this interpreter runs (SHADER_STAGE_*); set by
+        # _make_interpreter. Used to disambiguate buffer_params.csv rows that
+        # share a t-slot across stages (VS t5 vs PS t5 are different resources).
+        self.shader_stage: Optional[int] = None
         # Raw buffer bindings (ByteAddressBuffer g : register(t20)), accessed by
         # byte address via .Load()/ld_raw.  name -> {register, data(bytes)}
         self.byte_address_buffers: Dict[str, dict] = {}
@@ -3896,6 +3900,16 @@ class HLSLInterpreter:
             statements = tuple(self.GenerateStmts(inner)) if inner else ()
             self._block_stmts_cache[block] = statements
         for stmt in statements:
+            # End an active structured-buffer index burst when this statement no
+            # longer references that indexed load — same rule as the top-level
+            # executor (see _execute_void_main). Without it, a burst established
+            # inside an if/while body (e.g. `r1.xyz = t8[r4.z]...`) survives a
+            # later mutation of the index register (`r4.z = r1.w + 1`) and the
+            # next `t8[r4.z]` load reuses the STALE index — BlackMyth event8750's
+            # spline-tangent finite difference read t8[i+1] as t8[i], zeroing the
+            # normal/tangent for every vertex past the first block.
+            if self._sb_index_burst is not None and self._sb_index_burst['token'] not in stmt:
+                self._sb_index_burst = None
             self.execute_statement(stmt, local_vars)
 
     @staticmethod
@@ -4627,10 +4641,19 @@ class HLSLInterpreter:
         ci_slot, ci_bin = col('Slot'), col('BinFile')
         ci_elem, ci_type = col('ElementByteSize'), col('DescriptorType')
         ci_fmt, ci_voff = col('ViewFormat'), col('ViewByteOffset')
+        ci_stage = col('Stage')
         if ci_slot < 0 or ci_bin < 0:
             return
-        # register -> (binfile, elem_size, view_format, view_offset);
-        # prefer TypedBuffer rows.
+        # A t-slot can be bound to DIFFERENT resources on different stages
+        # (BlackMyth VS t5 = R8G8B8A8_SNORM tangent frames, PS t5 = R16_UINT).
+        # buffer_params.csv tags each row with its Stage, so prefer the row
+        # whose stage matches this interpreter's; without it, the last row
+        # (often the PS binding) silently overwrote the VS buffer, making
+        # every VS t5.Load read the wrong resource (tangents read as identity).
+        _stage_names = {0: 'VS', 1: 'HS', 2: 'DS', 3: 'GS', 4: 'PS', 5: 'CS'}
+        my_stage = _stage_names.get(getattr(self, 'shader_stage', None))
+        # register -> (binfile, elem_size, view_format, view_offset, stage_match);
+        # prefer a stage-matching row, then TypedBuffer rows.
         by_reg = {}
         for row in rows[1:]:
             if len(row) <= max(ci_slot, ci_bin):
@@ -4650,13 +4673,21 @@ class HLSLInterpreter:
                 voff = int(row[ci_voff]) if 0 <= ci_voff < len(row) else 0
             except ValueError:
                 voff = 0
-            if slot not in by_reg or dtype == 'TypedBuffer':
-                by_reg[slot] = (binfile, esize, fmt, voff)
+            row_stage = row[ci_stage].strip() if 0 <= ci_stage < len(row) else ''
+            stage_match = bool(my_stage) and row_stage == my_stage
+            prev = by_reg.get(slot)
+            # Fill order of preference: (1) nothing yet, (2) this row matches our
+            # stage and the stored one doesn't, (3) neither matched but this is a
+            # TypedBuffer. Never let a non-matching row clobber a matched one.
+            if (prev is None
+                    or (stage_match and not prev[4])
+                    or (not prev[4] and not stage_match and dtype == 'TypedBuffer')):
+                by_reg[slot] = (binfile, esize, fmt, voff, stage_match)
         for name, tb in self.typed_buffers.items():
             info = by_reg.get(tb['register'])
             if not info:
                 continue
-            binfile, esize, fmt, voff = info
+            binfile, esize, fmt, voff = info[0], info[1], info[2], info[3]
             binpath = os.path.join(data_folder, binfile)
             if not binfile or not os.path.exists(binpath):
                 continue
