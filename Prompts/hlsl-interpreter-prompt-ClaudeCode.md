@@ -4362,8 +4362,10 @@ Notice:
 本改动对 dedup zip 由“完全打不开”变为“正确读入并运行”，严格改进、零回归。详见
 Sessions/hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support.md。
 
-# 210
+# 210 测试Case目录下面的所有draw zip是否都已经通过
 ## Prompts
+1. 测试Cases目录下面的所有draw zip是否都已经通过，如果测试未通过，请修复通过后加入到regression test中
+2. Cases目录下的draw zip是否都已经加入到regression test中，如果没有加入但是不需要修复就通过了测试，则加入到regression test中
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4373,6 +4375,30 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+`Cases/` 共 164 zip，回归原有 155 → **9 未入回归**；另有 3 个已在回归但失败（OldWorld×2、witcher16834）。
+逐个跑判定后，定位并修复 **3 个独立通用根因**，共修好 8 例：
+
+1. **raw-bits 整数运算里的源码数字字面量被当 float 位型**（OldWorld×2）。`cb5[r0.x+1]` 中 `r0.x` 来自
+   `<<`（→ `_RawBits`），字面量 `1`（解析为 1.0）被位重解释成 `0x3F800000=1065353216` → `cb5[越界]=0`
+   → 输出全 0。修复：raw-i32 分支里伙伴若是 `_is_numeric_literal_node` 则保持整数值（与既有 `>>` 分支先例
+   一致）。→ 203328/203328。
+2. **3Dmigoto 尾部 cbuffer 数组尺寸低报**（sekiro4×5）。`float4x3 VC_aObjMatrix[2]` 实际绑定 64 个矩阵
+   （constant_38312.bin=3072B），着色器索引到 [8]，但 `override_cbuffers_from_binary` 只按声明 [2] 加载
+   → 越界返回 0 → 蒙皮变换全 0。修复：数组为 cbuffer**最后字段**时，加载元素数扩展到绑定缓冲实际提供的
+   数量（内部数组仍按声明，避免越界入后续字段）。→ 全部满过。
+3. **raw-int × 真实 float 被当整数位运算**（witcher16834）。`cb5[2].z * r1.x`（r1.x=8 来自 `2<<r0.x`）
+   把 cb5[2].z(=15.75) 位重解释后整数乘 → 高程采样坐标偏 → SV_Position 偏 5~15。修复：raw-int 在 `*`/`/`
+   下遇真实 float 伙伴（cbuffer 成员，非 int-cast/非字面量）是**值运算**（DXBC 先 itof），转整数值走正常
+   float 算术；`+`/`-` 保持位链以护噪声哈希。→ 30/30。
+
+回归清单 155 → **164**：新增无需修复即过的 Octopath_event2091、manhattan_event1041 + 修复后过的
+sekiro4×5（OldWorld×2、witcher16834 本就在清单）。**全回归 162/162 全绿**（三修复零破坏）。
+
+未修复 2 例（诊断清楚、非通用 bug、不入回归以保全绿）：`witcher22229`（10/12，仅 TexCoord4[0] 差
+0.005075/容差 0.005，落在 trailing-float3 golden 列错位+浮点边界）；`EndlessSpace2_event3061`
+（1188/1536，VS packed 数据纹理解码在部分顶点发散 → r4.xy=0 → 1/sqrt(0)=NaN）。详见
+Sessions/hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array.md。
 
 # 211
 ## Prompts

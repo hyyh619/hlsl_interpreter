@@ -1888,10 +1888,44 @@ class HLSLInterpreter:
                             # inner expression when the partner is a cast.
                             onode = node.right if lraw else node.left
                             oval = right if lraw else left
-                            if (getattr(onode, 'node_type', None) == 'cast'
+                            if self._is_numeric_literal_node(onode):
+                                # A source-level numeric literal (e.g. the `1`
+                                # in cb5[r0.x+1], where r0.x is raw bits from a
+                                # prior `<<`/asint) is a genuine integer VALUE,
+                                # not a register's raw float bits. Keep it
+                                # integral so index/offset arithmetic stays
+                                # correct — bit-reinterpreting it would turn 1
+                                # into 0x3F800000 and blow the array index.
+                                lit = int(oval) if isinstance(oval, float) else oval
+                                if lraw:
+                                    right = lit
+                                else:
+                                    left = lit
+                            elif (getattr(onode, 'node_type', None) == 'cast'
                                     and str(onode.value) in self._INT_CAST_TYPES):
+                                # Int-cast partner: genuinely raw register bits
+                                # (the cast already ftoi'd, so re-read + bitcast).
                                 oval = self.evaluate_syntax_tree(onode.left, local_vars)
-                            if isinstance(oval, float):
+                                if isinstance(oval, float):
+                                    bits = self._bitcast_to_int(oval, True)
+                                    if lraw:
+                                        right = bits
+                                    else:
+                                        left = bits
+                            elif node.value in ('*', '/') and isinstance(oval, float):
+                                # A raw-int operand (e.g. the `2 << r0.x` count in
+                                # witcher's terrain VS) scaled by a GENUINE float
+                                # value — a cbuffer member like cb5[2].z, not an
+                                # int-cast bit pattern — is a VALUE operation:
+                                # DXBC itof's the integer before the float mul/div.
+                                # Bit-reinterpreting the float here would multiply
+                                # its bit pattern (1098514432 * 8) and wreck the
+                                # result. Convert the raw operand to its int value
+                                # and fall through to normal float arithmetic.
+                                if lraw:
+                                    return self.execute_binary_op(node.value, int(left), right)
+                                return self.execute_binary_op(node.value, left, int(right))
+                            elif isinstance(oval, float):
                                 bits = self._bitcast_to_int(oval, True)
                                 if lraw:
                                     right = bits
@@ -5081,8 +5115,23 @@ class HLSLInterpreter:
                     # Array: each element is register-aligned.
                     elem_stride = (base + 15) // 16 * 16
                     elem_regs = elem_stride // 16
+                    # 3Dmigoto often UNDER-declares a trailing cbuffer array's
+                    # size — it emits the shader's statically-known access range,
+                    # not the actual bound buffer size. When this array is the
+                    # LAST field, the real bound buffer can hold far more
+                    # elements than declared (e.g. sekiro's VC_aObjMatrix[2]
+                    # backed by a 64-matrix object palette the shader indexes
+                    # well past [1]). Load every element the buffer actually
+                    # provides so an out-of-declared-range index reads real data
+                    # instead of zero. Interior arrays keep the declared size so
+                    # they never overrun the following field.
+                    n_elems = array_size
+                    if elem_regs > 0 and field is cb_def.fields[-1]:
+                        avail = (len(decoded) - ri) // elem_regs
+                        if avail > n_elems:
+                            n_elems = avail
                     arr = []
-                    for j in range(array_size):
+                    for j in range(n_elems):
                         row_ri = ri + j * elem_regs
                         if row_ri >= len(decoded):
                             break
