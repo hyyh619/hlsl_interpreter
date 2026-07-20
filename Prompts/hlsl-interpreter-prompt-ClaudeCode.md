@@ -4324,8 +4324,11 @@ split-load 仍正常合并。结果 `event8750 30960/30960`、`event9055 58212/5
 新加 `event9999`(typed-buffer 修复)、`event8750`(块内 burst 修复) 入本地回归。**至此 step206 triage 的
 类 1（14 例）0/14 → 14/14 全清**，三个独立通用根因（AND-zero / typed-buffer 跨阶段 / 块内 burst）修完。
 
-# 209
+# 209 draw zip文件更改了压缩方式，请更新代码来支持读取
 ## Prompts
+draw zip文件更改了压缩方式，请更新代码来支持读取,Dump/Cases下面的draw zip文件已经更新成新的压缩方式的文件
+Lever C — per-member LZMA codec
+After dedup, remaining members are still DEFLATE-compressed independently. Switching the per-member codec to LZMA (zip method 14) shrinks the raw texel/.bin/.csv payload by ~30% more (measured: bin −22%, raw −19%, csv −18%; whole-corpus 13.0 GB → 8.8 GB, −32%). This is a per-member codec change only — it does not capture cross-member redundancy (that needs a solid archive, which would break random access); exact cross-member dups are already gone via Lever B.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4335,6 +4338,29 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+新 draw zip 是**两个杠杆叠加**，只有第二个影响读取代码：
+
+- **Lever C — LZMA(method 14)**：stdlib `zipfile`/`lzma` 原生解压，`extractall`/`read` 全部 OK，
+  **无需改代码**。
+- **Lever B — dedup 别名**：真正会 break。zip 根目录多出 `dedup_aliases.csv`（与 case 文件夹平级，
+  `alias,canonical` 两列，均相对 case 文件夹），被去重成员**物理不在 zip 里**。造成两处失败：
+  (1) 顶层文件夹探测——根目录现在 2 项（manifest + 文件夹），旧逻辑 `len==1` 判定失效 → 落到
+  `temp_dir` → `Error: VS shader not found`；(2) pipeline 需要的 `PS/VS_constant_buffers.csv`、
+  `buffer_*.bin` 等别名文件缺席。
+
+修改（均在 `render.py` zip workflow）：
+1. 顶层文件夹探测改为“按唯一目录定位、忽略根目录松散文件”。
+2. 新增 `_materialize_dedup_aliases(temp_dir, data_folder)`：`extractall` 后读 manifest，把每个
+   `canonical` 复制回 `alias`（已存在则 skip；canonical 缺失则 Warning 不崩；`makedirs`+`copyfile`
+   支持子目录别名；无 manifest 的旧单文件夹 zip 为 no-op，向后兼容）。
+
+验证：先前失败的 `witcher3_countryside_event994`（2 项根目录 dedup zip）→ `Rehydrated 2 file(s)`、
+`2490/2490`、0 Error；新格式 `Dump/Assassins-frame9018_event969`（LZMA + 5 别名）端到端 exit 0。
+全回归 **152/161**（155 present；6 大文件本地缺失）；余 3 FAIL 均为与本改动无关的 golden 数值不匹配
+（2 个 OldWorld 是非 dedup zip，本改动对其 no-op；witcher16834 只去重了不影响 VS 的 PS mip9 纹理）。
+本改动对 dedup zip 由“完全打不开”变为“正确读入并运行”，严格改进、零回归。详见
+Sessions/hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support.md。
 
 # 210
 ## Prompts

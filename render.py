@@ -914,6 +914,49 @@ def _load_stage_textures(data_folder, stage, log=None):
     return Texture(), texture_desc_list, sampler_list
 
 
+def _materialize_dedup_aliases(temp_dir: str, data_folder: str) -> None:
+    """Reconstruct deduplicated files from a dedup_aliases.csv manifest.
+
+    Newer draw zips drop exact-duplicate members (Lever B) and record them in a
+    `dedup_aliases.csv` file with `alias,canonical` columns, where both paths are
+    relative to the case folder. For every pair, copy the canonical member back to
+    its alias location so downstream code finds the complete, un-deduped file set.
+
+    The manifest is written at the zip root (beside the case folder); older zips
+    without dedup simply have no manifest and this is a no-op.
+    """
+    manifest = None
+    for candidate in (os.path.join(temp_dir, 'dedup_aliases.csv'),
+                      os.path.join(data_folder, 'dedup_aliases.csv')):
+        if os.path.exists(candidate):
+            manifest = candidate
+            break
+    if manifest is None:
+        return
+
+    restored = 0
+    with open(manifest, 'r', newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            alias = (row.get('alias') or '').strip()
+            canonical = (row.get('canonical') or '').strip()
+            if not alias or not canonical:
+                continue
+            src = os.path.join(data_folder, canonical)
+            dst = os.path.join(data_folder, alias)
+            if os.path.exists(dst):
+                continue  # already present (not actually deduped)
+            if not os.path.exists(src):
+                print(f"Warning: dedup canonical missing for alias "
+                      f"'{alias}' -> '{canonical}'")
+                continue
+            os.makedirs(os.path.dirname(dst) or data_folder, exist_ok=True)
+            shutil.copyfile(src, dst)
+            restored += 1
+    if restored:
+        print(f"Rehydrated {restored} deduplicated file(s) from "
+              f"{os.path.basename(manifest)}")
+
+
 def _run_zip_workflow(config: dict, data_path: str, config_path: str):
     """Execute the full rendering pipeline from a zip archive."""
     config_dir = os.path.dirname(os.path.abspath(config_path))
@@ -931,15 +974,28 @@ def _run_zip_workflow(config: dict, data_path: str, config_path: str):
     temp_dir = tempfile.mkdtemp(prefix='hlsl_interp_')
     try:
         print(f"Extracting {abs_data_path} ...")
+        # Newer draw zips switch the per-member codec to LZMA (zip method 14);
+        # stdlib zipfile decompresses it natively, so extractall handles it.
         with zipfile.ZipFile(abs_data_path, 'r') as z:
             z.extractall(temp_dir)
 
-        # Find top-level folder inside the zip
+        # Find the top-level case folder inside the zip. Deduped zips place a
+        # `dedup_aliases.csv` manifest next to the case folder at the root, so
+        # the root can hold more than one entry — pick the sole directory and
+        # ignore loose files (the manifest) when locating it.
         items = os.listdir(temp_dir)
-        if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
-            data_folder = os.path.join(temp_dir, items[0])
+        dir_items = [it for it in items
+                     if os.path.isdir(os.path.join(temp_dir, it))]
+        if len(dir_items) == 1:
+            data_folder = os.path.join(temp_dir, dir_items[0])
         else:
             data_folder = temp_dir
+
+        # Rehydrate deduplicated members: exact cross-member duplicates are
+        # dropped from the archive (Lever B) and recorded in dedup_aliases.csv
+        # as alias,canonical pairs (both relative to the case folder). Copy each
+        # canonical back to its alias so the pipeline sees the full file set.
+        _materialize_dedup_aliases(temp_dir, data_folder)
 
         _execute_pipeline(config, config_path, data_folder)
     finally:
