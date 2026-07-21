@@ -4506,8 +4506,13 @@ Notice:
 后续须按单例逆向推进并每次跑全回归防破绿。详见
 Sessions/hlsl-interpreter-step213-dump-55-deep-tail-investigation.md。
 
-# 214
+# 214 修复PlanetCoaster ×29
 ## Prompts
+修复下列问题
+1. PlanetCoaster ×29 — 多级网格拉取的逐顶点数据发散
+以 event10418 深挖到底：draw 是 DrawInstanced, InstanceOffset=50, TriangleStrip，per-instance POSITION7 取 VB[50] 作 meshlet 基址。逐组件比对确认 row0–row5 与 golden 逐位相等——核心顶点 拉取/切线帧/颜色解包完全正确；从 row6 起个别顶点发散（o4 = TEXCOORD4：ours [15.75,6.73] vs golden [0.157,0.099]）。
+
+追到发散点：o4.xy = 16 * r1.yz，r1.yz = r2.xy/32768 - 1，r2.x = asint(r3.x)&0xffff， r3.x = t2[idx].val[0]。而 idx、r3 组件由 r0.x 的打包位经多级三元选择 （r4.xx ? r3.zw : r3.xy、r0.x = r4.y ? r1.w : r1.z）决定，r0.x 又来自上一级 t2/t3/t4 结构化缓冲读 + 位掩码合并。即：6+ 层结构化缓冲间接 + 条件位解包，某顶点某一级读回的打包值 （ours 低16位=65033 vs golden=33089）与 GPU 不一致。三元条件本身是干净整数（&int2(2,1)→0/1/2， 真值无歧义），排除了 -0.0/denormal 真值 bug。属数据相关、逐例的深度分歧，无单点通用修复。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4517,6 +4522,24 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+把 event10418 追到最底层：发散**仅在 o4.xy（次级 UV 集）**——sv_position、o0–o3、**o4.zw（另一 UV
+集）全部逐位正确**。错源锁定为**派生出的 t2 索引落到错误元素**：v6 我方读 `t2[1].val[0]=0xb5cffe09`
+（低16=65033），golden 隐含需 `0x80CB8141`（低16=33089）——该值不在我方索引到的 t2 邻近元素里。
+
+逐一排除四类可通用化嫌疑：①自别名三元 `r1.yw = r1.yy ? r3.zw : r3.xy` 的**并行语义正确**（独立测试，
+非 step-205 类竞态）；②**r0.x 打包值正确**（o4.zw / sv_position 同依赖它且全过）；③**t2 读字节正确**
+（0xb5cffe09 与缓冲一致 → 是索引错非解码错）；④**denormal-as-index 自洽**（`t0[r1.w]` 的 r1.w 是非
+规格化浮点，经 step-212 `_eval_subscript` 按 asuint 读 `t0[大索引]`；t0[0] 实为全零，印证走 asuint）。
+
+**卡点**：正确 t2 索引由 `flag`（t0 某大索引的 val[4]）+ `r0.x>>2` 派生，而该 flag 的正确中间值**不在
+capture 里**（golden 只存最终 VS 输出）；block2 用相邻 flag(val[5]) 却正确，两支索引数学同构、差异仅在
+读到的 flag 值 → **数据相关、缺中间量参照**，无同构可循的通用修复。
+
+结论：非通用 bug；已把发散从"逐顶点数学发散"收窄到"o4.xy 次级 UV 的派生 t2 索引落错"并排除全部可通用化
+嫌疑。**未改代码**（保 190/190 全绿）。后续唯一可行路径是**重新 capture 带各级中间寄存器 dump**（或接
+DXBC 参考执行）据以逐例对齐索引。详见
+Sessions/hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive.md。
 
 # 215
 ## Prompts
