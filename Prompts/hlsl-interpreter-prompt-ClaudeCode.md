@@ -4604,8 +4604,11 @@ Notice:
 引入 RTX4060/Ada SFU sin 的权威逆向表（本环境不可得，且无法由少量 golden 采样反解）。不以欠定拟合/误导
 约简冒险绿线。详见 Sessions/hlsl-interpreter-step216-nv-sin-table-fit-feasibility.md。
 
-# 217
+# 217 witcher3_countryside ×6 — 曲面细分 HS/DS
 ## Prompts
+实现下列问题
+3. witcher3_countryside ×6 — 曲面细分 HS/DS
+event21346 是 VS+HS+DS+PS 曲面细分；按 DS-out 布局比较 HS 控制点流。失败集中在所有奇数 CP 记录 的 cp[4]（=CP 记录第 4 分量）：ours 1.0 vs golden 0.0，169/1024 行。位于 HS fork/join DXBC VM （_execute_void_main 外的 DXBCInterpreter 分相执行）与近似的 CP-流对齐比较中，属细分管线的 VM 边界问题，非通用单点。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4615,6 +4618,25 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+根因是 **CP-流比较（render.py）对整型 VS 输出字段处理错误，非解释器/着色器 bug**。`cp[4]` = VS 输出
+`o1.x`（`int4 o1 : TEXCOORD1`，地形 LOD 瓦片索引，来自瓦片搜索循环）。GPU 写的是**整数**，golden 存其
+**原始 32 位**；比较侧按 DS-out 布局把该字节当 **float** 解码（int 1 → asfloat=1.4e-45，打印 "0.000000"），
+与我方整数值 1.0 比 → 假失败。
+
+逐层验证：失败点 o0（坐标）与 golden **逐位相等**；查原始 `VS_shader_disasm.txt`（resinfo→3 瓦片、
+`ld t17` 取界、`lt` 严格判定）与我方执行**完全一致**——点 (131.25,−318.75) 不在 tile0、在 tile1 →
+o1.x=1 正确。直接解码 golden `ds_mesh.bin`：该字节 **as_int=1**（与我方一致！）、as_float=1.4e-45。
+即 golden 整数也是 1，只是被当 float 读。
+
+修复（render.py CP-流比较）：float 容差不过时，若 `fa` 近整数且 `int(round(fa)) == asint(golden_bits)`
+则判过（整型字段按位重解释对齐）。只在 float 比较失败后**追加**匹配条件 → 对既有 190 全通过用例是 no-op，
+不会把通过变失败；仅当 golden 位型恰为小整数且我方值等于它才匹配，真实 float 误差不误判。
+
+**event21346：855→1024/1024**；入 Cases/+回归（190→**191**），删 Dump 副本；**全回归 191/191 全绿**
+（含共用该比较的 sekiro4 细分用例，零回归）。Dump 55→54。其余 witcher3（21719/21895/22260/23141、
+fighting_18028）是**不同**失败（TEXCOORD4 数值发散 ~0.1，更深 HS/DS 细分分歧），22229 精度近过——非本
+cp[4] 整型比较 bug。详见 Sessions/hlsl-interpreter-step217-witcher3-hs-cp-int-field-compare.md。
 
 # 218
 ## Prompts

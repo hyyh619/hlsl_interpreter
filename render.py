@@ -1519,6 +1519,21 @@ def _run_ds_stage(config, data_folder, log_file_path, vs_interp, vs_results,
                         if fa != fa and fb != fb:
                             continue           # both NaN: agree
                         if abs(fa - fb) > float_tolerance:
+                            # Integer-typed VS output (e.g. witcher21346's o1.x
+                            # terrain-tile index, int4 TEXCOORD1): the GPU wrote
+                            # an INT value and the golden dump stored its raw 32
+                            # bits, which the DS-out-layout reader decodes as a
+                            # float (int 1 -> asfloat 1.4e-45, prints "0.000000").
+                            # Our value is the integer itself, so reconcile by
+                            # comparing our int against the golden bits reread as
+                            # int. Guarded to near-integral `fa` so genuine float
+                            # mismatches (huge asint) never false-match.
+                            try:
+                                gi = struct.unpack('<i', struct.pack('<f', fb))[0]
+                                if abs(fa - round(fa)) < 1e-6 and int(round(fa)) == gi:
+                                    continue
+                            except (struct.error, ValueError, OverflowError):
+                                pass
                             ok = False
                             if nerr_logged < 200:
                                 log(f"Error: Row {i} cp[{c}]: output={fa:.6f} "
