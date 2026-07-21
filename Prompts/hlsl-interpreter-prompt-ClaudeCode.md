@@ -4436,8 +4436,11 @@ Notice:
 （compute/UAV/GS-only）、manhattan/witcher3/TombRaider 等多为精度近过、EndlessSpace2 NaN、three.js 崩溃。
 详见 Sessions/hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index.md。
 
-# 212
+# 212 fix remaining 63 fails
 ## Prompts
+修复剩余的63个fails
+Remaining (63, kept in Dump, documented)
+Non-general long tail: 37 deeper PlanetCoaster variants (integer-output-vs-golden comparison; a few divergent rows), 8 with no VS-golden to grade (compute/UAV/GS-only), plus manhattan/witcher3/TombRaider near-misses, EndlessSpace2 NaN, and a three.js crash.
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4447,6 +4450,28 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+重跑 Dump 遗留 63 fails，解剖 PlanetCoaster（GPU 驱动顶点拉取）。关键发现：逐组件比对确认核心顶点
+拉取/切线帧数学**是对的**（o2 与 golden 逐位相等），失败暴露 **3 个独立通用缺陷**，清掉 8 例：
+
+1. **整型输出寄存器按位比较**：golden 分量为整数（UINT/SINT mesh）而我方 float 输出（打包 uint 经
+   `float` 输出槽写出），`ov!=gv` 误判（2.83e-37≠46198815），实为同一 32 位。新增
+   `_golden_component_match()` 对整型 golden vs float 输出按 asuint 位比较。
+2. **cbuffer 矩阵/向量 CSV 解析容忍嵌套括号**：three.js 3MF 把矩阵写成 `[[a,b,c],[..]]`，
+   `_parse_float3x3/4x4/_vector` 的 `split(',')+float()` 崩溃（exit=1）。改用正则 `_num_tokens()` 提数。
+3. **_RawBits 幅值判据**：颜色解包 `(uint)(x&255)*(1/255)` 中 `&255` 产 `_RawBits(255)`，向量乘经
+   `_coerce_rawbits_for_float_op` asfloat 成近零非规格化数 → 分量坍缩（step-210 值运算修复只覆盖标量路径，
+   向量元素未覆盖）。判据：正常浮点位型 ≥ 2²³，小于则是整数值——`_coerce_rawbits_for_float_op`/
+   `_coerce_rawbits_list` 改为无符号 <2²³ 取整数值、≥2²³ 才 asfloat（保 BlackMyth `asfloat(exp<<23)`）。
+
+8 修复例（PlanetCoaster）入 Cases/+regression（182→**190**）+ 删 Dump 副本。**全回归 190/190 全绿**
+（三修复零回归）。Dump 63→**55**。
+
+剩余 55 属深长尾/不可判定，未以投机改动强行追平：**29 PlanetCoaster** 真·逐顶点数学发散（如 event10418
+row6+ TEXCOORD4 15.75 vs 0.157）；**8 无 VS-golden**（compute/UAV/GS-only 或未 dump VS 输出，VS-golden
+工作流无法判定）；manhattan/witcher3/TombRaider/sekiro2 逐顶点精度近过；three.js 崩溃已修余 float3x3
+行列主序；EndlessSpace2 NaN（step210 诊断）。详见
+Sessions/hlsl-interpreter-step212-dump-63-fails-rawbits-and-int-output-compare.md。
 
 # 213
 ## Prompts

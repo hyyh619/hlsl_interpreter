@@ -987,23 +987,33 @@ class HLSLInterpreter:
         except:
             return value_str
 
+    # Pull signed/scientific numeric literals out of a value string, ignoring
+    # any bracket/paren grouping. Some captures format cbuffer matrices/vectors
+    # as bare CSV ("a, b, c"), others as nested lists ("[[a,b,c],[d,e,f]]", e.g.
+    # the three.js 3MF capture) — a plain split(',') then float() chokes on the
+    # '[[' prefix. Extracting numeric tokens handles both.
+    _NUM_TOKEN_RE = re.compile(r'[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?')
+
+    def _num_tokens(self, value_str):
+        return self._NUM_TOKEN_RE.findall(value_str)
+
     def _parse_float4x4(self, value_str):
-        parts = value_str.split(',')
+        parts = self._num_tokens(value_str)
         if len(parts) >= 16:
             return [[float(parts[j]) for j in range(i*4, i*4+4)] for i in range(4)]
         return None
 
     def _parse_float3x3(self, value_str):
-        parts = value_str.split(',')
+        parts = self._num_tokens(value_str)
         if len(parts) >= 9:
             return [[float(parts[j]) for j in range(i*3, i*3+3)] for i in range(3)]
         return None
 
     def _parse_float_vector(self, value_str, count):
-        return [float(p) for p in value_str.split(',')[:count]]
+        return [float(p) for p in self._num_tokens(value_str)[:count]]
 
     def _parse_int_vector(self, value_str, count):
-        return [int(p) for p in value_str.split(',')[:count]]
+        return [int(float(p)) for p in self._num_tokens(value_str)[:count]]
 
     def _parse_bool(self, value_str):
         return value_str.lower() in ('true', '1', 'yes')
@@ -6790,12 +6800,26 @@ class HLSLInterpreter:
         if not (_any_float(left) or _any_float(right)):
             return left, right  # pure-integer context: leave bit patterns alone
 
+        def _conv1(e):
+            if not isinstance(e, _RawBits):
+                return e
+            # asfloat only makes sense for a bit pattern that IS a float. A
+            # NORMAL float has a nonzero exponent, i.e. its unsigned bits are
+            # >= 2^23 (0x00800000). A small raw value below that asfloats to a
+            # (near-zero) denormal, which is essentially never intended — it is
+            # an integer VALUE (a byte from `x & 255`, a count, an index; e.g.
+            # PlanetCoaster's `(uint)(r1.w & 255) * (1/255)` colour unpack). Use
+            # its value there; only asfloat the large patterns (BlackMyth's
+            # `asfloat(exp << 23)` position scale).
+            if (int(e) & 0xFFFFFFFF) < 0x00800000:
+                return int(e)
+            return self._bits_to_float(e)
+
         def _conv(x):
             if isinstance(x, _RawBits):
-                return self._bits_to_float(x)
+                return _conv1(x)
             if isinstance(x, list):
-                return [self._bits_to_float(e) if isinstance(e, _RawBits) else e
-                        for e in x]
+                return [_conv1(e) for e in x]
             return x
         return _conv(left), _conv(right)
 
@@ -6824,12 +6848,21 @@ class HLSLInterpreter:
         if not any(_any_float(v) for v in vals):
             return vals
 
+        def _conv1(e):
+            if not isinstance(e, _RawBits):
+                return e
+            # See _coerce_rawbits_for_float_op: a small raw value is an integer
+            # VALUE (asfloat would give a garbage denormal); only large patterns
+            # (>= 2^23) are genuine float bits.
+            if (int(e) & 0xFFFFFFFF) < 0x00800000:
+                return int(e)
+            return self._bits_to_float(e)
+
         def _conv(x):
             if isinstance(x, _RawBits):
-                return self._bits_to_float(x)
+                return _conv1(x)
             if isinstance(x, list):
-                return [self._bits_to_float(e) if isinstance(e, _RawBits) else e
-                        for e in x]
+                return [_conv1(e) for e in x]
             return x
         return [_conv(v) for v in vals]
 
@@ -8188,6 +8221,29 @@ class HLSLInterpreter:
             return ov == gv
         return abs(ov - gv) <= tol
 
+    def _golden_component_match(self, ov, gv, tol_fn) -> bool:
+        """True if one VS-output component `ov` matches golden component `gv`.
+
+        Floats compare within tolerance. An integer-typed golden component
+        (UINT/SINT mesh format -> a Python int) may face a float output: the VS
+        output register holds raw 32-bit data our evaluator kept as a float
+        (e.g. a packed uint / index written through a `float` output, as in
+        PlanetCoaster's TEXCOORD registers). RenderDoc dumped the SAME bits as
+        an integer, so compare by raw bits (or by integral value when the float
+        is a whole number)."""
+        if isinstance(ov, float) and isinstance(gv, float):
+            return self._num_agree(ov, gv, tol_fn(gv))
+        if isinstance(gv, int) and isinstance(ov, float):
+            if ov == int(ov) and int(ov) == gv:
+                return True
+            return (self._bitcast_to_int(ov, False) & 0xFFFFFFFF) == (gv & 0xFFFFFFFF)
+        if isinstance(ov, int) and isinstance(gv, int):
+            return ov == gv
+        try:
+            return self._num_agree(float(ov), float(gv), tol_fn(float(gv)))
+        except (TypeError, ValueError):
+            return ov == gv
+
     def compare_vs_output_with_golden_params(self, results: list, output_params: list,
                                             golden_rows: list, float_tolerance: float = 0.0001,
                                             execute_count: int = None) -> bool:
@@ -8218,20 +8274,15 @@ class HLSLInterpreter:
                         gv = golden_val[comp_idx]
                         if gv is None:
                             continue
-                        if isinstance(ov, float) and isinstance(gv, float):
-                            if not self._num_agree(ov, gv, _tol(gv)):
-                                self.log_output(
-                                    f"Error: Row {row_idx} {key}[{comp_idx}]: "
-                                    f"output={ov:.6f} golden={gv:.6f} diff={abs(ov-gv):.6f}"
-                                )
-                                row_match = False
-                        elif ov != gv:
-                            self.log_output(f"Error: Row {row_idx} {key}[{comp_idx}]: output={ov} golden={gv}")
+                        if not self._golden_component_match(ov, gv, _tol):
+                            self.log_output(
+                                f"Error: Row {row_idx} {key}[{comp_idx}]: "
+                                f"output={ov} golden={gv}"
+                            )
                             row_match = False
                 elif isinstance(output_val, (int, float)) and isinstance(golden_val, (int, float)):
-                    if not self._num_agree(float(output_val), float(golden_val),
-                                           _tol(float(golden_val))):
-                        self.log_output(f"Error: Row {row_idx} {key}: output={output_val:.6f} golden={golden_val:.6f}")
+                    if not self._golden_component_match(output_val, golden_val, _tol):
+                        self.log_output(f"Error: Row {row_idx} {key}: output={output_val} golden={golden_val}")
                         row_match = False
 
             if row_match:
