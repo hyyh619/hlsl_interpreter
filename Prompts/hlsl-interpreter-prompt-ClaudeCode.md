@@ -4573,8 +4573,11 @@ manhattan 均 999/1000 不变。
 数据点无法反推。**未改代码**（保 190/190 全绿）；不以投机拟合某 GPU sin 表冒险绿线。详见
 Sessions/hlsl-interpreter-step215-manhattan-spawn-hash-precision.md。
 
-# 216
+# 216 新增拟合某 GPU 的 sin 表。
 ## Prompts
+新增拟合某 GPU 的 sin 表。
+该类失败非逻辑 bug、非可通用修复：伪随机哈希对 sin 的要求高达 ~5.7e-8，而 GPU 大参数 float32 sin 与 libm/所有约简模型差 ~5e-5，frac 放大后必然发散。
+需该具体 GPU(NV RTX4060)（manhattan=GFXBench 移动 GPU）的 sin 精确实现方能复现；
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4584,6 +4587,22 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+严格数值反解后判定：**从现有 golden 无法拟合可用的 GPU sin 表**，瓶颈是 **NVIDIA MUFU.SIN SFU 硬件近似**，
+非范围约简。故**未改代码**（保 190/190 全绿），不加会误导的"约简模型"死代码。
+
+证据（event124 particle 411，唯一走出生分支者；前 412 顶点仅 1 个 birth，其余走 else）：
+- 反解 GPU sin（golden o3）：三分量 sin_gpu 与**精确 sin(arg_f32)** 仅差 **~3–4e-6**。
+- 我方管线（f32_emulation）已把 `K·1046` 舍入 f32 再 libm 精确算 sin(arg_f32)；测 f32rev/cw2/cw3/cw2_dbl
+  约简，cw2_dbl≈libm(arg_f32)——**约简已精确**。残差 ~4e-6 就是 **MUFU.SIN SFU 固有近似**（~2^-18），
+  与约简无关；correctly-rounded f32 sin 也不匹配 → 确证 D3D `sin` 走**快速 MUFU.SIN**。
+- frac 哈希精度需求：sin 需匹配 `0.0025/mul` → 最紧 **~3e-8**，比 SFU 误差 ~4e-6 紧 **~130×**。
+- 故必须**逐位复现 MUFU.SIN**；其二次插值表约数百系数，而每例仅 1–2 个出生粒子（全 5 例合计数十采样、
+  零散约简点）→ **欠定 ~10–30×，不可反解**。
+
+结论：manhattan 失败 = 稀疏出生粒子 `frac(sin·big)` 哈希，受限于 NV MUFU.SIN 硬件近似；唯一可行路径是
+引入 RTX4060/Ada SFU sin 的权威逆向表（本环境不可得，且无法由少量 golden 采样反解）。不以欠定拟合/误导
+约简冒险绿线。详见 Sessions/hlsl-interpreter-step216-nv-sin-table-fit-feasibility.md。
 
 # 217
 ## Prompts
