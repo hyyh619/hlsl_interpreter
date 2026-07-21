@@ -4541,8 +4541,11 @@ capture 里**（golden 只存最终 VS 输出）；block2 用相邻 flag(val[5])
 DXBC 参考执行）据以逐例对齐索引。详见
 Sessions/hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive.md。
 
-# 215
+# 215 manhattan ×5 — 退化哨兵顶点的 float 精度
 ## Prompts
+修复该问题
+2. manhattan ×5 — 退化哨兵顶点的 float 精度
+每例仅 1–2 个顶点失败（998~999/1000），但该顶点所有属性齐偏。定位：失败顶点（如 event124 row411）的输入 TEX_COORD0 = (10000,10000,10000) 是退化/剔除哨兵；经变换矩阵放大后， float32 运算顺序的微差在量级 ~76 上放大到 ~0.5（> 容差 0.005）。属极端输入下的精度，非逻辑错。
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4552,6 +4555,23 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+深挖 event124 row411：失败顶点是**存活的 birth 粒子**（不是"输入哨兵"——`(10000,10000,10000)` 实为
+shader 末尾**死亡粒子的输出哨兵**；VS_shader.hlsl 经 dedup 别名 = GS_shader.hlsl，粒子发射器）。其位置
+来自伪随机出生哈希 `frac(sin(78.233·(635+vid))·87362)`，vid=411 → sin 参数 ≈ **81831.7**（大数）。
+
+数值验证（sin@81831.7）：GPU（由 golden o3 反推）sin ≈ **−0.46685**，而 f64 libm=−0.466794、我方现状
+（arg 经 f32 舍入 + libm）=−0.467703、f32red/cw2/cw2fma 各异——**全部 4 个 trig 约简模型均差 ~5e-5**，
+经 `frac(·87362)` 放大 87362× → golden 0.73438 vs 我方 0.384，完全发散。实跑 4 种 `trig_model`，
+manhattan 均 999/1000 不变。
+
+为何仅个别顶点 fail：多数走 else 分支（无大数 sin），且哈希要 frac 过容差需 sin 匹配到 0.005/87362 ≈
+**5.7e-8**（f32 eps 量级）；大参数下 GPU float32 sin 与所有模型差 ~5e-5 > 阈值 → 唯独大参数的 birth
+粒子 fail。属**精度彩票 / GPU 超越函数可复现性极限**，非逻辑 bug（与用户"float 精度"判断一致）。
+
+结论：非可通用修复——需该 GPU（manhattan=GFXBench 移动 GPU）sin 的精确实现方能复现，capture 仅一个
+数据点无法反推。**未改代码**（保 190/190 全绿）；不以投机拟合某 GPU sin 表冒险绿线。详见
+Sessions/hlsl-interpreter-step215-manhattan-spawn-hash-precision.md。
 
 # 216
 ## Prompts
