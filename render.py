@@ -1027,6 +1027,22 @@ def _draw_input_topology(data_folder: str) -> int:
     return 4
 
 
+def _draw_instance_offset(data_folder: str) -> int:
+    """StartInstanceLocation from draw_call_info.csv's InstanceOffset. D3D fetches
+    per-instance vertex attributes at buffer index `InstanceOffset + instanceID`,
+    so a DrawInstanced with InstanceOffset != 0 (e.g. PlanetCoaster's 201) reads
+    the wrong instance's base index if this is ignored. Defaults to 0."""
+    path = os.path.join(data_folder, 'draw_call_info.csv')
+    if os.path.exists(path):
+        for row in _read_csv_rows(path):
+            if row.get('Property', '').strip() == 'InstanceOffset':
+                try:
+                    return int(row.get('Value', '0').strip())
+                except ValueError:
+                    return 0
+    return 0
+
+
 def _run_gs_stage(config, data_folder, log_file_path, vs_interp, vs_results,
                   idx_list, float_tolerance):
     """If the draw has a geometry shader (GS_shader.hlsl) with a *_gs_mesh.bin
@@ -1958,14 +1974,16 @@ def _execute_pipeline(config: dict, config_path: str, data_folder: str):
     # Load per-instance inputs (INSTANCE_TRANSFORM*, etc.) from the binary
     # vertex buffers. The per-vertex stream above covers slot 0; instanced
     # inputs come from a separate slot and would otherwise be zero.
+    instance_offset = _draw_instance_offset(data_folder)
     instance_inputs = vs_interp.load_per_instance_data(
-        ia_layouts_csv, data_folder, vs_input_params, instance_index=0
+        ia_layouts_csv, data_folder, vs_input_params, instance_index=0,
+        instance_offset=instance_offset,
     )
     if instance_inputs:
         for vtx in vertex_data:
             vtx.update(instance_inputs)
         vs_interp.log_output(
-            f"Loaded per-instance inputs (instance 0): "
+            f"Loaded per-instance inputs (instance 0, offset {instance_offset}): "
             f"{ {k: (v if not isinstance(v, list) else [round(x, 4) for x in v]) for k, v in instance_inputs.items()} }"
         )
 

@@ -5273,6 +5273,14 @@ class HLSLInterpreter:
             v = self.evaluate_expression(expr, local_vars)
             if isinstance(v, list):
                 v = v[0] if v else 0
+            # DXBC indexes buffers with the register's RAW uint bits, not ftoi.
+            # An integer index stored in a StructuredBuffer `float` member (e.g.
+            # PlanetCoaster's t1[i].val[3] = a t0 element index) decodes to a
+            # float32 DENORMAL (25603 -> 3.6e-41). A genuine float index is >= 1,
+            # so a tiny nonzero magnitude unambiguously means "these are integer
+            # bits" — reinterpret them as uint instead of truncating to 0.
+            if isinstance(v, float) and v != 0.0 and abs(v) < 1e-30:
+                return self._bitcast_to_int(v, False)
             return int(v)
         except (ValueError, TypeError, IndexError):
             return 0
@@ -6180,7 +6188,8 @@ class HLSLInterpreter:
         return struct.unpack('<e', struct.pack('<H', h))[0]
 
     def load_per_instance_data(self, layouts_csv_path: str, data_folder: str,
-                               vs_input_params: list, instance_index: int = 0) -> dict:
+                               vs_input_params: list, instance_index: int = 0,
+                               instance_offset: int = 0) -> dict:
         """
         Load per-instance VS inputs (PerInstance=True elements in
         ia_input_layouts.csv) for `instance_index` from the captured binary
@@ -6190,6 +6199,14 @@ class HLSLInterpreter:
         ia_vertex_data.csv only contains the per-vertex (slot 0) stream, so
         instanced inputs such as INSTANCE_TRANSFORM* default to zero without
         this. Returns {param_name: value}; empty if no per-instance elements.
+
+        `instance_offset` is the draw's StartInstanceLocation (draw_call_info's
+        InstanceOffset): D3D fetches a per-instance element at buffer index
+        `instance_offset + instanceID`, so a DrawInstanced with InstanceOffset
+        201 reads element 201 for instance 0 — reading element 0 gives the wrong
+        base index and the whole vertex-pull is garbage (e.g. PlanetCoaster).
+        SV_InstanceID, by contrast, is the 0-based instanceID and does NOT
+        include the offset.
 
         NOTE: assumes a single instance draw (all vertices share instance
         `instance_index`); multi-instance draws are not yet modelled.
@@ -6260,7 +6277,9 @@ class HLSLInterpreter:
             if not os.path.exists(bin_path):
                 continue
             stride = binding['byte_stride']
-            file_off = binding['byte_offset'] + instance_index * stride + elem['byte_offset']
+            file_off = (binding['byte_offset']
+                        + (instance_offset + instance_index) * stride
+                        + elem['byte_offset'])
             elem_bytes = elem['comp_count'] * elem['comp_byte_width']
             with open(bin_path, 'rb') as f:
                 f.seek(file_off)
@@ -6270,11 +6289,18 @@ class HLSLInterpreter:
             value = self._decode_vertex_element(
                 raw, elem['format'], elem['comp_count'], elem['comp_byte_width']
             )
-            # Map element semantic name -> VS input param
+            # Map element semantic name -> VS input param. RenderDoc's
+            # ia_input_layouts.csv sometimes drops the semantic index from the
+            # element Name (e.g. layout 'POSITION' feeding the shader's
+            # `POSITION7`), so fall back to a base-name match when the exact
+            # '{base}{idx}' form isn't present.
+            exact = next((p for p in vs_input_params
+                          if elem['name'] == f"{p['semantic_base']}{p['semantic_index']}"),
+                         None)
             for param in vs_input_params:
                 base = param['semantic_base']
                 idx = param['semantic_index']
-                if elem['name'] == f'{base}{idx}' or (idx == 0 and elem['name'] == base):
+                if elem['name'] == f'{base}{idx}' or (exact is None and elem['name'] == base):
                     result[param['name']] = value
                     break
 

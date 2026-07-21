@@ -4400,8 +4400,10 @@ sekiro4×5（OldWorld×2、witcher16834 本就在清单）。**全回归 162/162
 （1188/1536，VS packed 数据纹理解码在部分顶点发散 → r4.xy=0 → 1/sqrt(0)=NaN）。详见
 Sessions/hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array.md。
 
-# 211
+# 211 测试Dump目录
 ## Prompts
+1. 测试Dump目录下面的所有draw zip是否都已经通过，如果测试未通过，请修复通过后加入到regression test中
+2. Dump目录下的draw zip如果不需要修复就通过了测试，则删除该测试draw zip文件,并把通过的测试加入Cases/pass_but_not_in_regression.csv列表中
 
 Notice:
 把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写
@@ -4411,6 +4413,28 @@ Notice:
 ## Git commit: 
 
 ## Claude Code Session
+
+`Dump/` 共 489 zip/6.4GB。并行批测（复用 regression 判定）：首轮 **406 PASS / 83 FAIL**，失败以
+**57 PlanetCoaster** 为主。定位并修 **3 个通用根因**（PlanetCoaster GPU 驱动顶点拉取），共修好 20 例、
+零回归：
+
+1. **实例属性拉取忽略 InstanceOffset**。`DrawInstanced, InstanceOffset=201`，PerInstance 的 POSITION7
+   应取 VB[201] 但取了 VB[0]。修复：`render.py::_draw_instance_offset()` 读 InstanceOffset，
+   `load_per_instance_data` 用 `(instance_offset+instance_index)*stride` 取址（SV_InstanceID 仍取
+   instanceID）。
+2. **RenderDoc 布局丢语义索引**：布局元素 `POSITION` 映射不到 VS 输入 `POSITION7`。修复：无精确
+   `{base}{idx}` 时回退 base 名匹配。
+3. **StructuredBuffer `float` 成员存整数索引被浮点截断**：`t1[i].val[3]`=25603 解码成非规格化浮点
+   3.6e-41，`t0[r1.w]` 下标 `int(...)=0`；DXBC 用原始 uint 位。修复：`_eval_subscript` 对极小非零浮点
+   （0<|v|<1e-30）按 asuint 位重解释。
+
+**分诊动作**：20 修复例（全 PlanetCoaster）拷入 Cases/ + 入回归（155→**182**）+ 删 Dump 副本；406 免修
+通过中 149 本就在回归（删 Dump 冗余）、257 不在回归 → 写 **Cases/pass_but_not_in_regression.csv**(257)
++ 删 Dump；63 仍失败留 Dump。共删 Dump 中 426 个 zip，Dump 余 63。**全回归 182/182 全绿**。
+
+63 仍失败为非通用长尾：37 PlanetCoaster 更深变体（输出整型比较 / 逐顶点边界）、8 无 golden 可比
+（compute/UAV/GS-only）、manhattan/witcher3/TombRaider 等多为精度近过、EndlessSpace2 NaN、three.js 崩溃。
+详见 Sessions/hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index.md。
 
 # 212
 ## Prompts
