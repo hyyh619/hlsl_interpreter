@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 216 — 拟合 NV RTX4060 sin 表：可行性判定（瓶颈是 MUFU.SIN SFU 硬件近似，非约简）</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step216-nv-sin-table-fit-feasibility</span></div>
+<div class="wrap">
+<h1>Step 216 — 拟合 NV RTX4060 sin 表：可行性判定（瓶颈是 MUFU.SIN SFU 硬件近似，非约简）</h1>
+<p>Date: 2026-07-21</p>
+<h2>Prompts（本步任务）</h2>
+<p>用户要求"新增拟合某 GPU（NV RTX4060）的 sin 表"，以复现 manhattan 出生哈希 <code>frac(sin(大数)·big)</code><br>（golden 在 RTX4060 上渲染）。</p>
+<h2>结论先行</h2>
+<p><b>做了严格数值反解与建模后判定：从现有 golden 数据无法拟合出可用的 GPU sin 表。</b> 瓶颈不在范围约简<br>（我方管线已在 float32 参数上精确算得 sin，与 GPU 差仅 ~4e-6），而在 **NVIDIA MUFU.SIN 特殊功能单元<br>（SFU）的硬件近似<b>（~4e-6 绝对误差）。而 frac 哈希需要 sin 精确到 </b>~3e-8**（比 SFU 误差紧 100×），<br>故必须<b>逐位复现 MUFU.SIN</b>；其二次插值表约数百个系数，而 golden 每例只有 <b>1–2 个出生粒子</b>（全 5 例<br>合计仅约数十个 sin 采样，且落在零散约简点上）——<b>远不足以反解该表（欠定 ~10–30×）</b>。因此<b>未改代码</b><br>（保 190/190 全绿），不添加会造成误导的"约简模型"死代码。</p>
+<hr>
+<h2>执行 · 严格数值分析（event124 particle 411）</h2>
+<h3>1. 反解 GPU sin（由 golden o3 5 位小数）</h3>
+<p>出生哈希三分量（arg=K·(635+411)=K·1046，mul，golden frac）：</p>
+<table>
+<tr><th>分量</th><th>arg(f32)</th><th>mul</th><th>golden frac</th><th>反解 sin_gpu</th><th>精确 sin(arg_f32)</th><th>残差</th></tr>
+<tr><td>y</td><td>13587.33</td><td>43758.5</td><td>0.28833</td><td>0.0571383</td><td>0.0571410</td><td><b>+2.7e-6</b></td></tr>
+<tr><td>z</td><td>81831.72</td><td>87362.2</td><td>0.734375</td><td>−0.4676994</td><td>−0.4677034</td><td><b>−4.0e-6</b></td></tr>
+<tr><td>w</td><td>55817.70</td><td>12234.6</td><td>0.549805</td><td>−0.8513898</td><td>−0.8513935</td><td><b>−3.7e-6</b></td></tr>
+</table>
+<h3>2. 关键判定：瓶颈是 SFU 近似，不是约简</h3>
+<ul>
+<li>我方管线（f32_emulation）已把 <code>K·1046</code> 舍入到 float32（arg_f32），再 libm 精确算 <code>sin(arg_f32)</code>。</li>
+<li>测多种 float32 约简（f32rev/cw2/cw3/cw2_dbl）：<b>cw2_dbl 与 libm(arg_f32) 一致</b>，即约简已精确。</li>
+<li>但 <code>sin(arg_f32)</code> 与反解的 <code>sin_gpu</code> 仍差 <b>~3–4e-6</b>——这就是 <b>MUFU.SIN SFU 的固有近似误差</b> （~2^-18），与约简无关。correctly-rounded f32 sin 也不匹配（差同量级）→ 确证 D3D <code>sin</code> 走的是 <b>快速 MUFU.SIN</b>，非精确 sinf。</li>
+</ul>
+<h3>3. 精度需求 vs SFU 误差</h3>
+<p>frac 哈希：o3 容差 0.005 → r0 容差 0.0025 → <code>sin</code> 需匹配到 <code>0.0025/mul</code>：z 分量 <b>2.9e-8</b>、<br>y 分量 5.7e-8、w 分量 2.0e-7。<b>取最紧 ~3e-8</b>。而 SFU 误差 ~4e-6 = <b>约 130×</b> 过大。故任何"精确约简</p>
+<ul>
+<li>精确 sin"都无法过——<b>必须逐位复现 MUFU.SIN 的 ~4e-6 误差曲线</b>。</li>
+</ul>
+<h3>4. 出生粒子极稀疏 → 表欠定</h3>
+<p>event124 前 412 顶点中<b>仅 1 个</b>走出生分支（row411），其余 411 个走 else（无大数 sin）。每例<br>manhattan 仅 1–2 个出生粒子失败 → 全 5 例合计约数十个 sin 采样，散落在零散约简点。MUFU.SIN 的二次插值<br>表按约简参数高位分段（约 64–256 段 × 3 系数 = 数百参数）。<b>数十采样无法反解数百系数</b>（且未系统覆盖表<br>区间）→ 拟合<b>欠定</b>，不可行。</p>
+<hr>
+<h2>结果</h2>
+<ul>
+<li><b>未改代码</b>；回归维持 <b>190/190 全绿</b>；Dump 仍 55。</li>
+<li>用数值证据把"精度问题"<b>收窄并升级</b>为明确判定：<b>瓶颈 = 逐位复现 NVIDIA MUFU.SIN SFU 表</b>，而现有 golden 采样量对该表<b>欠定</b>。</li>
+<li>未添加"约简模型"死代码：因为<b>约简已精确</b>，加约简对哈希毫无帮助，只会误导。</li>
+</ul>
+<h2>关键结论</h2>
+<ul>
+<li>manhattan 失败 = 稀疏出生粒子的 <code>frac(sin·big)</code> 哈希，<b>受限于 NVIDIA MUFU.SIN 硬件近似</b>（非约简、 非逻辑 bug）。</li>
+<li>唯一可行路径是<b>引入 RTX4060/Ada SFU 的 sin 精确实现（逆向出的 MUFU.SIN 表与定点插值）</b>——需该表的 权威系数（本环境不可得），且无法由 capture 的少量采样反解。</li>
+<li>工程判断：拒绝以欠定拟合/误导性约简模型冒险已绿的 190 回归。</li>
+</ul>
+</div></body></html>

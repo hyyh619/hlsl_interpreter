@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 209 — 支持新压缩方式的 draw zip：LZMA per-member codec + dedup 别名重建</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support</span></div>
+<div class="wrap">
+<h1>Step 209 — 支持新压缩方式的 draw zip：LZMA per-member codec + dedup 别名重建</h1>
+<p>Date: 2026-07-20</p>
+<h2>Prompts（本步任务）</h2>
+<blockquote>draw zip 文件更改了压缩方式，请更新代码来支持读取。<code>Dump/</code> 下面的 draw zip 文件已经更新成新的压缩方式的文件。<br><b>Lever C — per-member LZMA codec</b>：dedup 之后，剩余成员仍各自独立 DEFLATE 压缩。把 per-member<br>codec 换成 LZMA（zip method 14），raw texel/.bin/.csv 负载再缩 ~30%（实测 bin −22%、raw −19%、<br>csv −18%；全语料 13.0 GB → 8.8 GB，−32%）。这只是 per-member 编解码变更，不捕获跨成员冗余（那需要<br>solid archive，会破坏随机访问）；精确的跨成员重复已经由 <b>Lever B</b> 去掉了。</blockquote>
+<hr>
+<h2>思考 · 诊断</h2>
+<p>新格式其实是<b>两个杠杆叠加</b>，只有第二个会真正影响读取代码：</p>
+<h3>Lever C — LZMA（method 14）：stdlib 原生支持，无需改代码</h3>
+<p>用 <code>zipfile.ZipFile(...).infolist()</code> 检查新 zip，成员的 <code>compress_type</code> 混合了 <code>8</code>(DEFLATE) 与<br><code>14</code>(LZMA)。Python 标准库 <code>zipfile</code> 在解压时会调用 <code>lzma</code> 模块，对 method 14 <b>原生可读</b>——<br>直接 <code>extractall</code> 与 <code>read()</code> 全部成功：</p>
+<pre><code>methods: {'DEFLATE': 26, 'LZMA': 5}
+READ OK method 14 .../GS_shader.hlsl 1029</code></pre>
+<p>所以 LZMA 部分不需要任何代码改动。</p>
+<h3>Lever B — dedup 别名：这才是会 break 的部分</h3>
+<p>新（以及部分旧）zip 在<b>根目录</b>多了一个 <code>dedup_aliases.csv</code>（与 case 文件夹平级），内容是<br><code>alias,canonical</code> 两列，两侧路径都相对 case 文件夹：</p>
+<pre><code>alias,canonical
+PS_constant_buffer_info.csv,GS_constant_buffer_info.csv
+PS_constant_buffers.csv,GS_constant_buffers.csv
+VS_constant_buffer_info.csv,GS_constant_buffer_info.csv
+VS_constant_buffers.csv,GS_constant_buffers.csv
+buffer_1545.bin,PS_slot_20_res_1545_buffer.bin</code></pre>
+<p>被去重的成员<b>物理上不在 zip 里</b>（<code>extractall</code> 后磁盘上没有 <code>PS_constant_buffers.csv</code> 等）。<br>这带来两处 break：</p>
+<ol>
+<li><b>顶层文件夹探测失效</b>：原逻辑 ``<code>python items = os.listdir(temp_dir) if len(items) == 1 and os.path.isdir(...): data_folder = 子文件夹 else: data_folder = temp_dir </code>`<code> dedup zip 根目录现在有 2 项（</code>dedup_aliases.csv<code> + case 文件夹），</code>len==2<code> 走 else → </code>data_folder = temp_dir<code>（**错**，文件其实在子文件夹里）。实测直接报 </code>Error: VS shader not found: .../hlsl_interp_xxx/VS_shader.hlsl`。</li>
+</ol>
+<ol>
+<li><b>别名文件缺失</b>：即便定位对了文件夹，pipeline 需要的 <code>PS_constant_buffers.csv</code> / <code>VS_constant_buffers.csv</code> / <code>buffer_1545.bin</code> 等物理不存在，会继续失败。</li>
+</ol>
+<p>（注：旧 <code>Cases/</code> zip 也早有 <code>dedup_aliases.csv</code>，但只去重了 MSAA 多 sample 的 <code>.raw</code>、<br><code>vb_slot2</code> 等 pipeline 用不到的文件，所以旧回归“碰巧”没暴露 bug。新格式把 VS/PS/GS <b>常量缓冲</b><br>也跨阶段去重了，才踩中。）</p>
+<hr>
+<h2>执行 · 修改（都在 <code>render.py</code> 的 zip workflow）</h2>
+<h3>1) 顶层文件夹探测忽略松散文件</h3>
+<p>只按“唯一目录”定位 case 文件夹，忽略根目录的松散文件（manifest）：</p>
+<pre><code>items = os.listdir(temp_dir)
+dir_items = [it for it in items if os.path.isdir(os.path.join(temp_dir, it))]
+if len(dir_items) == 1:
+    data_folder = os.path.join(temp_dir, dir_items[0])
+else:
+    data_folder = temp_dir</code></pre>
+<h3>2) 新增 <code>_materialize_dedup_aliases(temp_dir, data_folder)</code></h3>
+<p><code>extractall</code> 之后、进入 pipeline 之前调用。读 <code>dedup_aliases.csv</code>（先找根目录、再找 case 文件夹），<br>把每个 <code>canonical</code> 复制回它的 <code>alias</code> 位置：</p>
+<ul>
+<li><code>alias</code> 已存在 → skip（没真正被去重）；</li>
+<li><code>canonical</code> 缺失 → 打印 Warning 并跳过（不硬崩）；</li>
+<li>用 <code>os.makedirs(..., exist_ok=True)</code> + <code>shutil.copyfile</code> 支持带子目录的别名；</li>
+<li>无 manifest（旧单文件夹 zip）→ no-op，向后兼容。</li>
+</ul>
+<p>统计并打印 <code>Rehydrated N deduplicated file(s)</code>。</p>
+<hr>
+<h2>结果 · 验证</h2>
+<p><b>之前失败的 dedup 案例（<code>Cases/witcher3_countryside_event994.zip</code>，2 项根目录）现在通过：</b></p>
+<pre><code>Rehydrated 2 deduplicated file(s) from dedup_aliases.csv
+Total PASSED rows: 2490/2490      （Error: 0 行）</code></pre>
+<p><b>新格式 Dump zip（<code>Dump/Assassins-frame9018_event969.zip</code>，含 LZMA 成员 + 5 个别名）端到端跑通：</b></p>
+<pre><code>Rehydrated 5 deduplicated file(s) from dedup_aliases.csv
+exit=0，无 Error/Traceback</code></pre>
+<p><b>全回归套件</b>：<code>python run_regression.py</code> → <b>152/161 passed</b>（155 个 zip 实际在库；6 个大文件本地缺失<br>计入 not-passed）。剩下 3 个 FAIL 全是 golden 数值不匹配、与本改动无关：</p>
+<ul>
+<li><code>OldWorld_event1034</code> / <code>OldWorld_event2767</code>：<b>非</b> dedup zip（无 manifest，本改动对其为 no-op）， 纯插值器/数据问题。</li>
+<li><code>witcher3_countryside_event16834</code>：是 dedup zip，文件已正确 rehydrate；其 <code>dedup_aliases.csv</code> 只去重了 PS 的 mip9 <code>.img</code> 纹理（不影响 VS），失败在 <code>sv_position</code> 数值 diff——独立的 math 问题。</li>
+</ul>
+<p>关键：<b>修改前这些 2 项根目录的 dedup zip 根本读不出</b>（探测到 <code>temp_dir</code> → `Error: VS shader not<br>found`），本改动是严格改进（从“完全打不开”变为“正确读入并运行”）。</p>
+<hr>
+<h2>关键结论</h2>
+<ul>
+<li>LZMA(method 14) 由 stdlib <code>zipfile</code>/<code>lzma</code> 原生解压，<b>不需改代码</b>。</li>
+<li>真正要处理的是 dedup（Lever B）：<code>dedup_aliases.csv</code> 让根目录多出松散文件、并让被去重成员物理缺席。 修法 = <b>顶层文件夹探测按“唯一目录”走 + 解压后按 manifest 把 canonical 复制回 alias</b>。</li>
+<li>向后兼容：无 manifest 的旧单文件夹 zip 完全不受影响（no-op）。</li>
+</ul>
+</div></body></html>

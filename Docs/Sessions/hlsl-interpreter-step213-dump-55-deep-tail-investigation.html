@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 213 — Dump 剩余 55 深长尾：逐簇根因定位（不以投机改动冒险回归全绿）</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step213-dump-55-deep-tail-investigation</span></div>
+<div class="wrap">
+<h1>Step 213 — Dump 剩余 55 深长尾：逐簇根因定位（不以投机改动冒险回归全绿）</h1>
+<p>Date: 2026-07-21</p>
+<h2>Prompts（本步任务）</h2>
+<p>修复 Dump 剩余 55 个失败（29 PlanetCoaster 逐顶点数学发散、8 无 VS-golden、若干精度近过）。</p>
+<h2>结论先行</h2>
+<p>对全部 5 个簇做了逐例深挖，确认<b>残余 55 是不可约的硬长尾</b>：要么需逐例逆向（数据相关的多级<br>拉取 / HS fork-join DXBC VM），要么是<b>极端/退化输入下的 float 精度</b>，要么<b>根本无 golden 可判定</b>。<br>没有一个是低风险的通用修复点。为<b>保住 190/190 回归全绿</b>，本步<b>不做投机性改动</b>，只产出精确的根因<br>定位，供后续按例深挖。</p>
+<hr>
+<h2>逐簇根因（本步调查）</h2>
+<h3>1. PlanetCoaster ×29 — 多级网格拉取的逐顶点数据发散</h3>
+<p>以 <code>event10418</code> 深挖到底：draw 是 <code>DrawInstanced, InstanceOffset=50, TriangleStrip</code>，per-instance<br><code>POSITION7</code> 取 VB[50] 作 meshlet 基址。<b>逐组件比对确认 row0–row5 与 golden 逐位相等</b>——核心顶点<br>拉取/切线帧/颜色解包<b>完全正确</b>；从 <b>row6 起个别顶点发散</b>（o4 = TEXCOORD4：ours [15.75,6.73]<br>vs golden [0.157,0.099]）。</p>
+<p>追到发散点：<code>o4.xy = 16 * r1.yz</code>，<code>r1.yz = r2.xy/32768 - 1</code>，<code>r2.x = asint(r3.x)&amp;0xffff</code>，<br><code>r3.x = t2[idx].val[0]</code>。而 <code>idx</code>、<code>r3</code> 组件由 <code>r0.x</code> 的打包位经<b>多级三元选择</b><br>（<code>r4.xx ? r3.zw : r3.xy</code>、<code>r0.x = r4.y ? r1.w : r1.z</code>）决定，<code>r0.x</code> 又来自上一级 <code>t2/t3/t4</code><br>结构化缓冲读 + 位掩码合并。即：<b>6+ 层结构化缓冲间接 + 条件位解包</b>，某顶点某一级读回的打包值<br>（ours 低16位=65033 vs golden=33089）与 GPU 不一致。三元条件本身是干净整数（<code>&amp;int2(2,1)</code>→0/1/2，<br>真值无歧义），排除了 -0.0/denormal 真值 bug。属<b>数据相关、逐例</b>的深度分歧，无单点通用修复。</p>
+<h3>2. manhattan ×5 — 退化哨兵顶点的 float 精度</h3>
+<p>每例仅 1–2 个顶点失败（998~999/1000），但该顶点<b>所有属性</b>齐偏。定位：失败顶点（如 event124<br>row411）的输入 <code>TEX_COORD0 = (10000,10000,10000)</code> 是<b>退化/剔除哨兵</b>；经变换矩阵放大后，<br>float32 运算顺序的微差在量级 ~76 上放大到 ~0.5（&gt; 容差 0.005）。属极端输入下的精度，非逻辑错。</p>
+<h3>3. witcher3_countryside ×6 — 曲面细分 HS/DS</h3>
+<p><code>event21346</code> 是 VS+HS+DS+PS 曲面细分；按 DS-out 布局比较 HS 控制点流。失败集中在<b>所有奇数 CP 记录</b><br>的 <code>cp[4]</code>（=CP 记录第 4 分量）：ours 1.0 vs golden 0.0，169/1024 行。位于 HS fork/join DXBC VM<br>（<code>_execute_void_main</code> 外的 <code>DXBCInterpreter</code> 分相执行）与近似的 CP-流对齐比较中，属细分管线的 VM<br>边界问题，非通用单点。</p>
+<h3>4. TombRaider ×2 / sekiro2 ×1 — float 精度近过</h3>
+<p>sv_position / TexCoord 偏 0.02~0.07（量级百级），逐顶点 float 顺序精度，近过但超 0.005 容差。</p>
+<h3>5. three.js ×1 — float3x3 行列主序残留</h3>
+<p>step212 修了嵌套列表 <code>[[...]]</code> 解析崩溃；残留 <code>_normalMatrix</code>（CSV nested-list）法线变换偏。<br><b>本步实测</b>：把 <code>_parse_float3x3</code> 改为转置后 three.js 仍 0/6（12 errors 不变）——**残留不是简单<br>的行列主序翻转**，而是更深的约定/下游问题；已还原改动。</p>
+<h3>6. 无 VS-golden ×8 — 不可判定</h3>
+<p><code>SingleDrawDump-*×4</code>（无 VS_shader，compute/UAV draw）、<code>BlackMyth_event2063</code>、<code>Nobu15</code>、<br><code>EndlessSpace2_event3093</code> 等：capture <b>无 <code>*_vs_mesh</code> golden</b>（未 dump VS 输出或非 VS draw）。<br>VS-golden 工作流<b>无参照可比</b>——无从"修复"或验证。</p>
+<h3>7. EndlessSpace2_event3061 — NaN（step210 已诊断）</h3>
+<p>VS packed 数据纹理解码在部分顶点发散 → <code>1/sqrt(0)=NaN</code>。数据相关深度问题。</p>
+<hr>
+<h2>结果</h2>
+<ul>
+<li><b>未改动代码</b>（<code>hlsl_interpreter.py</code>/<code>render.py</code> 与 step212 提交一致）；<b>回归维持 190/190 全绿</b>。</li>
+<li>Dump 仍 55（无新增可安全通用修复的项）。</li>
+<li>产出逐簇精确根因，后续如需继续，应按<b>单例逆向</b>推进（尤以 PlanetCoaster 的 t2/t3/t4 打包格式与 奇数-CP 的 HS VM 为切入点），并对每次改动跑全回归防止破坏绿线。</li>
+</ul>
+<h2>关键结论</h2>
+<ul>
+<li>残余失败<b>非通用 bug</b>：29 例多级网格拉取数据发散、6 例细分 VM、~10 例极端/退化输入 float 精度、 1 例 float3x3 约定、8 例<b>无 golden 不可判定</b>。</li>
+<li>工程判断：在无法以低风险通用修复推进时，<b>不以投机改动冒险已绿的 190 回归</b>；本步价值在于把"深长尾" 从模糊变为<b>逐簇可执行的定位</b>。</li>
+</ul>
+</div></body></html>

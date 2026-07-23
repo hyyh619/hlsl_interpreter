@@ -1943,51 +1943,149 @@ ul,ol{padding-left:26px}
 <p><b>Bug 1 —— typed-buffer 视图格式跨 VS/PS 串号</b>（<code>9999/10575/11070</code>，3 例）。<code>buffer_params.csv</code><br>对同一 t-slot 在 VS/PS 各有一行，<code>load_typed_buffer_data</code> 只按 slot 建键、逻辑<br><code>slot not in by_reg or dtype=='TypedBuffer'</code> 让后出现的 **PS 行（R16_UINT）盖掉 VS 行<br>（R8G8B8A8_SNORM 的切线帧）**→ VS 的 <code>t5.Load(i)</code> 每次读回单位四元数 <code>[0,0,0,1]</code>，法线/切线全 0。<br>修复：<code>HLSLInterpreter</code> 增 <code>shader_stage</code>（<code>_make_interpreter</code> 设），<code>load_typed_buffer_data</code> 读<br><code>Stage</code> 列<b>优先选阶段匹配的行</b>、绝不让不匹配行覆盖已匹配行；stage 未知则退化旧行为（零风险）。<br>（step207 的 event4812 支不受影响：其 PS slot5 是 UAV/<code>ReadWriteBuffer</code> 而非 TypedBuffer。）<br>结果 <code>t5</code> 正确装 <code>R8G8B8A8_SNORM/4586elem</code>，三例各 <code>12162/12162</code>。</p>
 <p><b>Bug 2 —— if/while 块体内 SB 索引 burst 未按语句复位</b>（<code>8750/9055</code>，2 例；第三支 <code>t0..t12</code><br>蒙皮+样条切线着色器）。切线取自 <code>t8</code> 相邻元素有限差分 <code>t8[i+1]-t8[i]</code>。DXBC split-vector-load 的<br><code>_sb_index_burst</code>（把拆成多行的同索引读合并、索引只解析一次）<b>只在顶层语句循环里按语句复位</b>；而这段<br>解码在 <code>if(r1.w==0){…}</code> 块体内，经 <code>execute_block</code> 顺序执行、<b>从不复位</b>。于是 <code>t8[r4.z]</code> 的<br>burst(idx=48) 跨过 <code>r4.z=49</code> 赋值存活，第二次 <code>t8[r4.z]</code> 复用陈旧 48 → 读成 <code>t8[48]-t8[48]=0</code> →<br>法线/切线归零（row&lt;270 分支里索引没在两次同 token 读间被改，故只有 row≥270 暴露，典型数据相关）。<br>修复：<code>execute_block</code> 语句循环加与顶层<b>同款</b>的 burst 复位（token 不在当前语句即清），连续同 token 的<br>split-load 仍正常合并。结果 <code>event8750 30960/30960</code>、<code>event9055 58212/58212</code>。</p>
 <p><b>回归</b>：全量 <b>158/161</b>，3 未过均为无关既有失败（<code>witcher16834</code>、<code>OldWorld_1034/2767</code>）→ 零回归；<br>新加 <code>event9999</code>(typed-buffer 修复)、<code>event8750</code>(块内 burst 修复) 入本地回归。**至此 step206 triage 的<br>类 1（14 例）0/14 → 14/14 全清**，三个独立通用根因（AND-zero / typed-buffer 跨阶段 / 块内 burst）修完。</p>
-<h1 id="step-209">209</h1>
+<h1 id="step-209">209 draw zip文件更改了压缩方式，请更新代码来支持读取</h1>
 <h2>Prompts</h2>
+<p>draw zip文件更改了压缩方式，请更新代码来支持读取,Dump/Cases下面的draw zip文件已经更新成新的压缩方式的文件<br>Lever C — per-member LZMA codec<br>After dedup, remaining members are still DEFLATE-compressed independently. Switching the per-member codec to LZMA (zip method 14) shrinks the raw texel/.bin/.csv payload by ~30% more (measured: bin −22%, raw −19%, csv −18%; whole-corpus 13.0 GB → 8.8 GB, −32%). This is a per-member codec change only — it does not capture cross-member redundancy (that needs a solid archive, which would break random access); exact cross-member dups are already gone via Lever B.</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-210">210</h1>
+<p>新 draw zip 是<b>两个杠杆叠加</b>，只有第二个影响读取代码：</p>
+<ul>
+<li><b>Lever C — LZMA(method 14)</b>：stdlib <code>zipfile</code>/<code>lzma</code> 原生解压，<code>extractall</code>/<code>read</code> 全部 OK， <b>无需改代码</b>。</li>
+<li><b>Lever B — dedup 别名</b>：真正会 break。zip 根目录多出 <code>dedup_aliases.csv</code>（与 case 文件夹平级， <code>alias,canonical</code> 两列，均相对 case 文件夹），被去重成员<b>物理不在 zip 里</b>。造成两处失败： (1) 顶层文件夹探测——根目录现在 2 项（manifest + 文件夹），旧逻辑 <code>len==1</code> 判定失效 → 落到 <code>temp_dir</code> → <code>Error: VS shader not found</code>；(2) pipeline 需要的 <code>PS/VS_constant_buffers.csv</code>、 <code>buffer_*.bin</code> 等别名文件缺席。</li>
+</ul>
+<p>修改（均在 <code>render.py</code> zip workflow）：</p>
+<ol>
+<li>顶层文件夹探测改为“按唯一目录定位、忽略根目录松散文件”。</li>
+<li>新增 <code>_materialize_dedup_aliases(temp_dir, data_folder)</code>：<code>extractall</code> 后读 manifest，把每个 <code>canonical</code> 复制回 <code>alias</code>（已存在则 skip；canonical 缺失则 Warning 不崩；<code>makedirs</code>+<code>copyfile</code> 支持子目录别名；无 manifest 的旧单文件夹 zip 为 no-op，向后兼容）。</li>
+</ol>
+<p>验证：先前失败的 <code>witcher3_countryside_event994</code>（2 项根目录 dedup zip）→ <code>Rehydrated 2 file(s)</code>、<br><code>2490/2490</code>、0 Error；新格式 <code>Dump/Assassins-frame9018_event969</code>（LZMA + 5 别名）端到端 exit 0。<br>全回归 <b>152/161</b>（155 present；6 大文件本地缺失）；余 3 FAIL 均为与本改动无关的 golden 数值不匹配<br>（2 个 OldWorld 是非 dedup zip，本改动对其 no-op；witcher16834 只去重了不影响 VS 的 PS mip9 纹理）。<br>本改动对 dedup zip 由“完全打不开”变为“正确读入并运行”，严格改进、零回归。详见<br><a href="../Sessions/hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support.html">Sessions/hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support.html</a>。</p>
+<h1 id="step-210">210 测试Case目录下面的所有draw zip是否都已经通过</h1>
 <h2>Prompts</h2>
+<ol>
+<li>测试Cases目录下面的所有draw zip是否都已经通过，如果测试未通过，请修复通过后加入到regression test中</li>
+<li>Cases目录下的draw zip是否都已经加入到regression test中，如果没有加入但是不需要修复就通过了测试，则加入到regression test中</li>
+</ol>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-211">211</h1>
+<p><code>Cases/</code> 共 164 zip，回归原有 155 → <b>9 未入回归</b>；另有 3 个已在回归但失败（OldWorld×2、witcher16834）。<br>逐个跑判定后，定位并修复 <b>3 个独立通用根因</b>，共修好 8 例：</p>
+<ol>
+<li><b>raw-bits 整数运算里的源码数字字面量被当 float 位型</b>（OldWorld×2）。<code>cb5[r0.x+1]</code> 中 <code>r0.x</code> 来自 <code>&lt;&lt;</code>（→ <code>_RawBits</code>），字面量 <code>1</code>（解析为 1.0）被位重解释成 <code>0x3F800000=1065353216</code> → <code>cb5[越界]=0</code> → 输出全 0。修复：raw-i32 分支里伙伴若是 <code>_is_numeric_literal_node</code> 则保持整数值（与既有 <code>&gt;&gt;</code> 分支先例 一致）。→ 203328/203328。</li>
+<li><b>3Dmigoto 尾部 cbuffer 数组尺寸低报</b>（sekiro4×5）。<code>float4x3 VC_aObjMatrix[2]</code> 实际绑定 64 个矩阵 （constant_38312.bin=3072B），着色器索引到 [8]，但 <code>override_cbuffers_from_binary</code> 只按声明 [2] 加载 → 越界返回 0 → 蒙皮变换全 0。修复：数组为 cbuffer<b>最后字段</b>时，加载元素数扩展到绑定缓冲实际提供的 数量（内部数组仍按声明，避免越界入后续字段）。→ 全部满过。</li>
+<li><b>raw-int × 真实 float 被当整数位运算</b>（witcher16834）。<code>cb5[2].z * r1.x</code>（r1.x=8 来自 <code>2&lt;&lt;r0.x</code>） 把 cb5[2].z(=15.75) 位重解释后整数乘 → 高程采样坐标偏 → SV_Position 偏 5~15。修复：raw-int 在 <code>*</code>/<code>/</code> 下遇真实 float 伙伴（cbuffer 成员，非 int-cast/非字面量）是<b>值运算</b>（DXBC 先 itof），转整数值走正常 float 算术；<code>+</code>/<code>-</code> 保持位链以护噪声哈希。→ 30/30。</li>
+</ol>
+<p>回归清单 155 → <b>164</b>：新增无需修复即过的 Octopath_event2091、manhattan_event1041 + 修复后过的<br>sekiro4×5（OldWorld×2、witcher16834 本就在清单）。<b>全回归 162/162 全绿</b>（三修复零破坏）。</p>
+<p>未修复 2 例（诊断清楚、非通用 bug、不入回归以保全绿）：<code>witcher22229</code>（10/12，仅 TexCoord4[0] 差<br>0.005075/容差 0.005，落在 trailing-float3 golden 列错位+浮点边界）；<code>EndlessSpace2_event3061</code><br>（1188/1536，VS packed 数据纹理解码在部分顶点发散 → r4.xy=0 → 1/sqrt(0)=NaN）。详见<br><a href="../Sessions/hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array.html">Sessions/hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array.html</a>。</p>
+<h1 id="step-211">211 测试Dump目录</h1>
 <h2>Prompts</h2>
+<ol>
+<li>测试Dump目录下面的所有draw zip是否都已经通过，如果测试未通过，请修复通过后加入到regression test中</li>
+<li>Dump目录下的draw zip如果不需要修复就通过了测试，则删除该测试draw zip文件,并把通过的测试加入Cases/pass_but_not_in_regression.csv列表中</li>
+</ol>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-212">212</h1>
+<p><code>Dump/</code> 共 489 zip/6.4GB。并行批测（复用 regression 判定）：首轮 <b>406 PASS / 83 FAIL</b>，失败以<br><b>57 PlanetCoaster</b> 为主。定位并修 <b>3 个通用根因</b>（PlanetCoaster GPU 驱动顶点拉取），共修好 20 例、<br>零回归：</p>
+<ol>
+<li><b>实例属性拉取忽略 InstanceOffset</b>。<code>DrawInstanced, InstanceOffset=201</code>，PerInstance 的 POSITION7 应取 VB[201] 但取了 VB[0]。修复：<code>render.py::_draw_instance_offset()</code> 读 InstanceOffset， <code>load_per_instance_data</code> 用 <code>(instance_offset+instance_index)*stride</code> 取址（SV_InstanceID 仍取 instanceID）。</li>
+<li><b>RenderDoc 布局丢语义索引</b>：布局元素 <code>POSITION</code> 映射不到 VS 输入 <code>POSITION7</code>。修复：无精确 <code>{base}{idx}</code> 时回退 base 名匹配。</li>
+<li><b>StructuredBuffer <code>float</code> 成员存整数索引被浮点截断</b>：<code>t1[i].val[3]</code>=25603 解码成非规格化浮点 3.6e-41，<code>t0[r1.w]</code> 下标 <code>int(...)=0</code>；DXBC 用原始 uint 位。修复：<code>_eval_subscript</code> 对极小非零浮点 （0&lt;|v|&lt;1e-30）按 asuint 位重解释。</li>
+</ol>
+<p><b>分诊动作</b>：20 修复例（全 PlanetCoaster）拷入 Cases/ + 入回归（155→<b>182</b>）+ 删 Dump 副本；406 免修<br>通过中 149 本就在回归（删 Dump 冗余）、257 不在回归 → 写 <b>Cases/pass_but_not_in_regression.csv</b>(257)</p>
+<ul>
+<li>删 Dump；63 仍失败留 Dump。共删 Dump 中 426 个 zip，Dump 余 63。<b>全回归 182/182 全绿</b>。</li>
+</ul>
+<p>63 仍失败为非通用长尾：37 PlanetCoaster 更深变体（输出整型比较 / 逐顶点边界）、8 无 golden 可比<br>（compute/UAV/GS-only）、manhattan/witcher3/TombRaider 等多为精度近过、EndlessSpace2 NaN、three.js 崩溃。<br>详见 <a href="../Sessions/hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index.html">Sessions/hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index.html</a>。</p>
+<h1 id="step-212">212 fix remaining 63 fails</h1>
 <h2>Prompts</h2>
+<p>修复剩余的63个fails<br>Remaining (63, kept in Dump, documented)<br>Non-general long tail: 37 deeper PlanetCoaster variants (integer-output-vs-golden comparison; a few divergent rows), 8 with no VS-golden to grade (compute/UAV/GS-only), plus manhattan/witcher3/TombRaider near-misses, EndlessSpace2 NaN, and a three.js crash.</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-213">213</h1>
+<p>重跑 Dump 遗留 63 fails，解剖 PlanetCoaster（GPU 驱动顶点拉取）。关键发现：逐组件比对确认核心顶点<br>拉取/切线帧数学<b>是对的</b>（o2 与 golden 逐位相等），失败暴露 <b>3 个独立通用缺陷</b>，清掉 8 例：</p>
+<ol>
+<li><b>整型输出寄存器按位比较</b>：golden 分量为整数（UINT/SINT mesh）而我方 float 输出（打包 uint 经 <code>float</code> 输出槽写出），<code>ov!=gv</code> 误判（2.83e-37≠46198815），实为同一 32 位。新增 <code>_golden_component_match()</code> 对整型 golden vs float 输出按 asuint 位比较。</li>
+<li><b>cbuffer 矩阵/向量 CSV 解析容忍嵌套括号</b>：three.js 3MF 把矩阵写成 <code>[[a,b,c],[..]]</code>， <code>_parse_float3x3/4x4/_vector</code> 的 <code>split(',')+float()</code> 崩溃（exit=1）。改用正则 <code>_num_tokens()</code> 提数。</li>
+<li><b>_RawBits 幅值判据</b>：颜色解包 <code>(uint)(x&amp;255)*(1/255)</code> 中 <code>&amp;255</code> 产 <code>_RawBits(255)</code>，向量乘经 <code>_coerce_rawbits_for_float_op</code> asfloat 成近零非规格化数 → 分量坍缩（step-210 值运算修复只覆盖标量路径， 向量元素未覆盖）。判据：正常浮点位型 ≥ 2²³，小于则是整数值——<code>_coerce_rawbits_for_float_op</code>/ <code>_coerce_rawbits_list</code> 改为无符号 &lt;2²³ 取整数值、≥2²³ 才 asfloat（保 BlackMyth <code>asfloat(exp&lt;&lt;23)</code>）。</li>
+</ol>
+<p>8 修复例（PlanetCoaster）入 Cases/+regression（182→<b>190</b>）+ 删 Dump 副本。<b>全回归 190/190 全绿</b><br>（三修复零回归）。Dump 63→<b>55</b>。</p>
+<p>剩余 55 属深长尾/不可判定，未以投机改动强行追平：<b>29 PlanetCoaster</b> 真·逐顶点数学发散（如 event10418<br>row6+ TEXCOORD4 15.75 vs 0.157）；<b>8 无 VS-golden</b>（compute/UAV/GS-only 或未 dump VS 输出，VS-golden<br>工作流无法判定）；manhattan/witcher3/TombRaider/sekiro2 逐顶点精度近过；three.js 崩溃已修余 float3x3<br>行列主序；EndlessSpace2 NaN（step210 诊断）。详见<br><a href="../Sessions/hlsl-interpreter-step212-dump-63-fails-rawbits-and-int-output-compare.html">Sessions/hlsl-interpreter-step212-dump-63-fails-rawbits-and-int-output-compare.html</a>。</p>
+<h1 id="step-213">213 修复剩余55个问题</h1>
 <h2>Prompts</h2>
+<p>修复下列剩余问题<br>The remaining 55 are the genuine deep long tail — 29 PlanetCoaster per-vertex math divergences, 8 ungradeable (no VS golden), and assorted precision near-misses — which I deliberately did not paper over with speculative changes that would risk the green suite.</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-214">214</h1>
+<p>对 Dump 剩余 55 做逐簇深挖，确认是<b>不可约硬长尾</b>，无低风险通用修复点；为保 190/190 回归全绿，<br><b>本步不做投机改动</b>，只产出精确根因定位：</p>
+<ul>
+<li><b>PlanetCoaster ×29</b>：<code>event10418</code> 追到底——draw <code>InstanceOffset=50/TriangleStrip</code>，<b>row0–5 与 golden 逐位相等</b>（核心拉取/解包正确），<b>row6 起个别顶点发散</b>。发散点 <code>o4=16*(t2[idx].val 打包位)</code>， 而 idx/组件由 <code>r0.x</code> 打包位经 <b>6+ 层 t2/t3/t4 结构化缓冲间接 + 多级三元选择</b>决定；某级读回打包值 与 GPU 不一致（低16位 ours 65033 vs golden 33089）。三元条件是干净整数，排除 -0.0 真值 bug。数据相关、逐例。</li>
+<li><b>manhattan ×5</b>：仅个别顶点失败，输入为退化哨兵 <code>(10000,10000,10000)</code>，变换放大后 float 顺序精度 在量级~76 上偏~0.5（&gt;0.005）。极端输入精度，非逻辑错。</li>
+<li><b>witcher3 ×6</b>：曲面细分，HS 控制点流（fork/join DXBC VM）所有<b>奇数 CP</b> 的 <code>cp[4]</code> 1.0 vs 0.0。</li>
+<li><b>TombRaider ×2 / sekiro2 ×1</b>：逐顶点 float 精度近过（0.02~0.07）。</li>
+<li><b>three.js ×1</b>：float3x3 残留；<b>实测转置仍 0/6</b>，非简单行列主序，已还原。</li>
+<li><b>无 VS-golden ×8</b>：capture 无 <code>*_vs_mesh</code>（compute/UAV/GS-only），<b>无参照不可判定</b>。</li>
+<li><b>EndlessSpace2_event3061</b>：NaN（step210 诊断）。</li>
+</ul>
+<p>未改代码（与 step212 一致），回归维持 <b>190/190</b>。价值在于把"深长尾"从模糊变为<b>逐簇可执行定位</b>，<br>后续须按单例逆向推进并每次跑全回归防破绿。详见<br><a href="../Sessions/hlsl-interpreter-step213-dump-55-deep-tail-investigation.html">Sessions/hlsl-interpreter-step213-dump-55-deep-tail-investigation.html</a>。</p>
+<h1 id="step-214">214 修复PlanetCoaster ×29</h1>
 <h2>Prompts</h2>
+<p>修复下列问题</p>
+<ol>
+<li>PlanetCoaster ×29 — 多级网格拉取的逐顶点数据发散</li>
+</ol>
+<p>以 event10418 深挖到底：draw 是 DrawInstanced, InstanceOffset=50, TriangleStrip，per-instance POSITION7 取 VB[50] 作 meshlet 基址。逐组件比对确认 row0–row5 与 golden 逐位相等——核心顶点 拉取/切线帧/颜色解包完全正确；从 row6 起个别顶点发散（o4 = TEXCOORD4：ours [15.75,6.73] vs golden [0.157,0.099]）。</p>
+<p>追到发散点：o4.xy = 16 * r1.yz，r1.yz = r2.xy/32768 - 1，r2.x = asint(r3.x)&amp;0xffff， r3.x = t2[idx].val[0]。而 idx、r3 组件由 r0.x 的打包位经多级三元选择 （r4.xx ? r3.zw : r3.xy、r0.x = r4.y ? r1.w : r1.z）决定，r0.x 又来自上一级 t2/t3/t4 结构化缓冲读 + 位掩码合并。即：6+ 层结构化缓冲间接 + 条件位解包，某顶点某一级读回的打包值 （ours 低16位=65033 vs golden=33089）与 GPU 不一致。三元条件本身是干净整数（&amp;int2(2,1)→0/1/2， 真值无歧义），排除了 -0.0/denormal 真值 bug。属数据相关、逐例的深度分歧，无单点通用修复。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-215">215</h1>
+<p>把 event10418 追到最底层：发散<b>仅在 o4.xy（次级 UV 集）</b>——sv_position、o0–o3、**o4.zw（另一 UV<br>集）全部逐位正确<b>。错源锁定为</b>派生出的 t2 索引落到错误元素**：v6 我方读 <code>t2[1].val[0]=0xb5cffe09</code><br>（低16=65033），golden 隐含需 <code>0x80CB8141</code>（低16=33089）——该值不在我方索引到的 t2 邻近元素里。</p>
+<p>逐一排除四类可通用化嫌疑：①自别名三元 <code>r1.yw = r1.yy ? r3.zw : r3.xy</code> 的<b>并行语义正确</b>（独立测试，<br>非 step-205 类竞态）；②<b>r0.x 打包值正确</b>（o4.zw / sv_position 同依赖它且全过）；③<b>t2 读字节正确</b><br>（0xb5cffe09 与缓冲一致 → 是索引错非解码错）；④<b>denormal-as-index 自洽</b>（<code>t0[r1.w]</code> 的 r1.w 是非<br>规格化浮点，经 step-212 <code>_eval_subscript</code> 按 asuint 读 <code>t0[大索引]</code>；t0[0] 实为全零，印证走 asuint）。</p>
+<p><b>卡点</b>：正确 t2 索引由 <code>flag</code>（t0 某大索引的 val[4]）+ <code>r0.x&gt;&gt;2</code> 派生，而该 flag 的正确中间值**不在<br>capture 里**（golden 只存最终 VS 输出）；block2 用相邻 flag(val[5]) 却正确，两支索引数学同构、差异仅在<br>读到的 flag 值 → <b>数据相关、缺中间量参照</b>，无同构可循的通用修复。</p>
+<p>结论：非通用 bug；已把发散从"逐顶点数学发散"收窄到"o4.xy 次级 UV 的派生 t2 索引落错"并排除全部可通用化<br>嫌疑。<b>未改代码</b>（保 190/190 全绿）。后续唯一可行路径是<b>重新 capture 带各级中间寄存器 dump</b>（或接<br>DXBC 参考执行）据以逐例对齐索引。详见<br><a href="../Sessions/hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive.html">Sessions/hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive.html</a>。</p>
+<h1 id="step-215">215 manhattan ×5 — 退化哨兵顶点的 float 精度</h1>
 <h2>Prompts</h2>
+<p>修复该问题</p>
+<ol>
+<li>manhattan ×5 — 退化哨兵顶点的 float 精度</li>
+</ol>
+<p>每例仅 1–2 个顶点失败（998~999/1000），但该顶点所有属性齐偏。定位：失败顶点（如 event124 row411）的输入 TEX_COORD0 = (10000,10000,10000) 是退化/剔除哨兵；经变换矩阵放大后， float32 运算顺序的微差在量级 ~76 上放大到 ~0.5（&gt; 容差 0.005）。属极端输入下的精度，非逻辑错。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-216">216</h1>
+<p>深挖 event124 row411：失败顶点是<b>存活的 birth 粒子</b>（不是"输入哨兵"——<code>(10000,10000,10000)</code> 实为<br>shader 末尾<b>死亡粒子的输出哨兵</b>；VS_shader.hlsl 经 dedup 别名 = GS_shader.hlsl，粒子发射器）。其位置<br>来自伪随机出生哈希 <code>frac(sin(78.233·(635+vid))·87362)</code>，vid=411 → sin 参数 ≈ <b>81831.7</b>（大数）。</p>
+<p>数值验证（sin@81831.7）：GPU（由 golden o3 反推）sin ≈ <b>−0.46685</b>，而 f64 libm=−0.466794、我方现状<br>（arg 经 f32 舍入 + libm）=−0.467703、f32red/cw2/cw2fma 各异——<b>全部 4 个 trig 约简模型均差 ~5e-5</b>，<br>经 <code>frac(·87362)</code> 放大 87362× → golden 0.73438 vs 我方 0.384，完全发散。实跑 4 种 <code>trig_model</code>，<br>manhattan 均 999/1000 不变。</p>
+<p>为何仅个别顶点 fail：多数走 else 分支（无大数 sin），且哈希要 frac 过容差需 sin 匹配到 0.005/87362 ≈<br><b>5.7e-8</b>（f32 eps 量级）；大参数下 GPU float32 sin 与所有模型差 ~5e-5 &gt; 阈值 → 唯独大参数的 birth<br>粒子 fail。属<b>精度彩票 / GPU 超越函数可复现性极限</b>，非逻辑 bug（与用户"float 精度"判断一致）。</p>
+<p>结论：非可通用修复——需该 GPU（manhattan=GFXBench 移动 GPU）sin 的精确实现方能复现，capture 仅一个<br>数据点无法反推。<b>未改代码</b>（保 190/190 全绿）；不以投机拟合某 GPU sin 表冒险绿线。详见<br><a href="../Sessions/hlsl-interpreter-step215-manhattan-spawn-hash-precision.html">Sessions/hlsl-interpreter-step215-manhattan-spawn-hash-precision.html</a>。</p>
+<h1 id="step-216">216 新增拟合某 GPU 的 sin 表。</h1>
 <h2>Prompts</h2>
+<p>新增拟合某 GPU 的 sin 表。<br>该类失败非逻辑 bug、非可通用修复：伪随机哈希对 sin 的要求高达 ~5.7e-8，而 GPU 大参数 float32 sin 与 libm/所有约简模型差 ~5e-5，frac 放大后必然发散。<br>需该具体 GPU(NV RTX4060)（manhattan=GFXBench 移动 GPU）的 sin 精确实现方能复现；</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
-<h1 id="step-217">217</h1>
+<p>严格数值反解后判定：<b>从现有 golden 无法拟合可用的 GPU sin 表</b>，瓶颈是 <b>NVIDIA MUFU.SIN SFU 硬件近似</b>，<br>非范围约简。故<b>未改代码</b>（保 190/190 全绿），不加会误导的"约简模型"死代码。</p>
+<p>证据（event124 particle 411，唯一走出生分支者；前 412 顶点仅 1 个 birth，其余走 else）：</p>
+<ul>
+<li>反解 GPU sin（golden o3）：三分量 sin_gpu 与<b>精确 sin(arg_f32)</b> 仅差 <b>~3–4e-6</b>。</li>
+<li>我方管线（f32_emulation）已把 <code>K·1046</code> 舍入 f32 再 libm 精确算 sin(arg_f32)；测 f32rev/cw2/cw3/cw2_dbl 约简，cw2_dbl≈libm(arg_f32)——<b>约简已精确</b>。残差 ~4e-6 就是 <b>MUFU.SIN SFU 固有近似</b>（~2^-18）， 与约简无关；correctly-rounded f32 sin 也不匹配 → 确证 D3D <code>sin</code> 走<b>快速 MUFU.SIN</b>。</li>
+<li>frac 哈希精度需求：sin 需匹配 <code>0.0025/mul</code> → 最紧 <b>~3e-8</b>，比 SFU 误差 ~4e-6 紧 <b>~130×</b>。</li>
+<li>故必须<b>逐位复现 MUFU.SIN</b>；其二次插值表约数百系数，而每例仅 1–2 个出生粒子（全 5 例合计数十采样、 零散约简点）→ <b>欠定 ~10–30×，不可反解</b>。</li>
+</ul>
+<p>结论：manhattan 失败 = 稀疏出生粒子 <code>frac(sin·big)</code> 哈希，受限于 NV MUFU.SIN 硬件近似；唯一可行路径是<br>引入 RTX4060/Ada SFU sin 的权威逆向表（本环境不可得，且无法由少量 golden 采样反解）。不以欠定拟合/误导<br>约简冒险绿线。详见 <a href="../Sessions/hlsl-interpreter-step216-nv-sin-table-fit-feasibility.html">Sessions/hlsl-interpreter-step216-nv-sin-table-fit-feasibility.html</a>。</p>
+<h1 id="step-217">217 witcher3_countryside ×6 — 曲面细分 HS/DS</h1>
 <h2>Prompts</h2>
+<p>实现下列问题</p>
+<ol>
+<li>witcher3_countryside ×6 — 曲面细分 HS/DS</li>
+</ol>
+<p>event21346 是 VS+HS+DS+PS 曲面细分；按 DS-out 布局比较 HS 控制点流。失败集中在所有奇数 CP 记录 的 cp[4]（=CP 记录第 4 分量）：ours 1.0 vs golden 0.0，169/1024 行。位于 HS fork/join DXBC VM （_execute_void_main 外的 DXBCInterpreter 分相执行）与近似的 CP-流对齐比较中，属细分管线的 VM 边界问题，非通用单点。</p>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>
 <h2>Git commit:</h2>
 <h2>Claude Code Session</h2>
+<p>根因是 <b>CP-流比较（render.py）对整型 VS 输出字段处理错误，非解释器/着色器 bug</b>。<code>cp[4]</code> = VS 输出<br><code>o1.x</code>（<code>int4 o1 : TEXCOORD1</code>，地形 LOD 瓦片索引，来自瓦片搜索循环）。GPU 写的是<b>整数</b>，golden 存其<br><b>原始 32 位</b>；比较侧按 DS-out 布局把该字节当 <b>float</b> 解码（int 1 → asfloat=1.4e-45，打印 "0.000000"），<br>与我方整数值 1.0 比 → 假失败。</p>
+<p>逐层验证：失败点 o0（坐标）与 golden <b>逐位相等</b>；查原始 <code>VS_shader_disasm.txt</code>（resinfo→3 瓦片、<br><code>ld t17</code> 取界、<code>lt</code> 严格判定）与我方执行<b>完全一致</b>——点 (131.25,−318.75) 不在 tile0、在 tile1 →<br>o1.x=1 正确。直接解码 golden <code>ds_mesh.bin</code>：该字节 <b>as_int=1</b>（与我方一致！）、as_float=1.4e-45。<br>即 golden 整数也是 1，只是被当 float 读。</p>
+<p>修复（render.py CP-流比较）：float 容差不过时，若 <code>fa</code> 近整数且 <code>int(round(fa)) == asint(golden_bits)</code><br>则判过（整型字段按位重解释对齐）。只在 float 比较失败后<b>追加</b>匹配条件 → 对既有 190 全通过用例是 no-op，<br>不会把通过变失败；仅当 golden 位型恰为小整数且我方值等于它才匹配，真实 float 误差不误判。</p>
+<p><b>event21346：855→1024/1024</b>；入 Cases/+回归（190→<b>191</b>），删 Dump 副本；<b>全回归 191/191 全绿</b><br>（含共用该比较的 sekiro4 细分用例，零回归）。Dump 55→54。其余 witcher3（21719/21895/22260/23141、<br>fighting_18028）是<b>不同</b>失败（TEXCOORD4 数值发散 ~0.1，更深 HS/DS 细分分歧），22229 精度近过——非本<br>cp[4] 整型比较 bug。详见 <a href="../Sessions/hlsl-interpreter-step217-witcher3-hs-cp-int-field-compare.html">Sessions/hlsl-interpreter-step217-witcher3-hs-cp-int-field-compare.html</a>。</p>
 <h1 id="step-218">218</h1>
 <h2>Prompts</h2>
 <p>Notice:<br>把你思考，执行和结果都写入到一份md文件中，该文件放到Sessions目录下面，命名按照hlsl-interpreter-stepnum-***.md，stepnum请根据当step的值来填写<br>把summary填入hlsl-interpreter-prompt-ClaudeCode.md的Prompts的对应的Claude Code Session中</p>

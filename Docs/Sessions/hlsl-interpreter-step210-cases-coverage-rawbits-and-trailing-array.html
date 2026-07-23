@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 210 — Cases 全量过测：raw-bits 字面量/值运算 + cbuffer 尾数组补全，新增 9 例入回归</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array</span></div>
+<div class="wrap">
+<h1>Step 210 — Cases 全量过测：raw-bits 字面量/值运算 + cbuffer 尾数组补全，新增 9 例入回归</h1>
+<p>Date: 2026-07-20</p>
+<h2>Prompts（本步任务）</h2>
+<ol>
+<li>测试 <code>Cases/</code> 下所有 draw zip 是否都通过；未通过的<b>修复通过后</b>加入 regression test。</li>
+<li><code>Cases/</code> 下的 draw zip 是否都已加入 regression test；若未加入但<b>无需修复即通过</b>，则加入。</li>
+</ol>
+<hr>
+<h2>思考 · 盘点</h2>
+<p><code>Cases/</code> 共 <b>164</b> 个 zip，回归清单原有 <b>155</b>，即 <b>9 个未入回归</b>。逐个跑（复用 <code>run_regression.run_case</code><br>的确切判定：exit 0 且无 <code>Error:</code> 行且 <code>Total PASSED rows: X/X</code>）：</p>
+<table>
+<tr><th>zip</th><th>结果</th></tr>
+<tr><td>Octopath-frame746_event2091</td><td>✅ PASS 6/6</td></tr>
+<tr><td>manhattan_frame_274_event1041</td><td>✅ PASS 228/228</td></tr>
+<tr><td>EndlessSpace2_event3061</td><td>❌ 1188/1536（NaN）</td></tr>
+<tr><td>sekiro4_event2264 / 13742 / 13806 / 14228 / 16660</td><td>❌ 全 0/N</td></tr>
+<tr><td>witcher3_countryside_event22229</td><td>❌ 10/12</td></tr>
+</table>
+<p>外加<b>已在回归但失败</b>的 3 例：<code>OldWorld_event1034</code>、<code>OldWorld_event2767</code>（各 0/203328）、<br><code>witcher3_countryside_event16834</code>（3/30）。</p>
+<hr>
+<h2>执行 · 三个独立通用根因（全部定位到 <code>&lt;system-reminder&gt;</code> 之外的真实 bug）</h2>
+<h3>Bug 1 · raw-bits 整数运算里的<b>源码数字字面量</b>被当成 float 位型（→ OldWorld ×2）</h3>
+<p><code>OldWorld</code> VS：<code>cb5[r0.x+1]</code>，其中 <code>r0.x</code> 来自 <code>(uint)r0.x &lt;&lt; 3</code>（位运算 → 标记为 <code>_RawBits</code>）。<br>索引里的 <code>+1</code>：</p>
+<pre><code>[BINARY OP] left=0, right=1065353216, op=+ (raw i32), result=1065353216</code></pre>
+<p><code>1065353216 = 0x3F800000</code> = float <code>1.0</code> 的位型！源码字面量 <code>1</code>（解析为 float 1.0）在 raw-bits 伙伴规则<br>里被<b>位重解释</b>，于是 <code>cb5[1065353216]</code> 越界 → 返回 0 → 整条变换坍缩为 0，输出全 0。</p>
+<p><b>修复</b>（<code>evaluate_syntax_tree</code> 的 raw-i32 分支）：伙伴若是 <code>_is_numeric_literal_node</code>（源码数字字面量），<br>它是<b>真值</b>而非寄存器位型，保持整数（<code>int(1.0)=1</code>）。与 6604 行 <code>&gt;&gt;</code> 分支既有先例一致。<br>→ <code>cb5[r0.x+1]</code> 正确取 <code>cb5[1]</code>。<b>OldWorld ×2 → 203328/203328。</b></p>
+<h3>Bug 2 · 3Dmigoto <b>尾部 cbuffer 数组尺寸被低报</b>（→ sekiro4 ×5）</h3>
+<p>sekiro4 是蒙皮+实例网格：<code>float4x3 VC_aObjMatrix[2]</code>，但**实际绑定的 <code>constant_38312.bin</code> = 3072B =<br>64 个矩阵**，着色器用 <code>VC_aObjMatrix[r0.x/3]</code> 索引到 [8] 等。<code>override_cbuffers_from_binary</code> 按 HLSL<br>声明的 <code>[2]</code> 只加载 2 个元素，索引 [8] 越界 → 0 → 变换全 0：</p>
+<pre><code>VC_aObjMatrix (float4x3[2]):  [0] &lt;none&gt;  [1] &lt;none&gt;   （bin 里 matrix[8] 明明有真实数据）</code></pre>
+<p>根因：3Dmigoto 反编译常按“着色器静态可见的访问范围”写数组尺寸，而非实际绑定缓冲的大小。**绑定缓冲才是<br>真相。**</p>
+<p><b>修复</b>（<code>override_cbuffers_from_binary</code> 数组分支）：当数组是 cbuffer 的<b>最后一个字段</b>时，把加载元素数<br>扩展到缓冲实际能提供的数量（<code>avail = (len(decoded)-ri)//elem_regs</code>）。内部数组仍按声明尺寸（避免越入<br>后续字段）。→ 64 个矩阵全部加载，[8] 取到真实数据。<b>sekiro4 ×5 全部 0/N → 满过。</b></p>
+<h3>Bug 3 · raw-int <b>× 真实 float</b> 被当成整数位运算（→ witcher16834）</h3>
+<p>witcher 地形 VS：<code>r1.x = 2 &lt;&lt; (int)r0.x</code>（=8，<code>_RawBits</code>），随后 <code>r1.x = cb5[2].z * r1.x</code>：</p>
+<pre><code>[BINARY OP] left=1098514432, right=8, op=* (raw i32), result=198180864</code></pre>
+<p><code>1098514432 = 0x417C0000</code> = float <code>15.75</code>（即 cb5[2].z 的值）。应是 <b>float 乘</b>（DXBC 会先 <code>itof</code> 把<br>整数 8 转 8.0）：<code>15.75 * 8 = 126</code>。但 raw-bits 规则把 cb5[2].z（真实 cbuffer float）位重解释后做整数<br>乘 → 垃圾 → 高度采样坐标 <code>r2.xy</code> 偏（0.6567 vs 0.6646）→ 高程采样错 → SV_Position 偏 5~15。</p>
+<p><b>修复</b>：raw-int 操作数在 <code>*</code>/<code>/</code> 下遇到<b>真实 float 伙伴</b>（cbuffer 成员，非 <code>(int)</code> cast、非字面量）<br>时，是<b>值运算</b>——把 raw 操作数转成整数值走正常 float 算术，不位重解释。（<code>+</code>/<code>-</code> 保持原样以保护<br>witcher 噪声哈希的 iadd 位链。）→ <b>witcher16834 3/30 → 30/30。</b></p>
+<hr>
+<h2>结果</h2>
+<p><b>修复 8 例</b>（3 个通用根因，验证不破坏既有）：</p>
+<ul>
+<li>OldWorld_event1034 / event2767：203328/203328（Bug 1）</li>
+<li>sekiro4_event2264 / 13742 / 13806 / 14228 / 16660：满过（Bug 2）</li>
+<li>witcher3_countryside_event16834：30/30（Bug 3）</li>
+</ul>
+<p><b>新增入回归清单</b>（155 → 164 条）：</p>
+<ul>
+<li>无需修复即通过：Octopath-frame746_event2091、manhattan_frame_274_event1041</li>
+<li>修复后通过：sekiro4 ×5（OldWorld×2、witcher16834 本就在清单里）</li>
+</ul>
+<p><b>全回归</b>：<code>python run_regression.py</code> → <b>162/162 passed</b>（三个修复验证不破坏任何既有用例）。</p>
+<p><b>未修复 2 例（诊断清楚，非通用 bug，暂不入回归以保清单全绿）：</b></p>
+<ul>
+<li><code>witcher3_countryside_event22229</code>：10/12，仅 <code>TexCoord4[0]</code> 差 0.005075（容差 0.005），且落在 trailing-float3 golden 列错位（o5 为尾部 float3）+ 浮点边界区——非解释器逻辑错，属精度/对齐边缘。</li>
+<li><code>EndlessSpace2_event3061</code>：1188/1536。VS 内多次 <code>t1.SampleLevel</code> 解包粒子数据，某些顶点（row 157+） <code>r4.xy</code> 坍缩为 0 → <code>1/sqrt(0)=inf</code> → NaN；GPU 侧该处 <code>r4.xy</code> 非零（golden 有限）→ 上游 packed 数据纹理解码在这些顶点发散。数据相关、深，留待后续。</li>
+</ul>
+<hr>
+<h2>关键结论</h2>
+<ul>
+<li><code>_RawBits</code> 传播过猛会污染两类场景：<b>(a) 索引/偏移里的字面量</b>（Bug 1）、<b>(b) raw-int × 真实 float 的 值缩放</b>（Bug 3）。判据：字面量恒为值；<code>*</code>/<code>/</code> 配真实 float 恒为值（DXBC 必先 itof）；<code>+</code>/<code>-</code> 保守留位链。</li>
+<li>3Dmigoto 的 <b>cbuffer 尾数组声明尺寸不可信</b>，绑定缓冲大小才是真相（Bug 2）。</li>
+<li>精度边界与 packed-纹理解码发散是两类<b>非通用</b>难例，不应污染回归全绿。</li>
+</ul>
+</div></body></html>

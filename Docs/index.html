@@ -65,7 +65,7 @@ ul,ol{padding-left:26px}
 <li><a href="Prompts/hlsl-interpreter-prompt-ClaudeCode.html">Claude Code Session 提示词历史</a>（每步经 <code>Sessions/...md</code> 引用链接到对应 Session）</li>
 <li><a href="Prompts/hlsl-interpreter-prompt-OpenCode.html">OpenCode Session 提示词历史</a>（每步标题带 → Session 链接）</li>
 </ul>
-<h2>开发步骤日志 (Sessions, 192)</h2>
+<h2>开发步骤日志 (Sessions, 201)</h2>
 <ol style="line-height:1.9">
 <li><a href="Sessions/hlsl-step1-init-code.html">Python实现HLSL着色器代码解释器</a> <span style="color:#6b7480;font-size:12px">hlsl-step1-init-code</span></li>
 <li><a href="Sessions/hlsl-step2-print-cbuffer.html">CSV字符串值根据data type转换为对应数据类型</a> <span style="color:#6b7480;font-size:12px">hlsl-step2-print-cbuffer</span></li>
@@ -256,6 +256,15 @@ ul,ol{padding-left:26px}
 <li><a href="Sessions/hlsl-interpreter-step206-dump-fail-status.html">Step 206 — Dump 目录 fail 状态汇总（step201/202/205 修复后重新 triage）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step206-dump-fail-status</span></li>
 <li><a href="Sessions/hlsl-interpreter-step207-blackmyth-and-zero-rawbits-poison.html">Step 207 — BlackMyth 逐实例 + 多级 buffer 解码坍缩为零：AND 零结果被误标 _RawBits 毒化下游浮点加法</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step207-blackmyth-and-zero-rawbits-poison</span></li>
 <li><a href="Sessions/hlsl-interpreter-step208-blackmyth-typed-buffer-stage-and-burst-in-block.html">Step 208 — BlackMyth 类 1 收尾：typed-buffer 跨阶段视图 + if/while 块内 SB 索引 burst 未复位</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step208-blackmyth-typed-buffer-stage-and-burst-in-block</span></li>
+<li><a href="Sessions/hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support.html">Step 209 — 支持新压缩方式的 draw zip：LZMA per-member codec + dedup 别名重建</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step209-dedup-aliases-and-lzma-zip-support</span></li>
+<li><a href="Sessions/hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array.html">Step 210 — Cases 全量过测：raw-bits 字面量/值运算 + cbuffer 尾数组补全，新增 9 例入回归</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step210-cases-coverage-rawbits-and-trailing-array</span></li>
+<li><a href="Sessions/hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index.html">Step 211 — Dump 全量分诊：InstanceOffset + 语义映射 + 结构化缓冲原始位索引，修好 20 例</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index</span></li>
+<li><a href="Sessions/hlsl-interpreter-step212-dump-63-fails-rawbits-and-int-output-compare.html">Step 212 — 修复 Dump 剩余 63 fails：整型输出比较 + _RawBits 幅值 + 括号矩阵解析</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step212-dump-63-fails-rawbits-and-int-output-compare</span></li>
+<li><a href="Sessions/hlsl-interpreter-step213-dump-55-deep-tail-investigation.html">Step 213 — Dump 剩余 55 深长尾：逐簇根因定位（不以投机改动冒险回归全绿）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step213-dump-55-deep-tail-investigation</span></li>
+<li><a href="Sessions/hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive.html">Step 214 — PlanetCoaster o4.xy 次级 UV 深挖：发散锁定到派生 t2 索引，受限于 capture 无中间量</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive</span></li>
+<li><a href="Sessions/hlsl-interpreter-step215-manhattan-spawn-hash-precision.html">Step 215 — manhattan ×5 深挖：粒子出生哈希 frac(sin(大数)·big) 的 GPU float32 精度极限</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step215-manhattan-spawn-hash-precision</span></li>
+<li><a href="Sessions/hlsl-interpreter-step216-nv-sin-table-fit-feasibility.html">Step 216 — 拟合 NV RTX4060 sin 表：可行性判定（瓶颈是 MUFU.SIN SFU 硬件近似，非约简）</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step216-nv-sin-table-fit-feasibility</span></li>
+<li><a href="Sessions/hlsl-interpreter-step217-witcher3-hs-cp-int-field-compare.html">Step 217 — witcher3 曲面细分 cp[4]：修复 CP-流比较对整型 VS 输出字段的误判</a> <span style="color:#6b7480;font-size:12px">hlsl-interpreter-step217-witcher3-hs-cp-int-field-compare</span></li>
 <li><a href="Sessions/hlsl-SyntaxTreeParser-cannot-cache.html">Python 函数缓存你知道吗</a> <span style="color:#6b7480;font-size:12px">hlsl-SyntaxTreeParser-cannot-cache</span></li>
 <li><a href="Sessions/hlsl-optimization.html">2026.5.20</a> <span style="color:#6b7480;font-size:12px">hlsl-optimization</span></li>
 <li><a href="Sessions/hlsl-python-float-precision.html">Python实现IEEE754单精度浮点精度</a> <span style="color:#6b7480;font-size:12px">hlsl-python-float-precision</span></li>

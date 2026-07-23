@@ -859,5 +859,8 @@ Keep it concise and focused on status and changes. If the folder is empty/inacce
 </ol>
 <blockquote><b>与前三部分的关系</b>：周期任务不是新方法，而是把第三部分成熟的那套纪律（CLAUDE.md 常驻规则、可机判判据、回归 gate、记忆系统、强制留痕）<b>打包成一份可定时触发、无人值守的脚本</b>。前三部分回答"人和 AI 怎么协作把项目做出来"，第四部分回答"做出来之后，怎么让 AI 定时自己维护它、而人只需验收"。</blockquote>
 <hr>
+<h2>更新 · 2026-07-23：回归套件首次全绿</h2>
+<p>截至 2026-07-23，上述两条周期任务持续运转，项目达成一个里程碑：<b>回归套件 191/191 全绿</b>（此前 07-10 为 161 例 / 158 通过）。steps 209–217（2026-07-20/21 落地）按第四部分的纪律推进——step 209 消费新版 draw-zip 格式（LZMA 成员 + 去重别名重建），step 210–212 补齐 raw-bits 字面量/缓冲索引、<code>InstanceOffset</code>、整型 VS 输出按位重解释比较，把回归覆盖从 161 扩到 191 例。steps 213–216 对 <code>Dump/</code> 残余 55 例做逐簇根因定位，诚实判定其为<b>不可约的硬长尾</b>（多级结构化缓冲间接、退化哨兵顶点的 float32 精度、GPU <code>MUFU.SIN</code> SFU 限制），<b>不做投机性改动以保住全绿</b>——这正是第六部分设计要点 3「只固化真绿」与要点 4「诚实优先」的落地。step 217 修复 HS 控制点流比较对整型字段的误判（witcher3 <code>event21346</code>：855/1024 → 1024/1024），把套件抬到 191/191、零回归。</p>
+<hr>
 <p><i>本手册随项目演进更新；HTML 版见 <code>AI-Development-Handbook.html</code>。</i></p>
 </div></body></html>

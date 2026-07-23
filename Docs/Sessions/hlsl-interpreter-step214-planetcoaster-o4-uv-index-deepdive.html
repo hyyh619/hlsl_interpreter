@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 214 — PlanetCoaster o4.xy 次级 UV 深挖：发散锁定到派生 t2 索引，受限于 capture 无中间量</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step214-planetcoaster-o4-uv-index-deepdive</span></div>
+<div class="wrap">
+<h1>Step 214 — PlanetCoaster o4.xy 次级 UV 深挖：发散锁定到派生 t2 索引，受限于 capture 无中间量</h1>
+<p>Date: 2026-07-21</p>
+<h2>Prompts（本步任务）</h2>
+<p>修复 PlanetCoaster ×29 逐顶点数据发散（以 event10418 为例，o4=TEXCOORD4 从 row6 起偏）。</p>
+<h2>结论先行</h2>
+<p>把 event10418 追到<b>最底层</b>：发散<b>仅在 o4.xy（次级 UV 集）</b>——sv_position、o0–o3、**o4.zw（另一 UV<br>集）全部逐位正确<b>。o4.xy 的错源是</b>派生出的 t2 索引落到了错误元素**：v6 我方读 <code>t2[1].val[0]=0xb5cffe09</code><br>（低16=65033），而 golden 隐含需要 <code>0x80CB8141</code>（低16=33089、高16=32971）——该值<b>不在</b>我方索引到的<br>t2 邻近元素里。索引由 6+ 层打包浮点读链派生，其正确中间量<b>不在 capture 里</b>（golden 只存最终 o4），<br>无法在不引入投机改动的前提下反推。为<b>保 190/190 回归全绿</b>，本步<b>不改代码</b>，只落最深定位。</p>
+<hr>
+<h2>执行 · 逐层追踪（v5 通过 vs v6 失败）</h2>
+<p>draw：<code>DrawInstanced, InstanceOffset=50, TriangleStrip, 2688 verts</code>；v0–63 同属一个 meshlet<br>（<code>r0.y = (v1&gt;&gt;6)+v0.x</code> 对 v1&lt;64 恒定），逐顶点差异仅来自 v1 低位驱动的打包索引。</p>
+<ol>
+<li><b>失败面极窄</b>：row6 起<b>只有 <code>TEXCOORD4[0]/[1]</code>（=o4.xy）失败</b>，sv_position / o0–o3 / o4.zw 全过。 → 顶点索引、几何拉取、蒙皮、切线帧、主 UV 全对；仅 o4.xy 这一支的解码错。</li>
+</ol>
+<ol>
+<li><b>o4.xy 解码链</b>：<code>o4.xy = 16*r1.yz</code>，<code>r1.yz = r2.xy/32768 - 1</code>，<code>r2.xy = asint(r0.y)&amp;0xffff / &gt;&gt;16</code>， <code>r0.y = 三元选择(t2[idx].val 组件)</code>，<code>idx = flag_r0.y + (r0.x&gt;&gt;2)</code>。</li>
+</ol>
+<ol>
+<li><b>排除项</b>（逐一验证）：<ul>
+<li><b>自别名三元并行语义</b>：<code>r1.yw = r1.yy ? r3.zw : r3.xy</code>（条件寄存器 r1.y 同时是目的）——独立测试 确认<b>条件按向量先读后写、并行语义正确</b>，非 step-205 类 movc 竞态。</li>
+<li><b>r0.x 打包值正确</b>：o4.zw 与 sv_position 同样依赖 r0.x 且全过 → r0.x 无误。</li>
+<li><b>t2 读字节正确</b>：<code>t2[1].val[0]</code> 逐字节 = 0xb5cffe09，与缓冲一致 → 是<b>索引</b>错，不是解码错。</li>
+<li><b>denormal-as-index 自洽</b>：<code>t0[r1.w]</code> 中 r1.w 显示 "0.0000" 实为非规格化浮点，经 step-212 的 <code>_eval_subscript</code>（&lt;2⁻³⁰ 按 asuint）读 <code>t0[大索引]</code> 的真实数据；t0[0] 实为全零，印证索引走 asuint。</li>
+</ul></li>
+</ol>
+<ol>
+<li><b>卡点</b>：golden 需要的 <code>r0.y=0x80CB8141</code> 不在我方 block1 索引（=1）到的 t2 元素中；正确 t2 索引由 <code>flag_r0.y</code>（t0 大索引的 val[4]）+ <code>r0.x&gt;&gt;2</code> 派生，而<b>该 flag 的正确中间值无法从 capture 得到</b> （只有最终 o4 是 golden）。block2 用相邻的 <code>flag_r0.z</code>（val[5]）却正确——两支索引数学同构，差异仅在 读到的 flag 值，属<b>数据相关</b>，无同构可循的通用修复点。</li>
+</ol>
+<hr>
+<h2>结果</h2>
+<ul>
+<li><b>未改代码</b>；回归维持 <b>190/190 全绿</b>；Dump 仍 55。</li>
+<li>把 PlanetCoaster 发散从"逐顶点数学发散"<b>收窄到"o4.xy 次级 UV 的派生 t2 索引落错元素"</b>，并逐一排除了 三元并行语义 / r0.x / t2 字节解码 / denormal 索引四类可疑点。</li>
+<li><b>硬约束</b>：进一步定位需要 GPU 侧中间量（如 golden 的 t2 索引 / 各级 flag），而 capture 仅存最终 VS 输出 → 在现有数据下无法反推正确索引，投机改动风险高且会威胁绿线。</li>
+</ul>
+<h2>关键结论</h2>
+<ul>
+<li>该簇失败<b>不是通用 bug</b>，而是<b>多级打包索引在某一级读到与 GPU 不一致的派生值</b>；本步已排除全部可通用化的 嫌疑（并行语义、r0.x、字节解码、denormal 索引），剩余分歧是<b>数据相关且缺中间量参照</b>。</li>
+<li>工程判断：无法以低风险通用修复推进时<b>不冒险已绿的 190 回归</b>；后续若要继续，唯一可行路径是<b>重新 capture 带各级中间寄存器 dump</b>（或接入 DXBC 参考执行），据此逐例对齐 t2 索引。</li>
+</ul>
+</div></body></html>

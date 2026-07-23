@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Step 211 — Dump 全量分诊：InstanceOffset + 语义映射 + 结构化缓冲原始位索引，修好 20 例</title>
+<style>
+:root{--bg:#ffffff;--panel:#f6f8fa;--panel2:#eaeef2;--line:#d0d7de;--accent:#0969da;
+  --green:#1a7f4b;--amber:#9a6700;--red:#cf222e;--muted:#656d76;--text:#1f2328;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 22px 80px}
+.top{position:sticky;top:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);padding:12px 22px;font-size:14px}
+.top a{color:var(--accent);text-decoration:none}.top a:hover{text-decoration:underline}
+.top .crumb{color:var(--muted)}
+h1{font-size:27px;margin:30px 0 14px;line-height:1.3;color:var(--text)}
+h2{font-size:22px;margin:40px 0 12px;border-left:4px solid var(--accent);padding-left:12px;color:var(--text)}
+h3{font-size:18px;margin:26px 0 9px;color:var(--text)}
+h4{font-size:15.5px;margin:20px 0 8px;color:var(--text)}
+h2 a.sess,h1 a.sess{font-size:13px;font-family:var(--mono);font-weight:normal;color:var(--green);
+  border:1px solid var(--line);border-radius:16px;padding:2px 10px;margin-left:10px;
+  text-decoration:none;white-space:nowrap;vertical-align:middle}
+h2 a.sess:hover,h1 a.sess:hover{background:var(--panel);color:#116a38}
+p,li{color:var(--text)}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:13px;background:#eff2f5;border:1px solid var(--line);
+  border-radius:5px;padding:1px 6px;color:#0550ae}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto}
+pre code{background:none;border:none;padding:0;color:var(--text);font-size:12.5px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--text)}
+tr:nth-child(even) td{background:#f6f8fa}
+blockquote{margin:14px 0;padding:8px 16px;border-left:4px solid var(--accent);
+  background:#f1f6fe;border-radius:8px;color:#37414d}
+hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+ul,ol{padding-left:26px}
+.sesslink{display:inline-block;margin:4px 0;font-family:var(--mono);font-size:13px}
+</style></head>
+<body>
+<div class="top"><a href="../index.html">← 文档首页</a> <span class="crumb">/ Sessions / hlsl-interpreter-step211-dump-triage-instanceoffset-and-rawbits-index</span></div>
+<div class="wrap">
+<h1>Step 211 — Dump 全量分诊：InstanceOffset + 语义映射 + 结构化缓冲原始位索引，修好 20 例</h1>
+<p>Date: 2026-07-20</p>
+<h2>Prompts（本步任务）</h2>
+<ol>
+<li>测试 <code>Dump/</code> 下所有 draw zip 是否通过；未通过的<b>修复通过后</b>加入 regression test。</li>
+<li><code>Dump/</code> 下不需修复即通过的 zip：<b>删除该 zip 文件</b>，并把通过的测试加入 <code>Cases/pass_but_not_in_regression.csv</code> 列表。</li>
+</ol>
+<hr>
+<h2>思考 · 盘点与批测</h2>
+<p><code>Dump/</code> 共 <b>489</b> 个 zip、6.4GB。写并行批测脚本（复用 <code>run_regression.BASE_CONFIG</code> + <code>analyze_log</code><br>的确切判定），首轮结果：<b>406 PASS / 83 FAIL</b>。</p>
+<p>按游戏前缀分组失败：<b>57 PlanetCoaster</b> 独占鳌头，其余 witcher3(6)、manhattan(5)、EndlessSpace2(2)、<br>TombRaider(2) 等零散。→ 主攻 PlanetCoaster（一修多得）。</p>
+<hr>
+<h2>执行 · 三个通用根因（PlanetCoaster GPU-driven vertex-pulling）</h2>
+<p>PlanetCoaster VS 是极复杂的 GPU 驱动顶点拉取：<code>SV_VertexID</code> + 6 个 StructuredBuffer（<code>t0..t5</code>，<br><code>struct{float val[N]}</code>）+ 位运算 + 整数除 + <code>t3.Load</code>，逐级从缓冲拉取并解压网格。</p>
+<h3>Bug 1 · 实例属性拉取忽略 <code>InstanceOffset</code>（StartInstanceLocation）</h3>
+<p><code>draw_call_info.csv</code>：<code>DrawInstanced, NumInstances=1, InstanceOffset=201</code>。POSITION7 是<br><code>R32_SINT, PerInstance=True</code>，D3D 按 <code>InstanceOffset + instanceID</code> 取实例属性 → 应取 VB[201]=18836，<br>但 <code>load_per_instance_data(instance_index=0)</code> 取 VB[0]=0 → 整条顶点拉取从错误基址开始。</p>
+<p><b>修复</b>：新增 <code>render.py::_draw_instance_offset()</code> 读 <code>InstanceOffset</code>；<code>load_per_instance_data</code> 加<br><code>instance_offset</code> 参数，属性取址用 <code>(instance_offset+instance_index)*stride</code>（SV_InstanceID 仍取<br><code>instance_index</code>，D3D 语义如此）。</p>
+<h3>Bug 2 · RenderDoc 布局丢失语义索引，实例属性映射不到 VS 输入</h3>
+<p>VS 输入 <code>int4 v0 : POSITION7</code>，但 <code>ia_input_layouts.csv</code> 的元素名只有 <code>POSITION</code>（丢了索引 7）。<br><code>load_per_instance_data</code> 只按 <code>{base}{idx}</code> 或 <code>idx==0 时的 base</code> 匹配 → <code>POSITION7</code> 匹配不到<br><code>POSITION</code> → v0 默认 0。</p>
+<p><b>修复</b>：当没有精确 <code>{base}{idx}</code> 元素时，回退到 <b>base 名匹配</b>（<code>POSITION</code> → <code>POSITION7</code>）。</p>
+<h3>Bug 3 · StructuredBuffer <code>float</code> 成员存整数索引，被当浮点截断</h3>
+<p><code>t1[i].val[3]</code> 存的是 t0 的整数索引（如 25603），但 struct 声明 <code>float val[4]</code>，解释器解码成<br>float32 <b>非规格化数</b>（25603→3.6e-41）；随后 <code>t0[r1.w]</code> 用它做下标，<code>int(3.6e-41)=0</code> → 恒取 t0[0]。<br>而 DXBC 的 <code>ld_structured</code> 下标用寄存器<b>原始 uint 位</b>（=25603）。</p>
+<p><b>修复</b>（<code>_eval_subscript</code>）：缓冲下标求值时，若结果是极小非零浮点（<code>0&lt;|v|&lt;1e-30</code>，只有整数位型<br>才会落此区间；真实浮点下标 ≥1），按 <code>asuint</code> 位重解释而非截断。</p>
+<hr>
+<h2>结果</h2>
+<p>三修复令 <b>20 个 PlanetCoaster</b> 从 FAIL→PASS，且<b>零回归</b>（全 489 重测：406→426 PASS，无一<br>PASS→FAIL；162 回归仍全绿）。</p>
+<p><b>任务动作（分诊 489）：</b></p>
+<ul>
+<li><b>20 修复例</b>（均 PlanetCoaster）→ 拷入 <code>Cases/</code> + 加入 regression（<b>155→182 条</b>）+ 删除 Dump 副本。</li>
+<li><b>406 免修通过</b>：149 个本就在回归清单（删除 Dump 冗余副本，不重复入表）；257 个不在回归 → 写入 <code>Cases/pass_but_not_in_regression.csv</code>（257 条）+ 删除 Dump 文件。</li>
+<li><b>63 仍失败</b> → 保留在 Dump，待后续。共删除 Dump 中 <b>426</b> 个 zip，Dump 余 63。</li>
+</ul>
+<p><b>全回归</b>：<code>python run_regression.py</code>（182 例）→ <b>182/182 passed</b>（20 新增 PlanetCoaster 全过，零回归）。</p>
+<p><b>63 仍失败分类（诊断留档，非通用 bug）：</b></p>
+<ul>
+<li><b>37 PlanetCoaster</b>：同族但更深的变体——(a) 输出寄存器存整数、golden 按 int 比较而解释器按 float （如 event12358 <code>TEXCOORD4=46198815</code> vs 输出 2.8e-37=同位型）；(b) 少数顶点发散（event10717 18931/18944）。需输出类型感知 + 逐顶点边界排查。</li>
+<li><b>8 no-comparison</b>：无 VS-golden 网格可比（compute/UAV/GS-only 等不同 draw 类型），无法按 VS 判定。</li>
+<li><b>manhattan(5)/witcher3(7)/TombRaider(2)/sekiro2(1)</b> 多为近过（998~999/1000、827/1548 等）精度/边界。</li>
+<li><b>EndlessSpace2_event3061</b> NaN（packed 数据纹理解码发散，step210 已诊断）；three.js exit=1 崩溃。</li>
+</ul>
+<hr>
+<h2>关键结论</h2>
+<ul>
+<li>实例化 draw 必须尊重 <b>InstanceOffset</b>（StartInstanceLocation）取实例属性；SV_InstanceID 不含该偏移。</li>
+<li>RenderDoc 布局可能<b>丢语义索引</b>，实例属性映射需 base 名回退。</li>
+<li>DXBC 缓冲下标用<b>寄存器原始 uint 位</b>；存于 <code>float</code> 成员的整数索引解码为非规格化浮点，下标求值须 <code>asuint</code> 而非截断。</li>
+<li>PlanetCoaster 余下失败是<b>输出整型比较</b>与<b>逐顶点边界</b>两类更深问题；其余多为精度近过或无 golden 可比，属非通用长尾，留待后续。</li>
+</ul>
+</div></body></html>
